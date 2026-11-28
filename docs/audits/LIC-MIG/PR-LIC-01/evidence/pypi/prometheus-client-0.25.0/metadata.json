@@ -1,0 +1,221 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "The Prometheus Authors <prometheus-developers@googlegroups.com>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 4 - Beta",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Information Technology",
+        "Intended Audience :: System Administrators",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Topic :: System :: Monitoring"
+      ],
+      "description": "# Prometheus Python Client\n\nThe official Python client for [Prometheus](https://prometheus.io).\n\n## Installation\n\n```\npip install prometheus-client\n```\n\nThis package can be found on [PyPI](https://pypi.python.org/pypi/prometheus_client).\n\n## Documentation\n\nDocumentation is available on https://prometheus.github.io/client_python\n\n## Links\n\n* [Releases](https://github.com/prometheus/client_python/releases): The releases page shows the history of the project and acts as a changelog.\n* [PyPI](https://pypi.python.org/pypi/prometheus_client)\n",
+      "description_content_type": "text/markdown",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": [
+        "License-File"
+      ],
+      "home_page": null,
+      "keywords": "prometheus, monitoring, instrumentation, client",
+      "license": null,
+      "license_expression": "Apache-2.0 AND BSD-2-Clause",
+      "license_files": [
+        "LICENSE",
+        "NOTICE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "prometheus-client",
+      "package_url": "https://pypi.org/project/prometheus-client/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/prometheus-client/",
+      "project_urls": {
+        "Documentation": "https://prometheus.github.io/client_python/",
+        "Homepage": "https://github.com/prometheus/client_python"
+      },
+      "provides_extra": [
+        "twisted",
+        "aiohttp",
+        "django"
+      ],
+      "release_url": "https://pypi.org/project/prometheus-client/0.25.0/",
+      "requires_dist": [
+        "twisted; extra == \"twisted\"",
+        "aiohttp; extra == \"aiohttp\"",
+        "django; extra == \"django\""
+      ],
+      "requires_python": ">=3.9",
+      "summary": "Python client for the Prometheus monitoring system.",
+      "version": "0.25.0",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 39343606,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "beorn7"
+        },
+        {
+          "role": "Owner",
+          "user": "csmarchbanks"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "64e15861c7ca8f559d2c7e01006b08e1cfe8b1ba0834578167f1f57e68b1869c"
+        },
+        "digests": {
+          "blake2b_256": "8d9bd4b1e644385499c8346fa9b622a3f030dce14cd6ef8a1871c221a17a67e7",
+          "md5": "e72fdd77dcbcc523c49cf4407ed971c4",
+          "sha256": "d5aec89e349a6ec230805d0df882f3807f74fd6c1a2fa86864e3c2279059fed1"
+        },
+        "downloads": -1,
+        "filename": "prometheus_client-0.25.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "e72fdd77dcbcc523c49cf4407ed971c4",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.9",
+        "size": 64154,
+        "upload_time": "2026-04-09T19:53:41",
+        "upload_time_iso_8601": "2026-04-09T19:53:41.324097Z",
+        "url": "https://files.pythonhosted.org/packages/8d/9b/d4b1e644385499c8346fa9b622a3f030dce14cd6ef8a1871c221a17a67e7/prometheus_client-0.25.0-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "1bfbd9aa83ffe43ce1f19e557c0971d04b90561b0cfd50762aafb01968285553",
+          "md5": "a62e0923bbe5b194492acf2e26004e6b",
+          "sha256": "5e373b75c31afb3c86f1a52fa1ad470c9aace18082d39ec0d2f918d11cc9ba28"
+        },
+        "downloads": -1,
+        "filename": "prometheus_client-0.25.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a62e0923bbe5b194492acf2e26004e6b",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.9",
+        "size": 86035,
+        "upload_time": "2026-04-09T19:53:42",
+        "upload_time_iso_8601": "2026-04-09T19:53:42.359582Z",
+        "url": "https://files.pythonhosted.org/packages/1b/fb/d9aa83ffe43ce1f19e557c0971d04b90561b0cfd50762aafb01968285553/prometheus_client-0.25.0.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "prometheus-client",
+    "version": "0.25.0",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "5e373b75c31afb3c86f1a52fa1ad470c9aace18082d39ec0d2f918d11cc9ba28",
+      "d5aec89e349a6ec230805d0df882f3807f74fd6c1a2fa86864e3c2279059fed1"
+    ],
+    "retrieved_at": "2026-11-28T12:09:57+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": "Apache-2.0 AND BSD-2-Clause",
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 4 - Beta",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Information Technology",
+        "Intended Audience :: System Administrators",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Topic :: System :: Monitoring"
+      ],
+      "requires_python": ">=3.9",
+      "project_urls": {
+        "Documentation": "https://prometheus.github.io/client_python/",
+        "Homepage": "https://github.com/prometheus/client_python"
+      },
+      "home_page": null,
+      "summary": "Python client for the Prometheus monitoring system.",
+      "author": "The Prometheus Authors <prometheus-developers@googlegroups.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "prometheus_client-0.25.0-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "prometheus_client-0.25.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/8d/9b/d4b1e644385499c8346fa9b622a3f030dce14cd6ef8a1871c221a17a67e7/prometheus_client-0.25.0-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 64154,
+        "sha256_pypi": "d5aec89e349a6ec230805d0df882f3807f74fd6c1a2fa86864e3c2279059fed1",
+        "sha256_verified": "d5aec89e349a6ec230805d0df882f3807f74fd6c1a2fa86864e3c2279059fed1",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "prometheus_client-0.25.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/8d/9b/d4b1e644385499c8346fa9b622a3f030dce14cd6ef8a1871c221a17a67e7/prometheus_client-0.25.0-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 64154,
+      "sha256_pypi": "d5aec89e349a6ec230805d0df882f3807f74fd6c1a2fa86864e3c2279059fed1",
+      "sha256_verified": "d5aec89e349a6ec230805d0df882f3807f74fd6c1a2fa86864e3c2279059fed1",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "prometheus_client-0.25.0-py3-none-any.whl::prometheus_client-0.25.0.dist-info/licenses/LICENSE": {
+        "saved_as": "prometheus_client-0.25.0.dist-info_licenses_LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "bytes": 11357,
+        "from_artifact": "prometheus_client-0.25.0-py3-none-any.whl",
+        "artifact_sha256": "d5aec89e349a6ec230805d0df882f3807f74fd6c1a2fa86864e3c2279059fed1"
+      },
+      "prometheus_client-0.25.0-py3-none-any.whl::prometheus_client-0.25.0.dist-info/licenses/NOTICE": {
+        "saved_as": "prometheus_client-0.25.0.dist-info_licenses_NOTICE",
+        "sha256": "4efa1874aeaa60f365f5797e617f1ff933e15e508eaf751e9848ed4413d7a7ae",
+        "bytes": 236,
+        "from_artifact": "prometheus_client-0.25.0-py3-none-any.whl",
+        "artifact_sha256": "d5aec89e349a6ec230805d0df882f3807f74fd6c1a2fa86864e3c2279059fed1"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

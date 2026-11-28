@@ -1,0 +1,210 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "Tom Christie <tom@tomchristie.com>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 3 - Alpha",
+        "Environment :: Web Environment",
+        "Framework :: AnyIO",
+        "Intended Audience :: Developers",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Topic :: Internet :: WWW/HTTP"
+      ],
+      "description": "<p align=\"center\">\n  <picture>\n    <source media=\"(prefers-color-scheme: dark)\" srcset=\"https://raw.githubusercontent.com/Kludex/starlette/main/docs/img/starlette_dark.svg\" width=\"420px\">\n    <source media=\"(prefers-color-scheme: light)\" srcset=\"https://raw.githubusercontent.com/Kludex/starlette/main/docs/img/starlette.svg\" width=\"420px\">\n    <img alt=\"starlette-logo\" src=\"https://raw.githubusercontent.com/Kludex/starlette/main/docs/img/starlette.svg\">\n  </picture>\n</p>\n\n<p align=\"center\">\n    <em>✨ The little ASGI framework that shines. ✨</em>\n</p>\n\n---\n\n[![Build Status](https://github.com/Kludex/starlette/workflows/Test%20Suite/badge.svg)](https://github.com/Kludex/starlette/actions)\n[![Package version](https://badge.fury.io/py/starlette.svg)](https://pypi.python.org/pypi/starlette)\n[![Supported Python Version](https://img.shields.io/pypi/pyversions/starlette.svg?color=%2334D058)](https://pypi.org/project/starlette)\n[![Discord](https://img.shields.io/discord/1051468649518616576?logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2)](https://discord.gg/RxKUF5JuHs)\n\n---\n\n**Documentation**: <a href=\"https://starlette.dev/\" target=\"_blank\">https://starlette.dev</a>\n\n**Source Code**: <a href=\"https://github.com/Kludex/starlette\" target=\"_blank\">https://github.com/Kludex/starlette</a>\n\n---\n\n# Starlette\n\nStarlette is a lightweight [ASGI][asgi] framework/toolkit,\nwhich is ideal for building async web services in Python.\n\nIt is production-ready, and gives you the following:\n\n* A lightweight, low-complexity HTTP web framework.\n* WebSocket support.\n* In-process background tasks.\n* Startup and shutdown events.\n* Test client built on `httpx`.\n* CORS, GZip, Static Files, Streaming responses.\n* Session and Cookie support.\n* 100% test coverage.\n* 100% type annotated codebase.\n* Few hard dependencies.\n* Compatible with `asyncio` and `trio` backends.\n* Great overall performance [against independent benchmarks][techempower].\n\n## Installation\n\n```shell\n$ pip install starlette\n```\n\nYou'll also want to install an ASGI server, such as [uvicorn](https://uvicorn.dev) or any of the [other ASGI server implementations](https://asgi.readthedocs.io/en/latest/implementations.html#servers).\n\n```shell\n$ pip install uvicorn\n```\n\n## Example\n\n```python title=\"main.py\"\nfrom starlette.applications import Starlette\nfrom starlette.responses import JSONResponse\nfrom starlette.routing import Route\n\n\nasync def homepage(request):\n    return JSONResponse({'hello': 'world'})\n\nroutes = [\n    Route(\"/\", endpoint=homepage)\n]\n\napp = Starlette(debug=True, routes=routes)\n```\n\nThen run the application using Uvicorn:\n\n```shell\n$ uvicorn main:app\n```\n\n## Dependencies\n\nStarlette only requires `anyio`, and the following are optional:\n\n* [`httpx2`][httpx2] - Required if you want to use the `TestClient`.\n* [`jinja2`][jinja2] - Required if you want to use `Jinja2Templates`.\n* [`python-multipart`][python-multipart] - Required if you want to support form parsing, with `request.form()`.\n* [`itsdangerous`][itsdangerous] - Required for `SessionMiddleware` support.\n* [`pyyaml`][pyyaml] - Required for `SchemaGenerator` support.\n\nYou can install all of these with `pip install starlette[full]`.\n\n## Framework or Toolkit\n\nStarlette is designed to be used either as a complete framework, or as\nan ASGI toolkit. You can use any of its components independently.\n\n```python\nfrom starlette.responses import PlainTextResponse\n\n\nasync def app(scope, receive, send):\n    assert scope['type'] == 'http'\n    response = PlainTextResponse('Hello, world!')\n    await response(scope, receive, send)\n```\n\nRun the `app` application in `example.py`:\n\n```shell\n$ uvicorn example:app\nINFO: Started server process [11509]\nINFO: Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)\n```\n\nRun uvicorn with `--reload` to enable auto-reloading on code changes.\n\n## Modularity\n\nThe modularity that Starlette is designed on promotes building reusable\ncomponents that can be shared between any ASGI framework. This should enable\nan ecosystem of shared middleware and mountable applications.\n\nThe clean API separation also means it's easier to understand each component\nin isolation.\n\n---\n\n<p align=\"center\"><i>Starlette is <a href=\"https://github.com/Kludex/starlette/blob/main/LICENSE.md\">BSD licensed</a> code.<br/>Designed & crafted with care.</i></br>&mdash; ⭐️ &mdash;</p>\n\n[asgi]: https://asgi.readthedocs.io/en/latest/\n[httpx2]: https://pypi.org/project/httpx2/\n[jinja2]: https://jinja.palletsprojects.com/\n[python-multipart]: https://multipart.fastapiexpert.com/\n[itsdangerous]: https://itsdangerous.palletsprojects.com/\n[sqlalchemy]: https://www.sqlalchemy.org\n[pyyaml]: https://pyyaml.org/wiki/PyYAMLDocumentation\n[techempower]: https://www.techempower.com/benchmarks/#hw=ph&test=fortune&l=zijzen-sf\n",
+      "description_content_type": "text/markdown",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": null,
+      "license": null,
+      "license_expression": "BSD-3-Clause",
+      "license_files": [
+        "LICENSE.md"
+      ],
+      "maintainer": null,
+      "maintainer_email": "Marcelo Trylesinski <marcelotryle@gmail.com>",
+      "name": "starlette",
+      "package_url": "https://pypi.org/project/starlette/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/starlette/",
+      "project_urls": {
+        "Changelog": "https://starlette.dev/release-notes/",
+        "Documentation": "https://starlette.dev/",
+        "Funding": "https://github.com/sponsors/Kludex",
+        "Homepage": "https://github.com/Kludex/starlette",
+        "Source": "https://github.com/Kludex/starlette"
+      },
+      "provides_extra": [
+        "full"
+      ],
+      "release_url": "https://pypi.org/project/starlette/1.3.1/",
+      "requires_dist": [
+        "anyio<5,>=3.6.2",
+        "typing-extensions>=4.10.0; python_version < \"3.13\"",
+        "httpx2>=2.0.0; extra == \"full\"",
+        "httpx<0.29.0,>=0.27.0; extra == \"full\"",
+        "itsdangerous; extra == \"full\"",
+        "jinja2; extra == \"full\"",
+        "python-multipart>=0.0.18; extra == \"full\"",
+        "pyyaml; extra == \"full\""
+      ],
+      "requires_python": ">=3.10",
+      "summary": "The little ASGI library that shines.",
+      "version": "1.3.1",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 42691247,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "Kludex"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "d83ccd9665eb05d1f9393c75e209cb353990731a6215a609a0f1c5c0a6286c9a"
+        },
+        "digests": {
+          "blake2b_256": "ecbb2799cc2ede3ed41131f8975621e7213dfc7ef4acbbaadfa440f32500c370",
+          "md5": "4473cb39f777a03ce940c042a9135377",
+          "sha256": "c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6"
+        },
+        "downloads": -1,
+        "filename": "starlette-1.3.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "4473cb39f777a03ce940c042a9135377",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.10",
+        "size": 73632,
+        "upload_time": "2026-06-12T09:23:10",
+        "upload_time_iso_8601": "2026-06-12T09:23:10.017643Z",
+        "url": "https://files.pythonhosted.org/packages/ec/bb/2799cc2ede3ed41131f8975621e7213dfc7ef4acbbaadfa440f32500c370/starlette-1.3.1-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "ebe37c1dc7381d9f8ab7d854328ebfa884e62cb3f3d8549ddfd37c7814f42afa",
+          "md5": "ea9ae91f44439b91d90bd0c75dbbd23f",
+          "sha256": "05d0213193f2fbaae60e2ecb593b4add4262ad4e46536b54abe36f11a71724e0"
+        },
+        "downloads": -1,
+        "filename": "starlette-1.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ea9ae91f44439b91d90bd0c75dbbd23f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.10",
+        "size": 2703240,
+        "upload_time": "2026-06-12T09:23:11",
+        "upload_time_iso_8601": "2026-06-12T09:23:11.602344Z",
+        "url": "https://files.pythonhosted.org/packages/eb/e3/7c1dc7381d9f8ab7d854328ebfa884e62cb3f3d8549ddfd37c7814f42afa/starlette-1.3.1.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "starlette",
+    "version": "1.3.1",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "05d0213193f2fbaae60e2ecb593b4add4262ad4e46536b54abe36f11a71724e0",
+      "c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6"
+    ],
+    "retrieved_at": "2026-11-28T12:09:59+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": "BSD-3-Clause",
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 3 - Alpha",
+        "Environment :: Web Environment",
+        "Framework :: AnyIO",
+        "Intended Audience :: Developers",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Topic :: Internet :: WWW/HTTP"
+      ],
+      "requires_python": ">=3.10",
+      "project_urls": {
+        "Changelog": "https://starlette.dev/release-notes/",
+        "Documentation": "https://starlette.dev/",
+        "Funding": "https://github.com/sponsors/Kludex",
+        "Homepage": "https://github.com/Kludex/starlette",
+        "Source": "https://github.com/Kludex/starlette"
+      },
+      "home_page": null,
+      "summary": "The little ASGI library that shines.",
+      "author": "Tom Christie <tom@tomchristie.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "starlette-1.3.1-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "starlette-1.3.1-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/ec/bb/2799cc2ede3ed41131f8975621e7213dfc7ef4acbbaadfa440f32500c370/starlette-1.3.1-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 73632,
+        "sha256_pypi": "c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6",
+        "sha256_verified": "c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "starlette-1.3.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/ec/bb/2799cc2ede3ed41131f8975621e7213dfc7ef4acbbaadfa440f32500c370/starlette-1.3.1-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 73632,
+      "sha256_pypi": "c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6",
+      "sha256_verified": "c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "starlette-1.3.1-py3-none-any.whl::starlette-1.3.1.dist-info/licenses/LICENSE.md": {
+        "saved_as": "starlette-1.3.1.dist-info_licenses_LICENSE.md",
+        "sha256": "dcb95677a02240243187e964f941847d19b17821cf99e5afae684fab328c19bf",
+        "bytes": 1518,
+        "from_artifact": "starlette-1.3.1-py3-none-any.whl",
+        "artifact_sha256": "c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

@@ -1,0 +1,202 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "Tin Tvrtkovic <tinchester@gmail.com>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Framework :: AsyncIO",
+        "License :: OSI Approved :: Apache Software License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy"
+      ],
+      "description": "# aiofiles: file support for asyncio\n\n[![PyPI](https://img.shields.io/pypi/v/aiofiles.svg)](https://pypi.python.org/pypi/aiofiles)\n[![Build](https://github.com/Tinche/aiofiles/workflows/CI/badge.svg)](https://github.com/Tinche/aiofiles/actions)\n[![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/Tinche/882f02e3df32136c847ba90d2688f06e/raw/covbadge.json)](https://github.com/Tinche/aiofiles/actions/workflows/main.yml)\n[![Supported Python versions](https://img.shields.io/pypi/pyversions/aiofiles.svg)](https://github.com/Tinche/aiofiles)\n[![Black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)\n\n**aiofiles** is an Apache2 licensed library, written in Python, for handling local\ndisk files in asyncio applications.\n\nOrdinary local file IO is blocking, and cannot easily and portably be made\nasynchronous. This means doing file IO may interfere with asyncio applications,\nwhich shouldn't block the executing thread. aiofiles helps with this by\nintroducing asynchronous versions of files that support delegating operations to\na separate thread pool.\n\n```python\nasync with aiofiles.open('filename', mode='r') as f:\n    contents = await f.read()\nprint(contents)\n'My file contents'\n```\n\nAsynchronous iteration is also supported.\n\n```python\nasync with aiofiles.open('filename') as f:\n    async for line in f:\n        ...\n```\n\nAsynchronous interface to tempfile module.\n\n```python\nasync with aiofiles.tempfile.TemporaryFile('wb') as f:\n    await f.write(b'Hello, World!')\n```\n\n## Features\n\n- a file API very similar to Python's standard, blocking API\n- support for buffered and unbuffered binary files, and buffered text files\n- support for `async`/`await` ([PEP 492](https://peps.python.org/pep-0492/)) constructs\n- async interface to tempfile module\n\n## Installation\n\nTo install aiofiles, simply:\n\n```bash\n$ pip install aiofiles\n```\n\n## Usage\n\nFiles are opened using the `aiofiles.open()` coroutine, which in addition to\nmirroring the builtin `open` accepts optional `loop` and `executor`\narguments. If `loop` is absent, the default loop will be used, as per the\nset asyncio policy. If `executor` is not specified, the default event loop\nexecutor will be used.\n\nIn case of success, an asynchronous file object is returned with an\nAPI identical to an ordinary file, except the following methods are coroutines\nand delegate to an executor:\n\n- `close`\n- `flush`\n- `isatty`\n- `read`\n- `readall`\n- `read1`\n- `readinto`\n- `readline`\n- `readlines`\n- `seek`\n- `seekable`\n- `tell`\n- `truncate`\n- `writable`\n- `write`\n- `writelines`\n\nIn case of failure, one of the usual exceptions will be raised.\n\n`aiofiles.stdin`, `aiofiles.stdout`, `aiofiles.stderr`,\n`aiofiles.stdin_bytes`, `aiofiles.stdout_bytes`, and\n`aiofiles.stderr_bytes` provide async access to `sys.stdin`,\n`sys.stdout`, `sys.stderr`, and their corresponding `.buffer` properties.\n\nThe `aiofiles.os` module contains executor-enabled coroutine versions of\nseveral useful `os` functions that deal with files:\n\n- `stat`\n- `statvfs`\n- `sendfile`\n- `rename`\n- `renames`\n- `replace`\n- `remove`\n- `unlink`\n- `mkdir`\n- `makedirs`\n- `rmdir`\n- `removedirs`\n- `link`\n- `symlink`\n- `readlink`\n- `listdir`\n- `scandir`\n- `access`\n- `getcwd`\n- `path.abspath`\n- `path.exists`\n- `path.isfile`\n- `path.isdir`\n- `path.islink`\n- `path.ismount`\n- `path.getsize`\n- `path.getatime`\n- `path.getctime`\n- `path.samefile`\n- `path.sameopenfile`\n\n### Tempfile\n\n**aiofiles.tempfile** implements the following interfaces:\n\n- TemporaryFile\n- NamedTemporaryFile\n- SpooledTemporaryFile\n- TemporaryDirectory\n\nResults return wrapped with a context manager allowing use with async with and async for.\n\n```python\nasync with aiofiles.tempfile.NamedTemporaryFile('wb+') as f:\n    await f.write(b'Line1\\n Line2')\n    await f.seek(0)\n    async for line in f:\n        print(line)\n\nasync with aiofiles.tempfile.TemporaryDirectory() as d:\n    filename = os.path.join(d, \"file.ext\")\n```\n\n### Writing tests for aiofiles\n\nReal file IO can be mocked by patching `aiofiles.threadpool.sync_open`\nas desired. The return type also needs to be registered with the\n`aiofiles.threadpool.wrap` dispatcher:\n\n```python\naiofiles.threadpool.wrap.register(mock.MagicMock)(\n    lambda *args, **kwargs: aiofiles.threadpool.AsyncBufferedIOBase(*args, **kwargs)\n)\n\nasync def test_stuff():\n    write_data = 'data'\n    read_file_chunks = [\n        b'file chunks 1',\n        b'file chunks 2',\n        b'file chunks 3',\n        b'',\n    ]\n    file_chunks_iter = iter(read_file_chunks)\n\n    mock_file_stream = mock.MagicMock(\n        read=lambda *args, **kwargs: next(file_chunks_iter)\n    )\n\n    with mock.patch('aiofiles.threadpool.sync_open', return_value=mock_file_stream) as mock_open:\n        async with aiofiles.open('filename', 'w') as f:\n            await f.write(write_data)\n            assert f.read() == b'file chunks 1'\n\n        mock_file_stream.write.assert_called_once_with(write_data)\n```\n\n### History\n\n#### 24.1.0 (2024-06-24)\n\n- Import `os.link` conditionally to fix importing on android.\n  [#175](https://github.com/Tinche/aiofiles/issues/175)\n- Remove spurious items from `aiofiles.os.__all__` when running on Windows.\n- Switch to more modern async idioms: Remove types.coroutine and make AiofilesContextManager an awaitable instead a coroutine.\n- Add `aiofiles.os.path.abspath` and `aiofiles.os.getcwd`.\n  [#174](https://github.com/Tinche/aiofiles/issues/181)\n- _aiofiles_ is now tested on Python 3.13 too.\n  [#184](https://github.com/Tinche/aiofiles/pull/184)\n- Dropped Python 3.7 support. If you require it, use version 23.2.1.\n\n#### 23.2.1 (2023-08-09)\n\n- Import `os.statvfs` conditionally to fix importing on non-UNIX systems.\n  [#171](https://github.com/Tinche/aiofiles/issues/171) [#172](https://github.com/Tinche/aiofiles/pull/172)\n- aiofiles is now also tested on Windows.\n\n#### 23.2.0 (2023-08-09)\n\n- aiofiles is now tested on Python 3.12 too.\n  [#166](https://github.com/Tinche/aiofiles/issues/166) [#168](https://github.com/Tinche/aiofiles/pull/168)\n- On Python 3.12, `aiofiles.tempfile.NamedTemporaryFile` now accepts a `delete_on_close` argument, just like the stdlib version.\n- On Python 3.12, `aiofiles.tempfile.NamedTemporaryFile` no longer exposes a `delete` attribute, just like the stdlib version.\n- Added `aiofiles.os.statvfs` and `aiofiles.os.path.ismount`.\n  [#162](https://github.com/Tinche/aiofiles/pull/162)\n- Use [PDM](https://pdm.fming.dev/latest/) instead of Poetry.\n  [#169](https://github.com/Tinche/aiofiles/pull/169)\n\n#### 23.1.0 (2023-02-09)\n\n- Added `aiofiles.os.access`.\n  [#146](https://github.com/Tinche/aiofiles/pull/146)\n- Removed `aiofiles.tempfile.temptypes.AsyncSpooledTemporaryFile.softspace`.\n  [#151](https://github.com/Tinche/aiofiles/pull/151)\n- Added `aiofiles.stdin`, `aiofiles.stdin_bytes`, and other stdio streams.\n  [#154](https://github.com/Tinche/aiofiles/pull/154)\n- Transition to `asyncio.get_running_loop` (vs `asyncio.get_event_loop`) internally.\n\n#### 22.1.0 (2022-09-04)\n\n- Added `aiofiles.os.path.islink`.\n  [#126](https://github.com/Tinche/aiofiles/pull/126)\n- Added `aiofiles.os.readlink`.\n  [#125](https://github.com/Tinche/aiofiles/pull/125)\n- Added `aiofiles.os.symlink`.\n  [#124](https://github.com/Tinche/aiofiles/pull/124)\n- Added `aiofiles.os.unlink`.\n  [#123](https://github.com/Tinche/aiofiles/pull/123)\n- Added `aiofiles.os.link`.\n  [#121](https://github.com/Tinche/aiofiles/pull/121)\n- Added `aiofiles.os.renames`.\n  [#120](https://github.com/Tinche/aiofiles/pull/120)\n- Added `aiofiles.os.{listdir, scandir}`.\n  [#143](https://github.com/Tinche/aiofiles/pull/143)\n- Switched to CalVer.\n- Dropped Python 3.6 support. If you require it, use version 0.8.0.\n- aiofiles is now tested on Python 3.11.\n\n#### 0.8.0 (2021-11-27)\n\n- aiofiles is now tested on Python 3.10.\n- Added `aiofiles.os.replace`.\n  [#107](https://github.com/Tinche/aiofiles/pull/107)\n- Added `aiofiles.os.{makedirs, removedirs}`.\n- Added `aiofiles.os.path.{exists, isfile, isdir, getsize, getatime, getctime, samefile, sameopenfile}`.\n  [#63](https://github.com/Tinche/aiofiles/pull/63)\n- Added `suffix`, `prefix`, `dir` args to `aiofiles.tempfile.TemporaryDirectory`.\n  [#116](https://github.com/Tinche/aiofiles/pull/116)\n\n#### 0.7.0 (2021-05-17)\n\n- Added the `aiofiles.tempfile` module for async temporary files.\n  [#56](https://github.com/Tinche/aiofiles/pull/56)\n- Switched to Poetry and GitHub actions.\n- Dropped 3.5 support.\n\n#### 0.6.0 (2020-10-27)\n\n- `aiofiles` is now tested on ppc64le.\n- Added `name` and `mode` properties to async file objects.\n  [#82](https://github.com/Tinche/aiofiles/pull/82)\n- Fixed a DeprecationWarning internally.\n  [#75](https://github.com/Tinche/aiofiles/pull/75)\n- Python 3.9 support and tests.\n\n#### 0.5.0 (2020-04-12)\n\n- Python 3.8 support. Code base modernization (using `async/await` instead of `asyncio.coroutine`/`yield from`).\n- Added `aiofiles.os.remove`, `aiofiles.os.rename`, `aiofiles.os.mkdir`, `aiofiles.os.rmdir`.\n  [#62](https://github.com/Tinche/aiofiles/pull/62)\n\n#### 0.4.0 (2018-08-11)\n\n- Python 3.7 support.\n- Removed Python 3.3/3.4 support. If you use these versions, stick to aiofiles 0.3.x.\n\n#### 0.3.2 (2017-09-23)\n\n- The LICENSE is now included in the sdist.\n  [#31](https://github.com/Tinche/aiofiles/pull/31)\n\n#### 0.3.1 (2017-03-10)\n\n- Introduced a changelog.\n- `aiofiles.os.sendfile` will now work if the standard `os` module contains a `sendfile` function.\n\n### Contributing\n\nContributions are very welcome. Tests can be run with `tox`, please ensure\nthe coverage at least stays the same before you submit a pull request.\n",
+      "description_content_type": "text/markdown",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": null,
+      "license": "Apache-2.0",
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "aiofiles",
+      "package_url": "https://pypi.org/project/aiofiles/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/aiofiles/",
+      "project_urls": {
+        "Bug Tracker": "https://github.com/Tinche/aiofiles/issues",
+        "Changelog": "https://github.com/Tinche/aiofiles#history",
+        "repository": "https://github.com/Tinche/aiofiles"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/aiofiles/24.1.0/",
+      "requires_dist": null,
+      "requires_python": ">=3.8",
+      "summary": "File support for asyncio.",
+      "version": "24.1.0",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 31714057,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "tinchester"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": "",
+        "core-metadata": {
+          "sha256": "0af509c76d57725808d4ba7906dff803225eb11620d31092c787b12595666920"
+        },
+        "digests": {
+          "blake2b_256": "a54530bb92d442636f570cb5651bc661f52b610e2eec3f891a5dc3a4c3667db0",
+          "md5": "a1995096fc1dddf1082381ae3ea83d00",
+          "sha256": "b4ec55f4195e3eb5d7abd1bf7e061763e864dd4954231fb8539a0ef8bb8260e5"
+        },
+        "downloads": -1,
+        "filename": "aiofiles-24.1.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "a1995096fc1dddf1082381ae3ea83d00",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.8",
+        "size": 15896,
+        "upload_time": "2024-06-24T11:02:01",
+        "upload_time_iso_8601": "2024-06-24T11:02:01.529179Z",
+        "url": "https://files.pythonhosted.org/packages/a5/45/30bb92d442636f570cb5651bc661f52b610e2eec3f891a5dc3a4c3667db0/aiofiles-24.1.0-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": "",
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "0b03a88171e277e8caa88a4c77808c20ebb04ba74cc4681bf1e9416c862de237",
+          "md5": "530273426ff7ee50283e52186e185c81",
+          "sha256": "22a075c9e5a3810f0c2e48f3008c94d68c65d763b9b03857924c99e57355166c"
+        },
+        "downloads": -1,
+        "filename": "aiofiles-24.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "530273426ff7ee50283e52186e185c81",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.8",
+        "size": 30247,
+        "upload_time": "2024-06-24T11:02:03",
+        "upload_time_iso_8601": "2024-06-24T11:02:03.584750Z",
+        "url": "https://files.pythonhosted.org/packages/0b/03/a88171e277e8caa88a4c77808c20ebb04ba74cc4681bf1e9416c862de237/aiofiles-24.1.0.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "aiofiles",
+    "version": "24.1.0",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "22a075c9e5a3810f0c2e48f3008c94d68c65d763b9b03857924c99e57355166c",
+      "b4ec55f4195e3eb5d7abd1bf7e061763e864dd4954231fb8539a0ef8bb8260e5"
+    ],
+    "retrieved_at": "2026-11-28T12:09:54+00:00",
+    "pypi_info": {
+      "license": "Apache-2.0",
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: Apache Software License"
+      ],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Framework :: AsyncIO",
+        "License :: OSI Approved :: Apache Software License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy"
+      ],
+      "requires_python": ">=3.8",
+      "project_urls": {
+        "Bug Tracker": "https://github.com/Tinche/aiofiles/issues",
+        "Changelog": "https://github.com/Tinche/aiofiles#history",
+        "repository": "https://github.com/Tinche/aiofiles"
+      },
+      "home_page": null,
+      "summary": "File support for asyncio.",
+      "author": "Tin Tvrtkovic <tinchester@gmail.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "aiofiles-24.1.0-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "aiofiles-24.1.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/a5/45/30bb92d442636f570cb5651bc661f52b610e2eec3f891a5dc3a4c3667db0/aiofiles-24.1.0-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 15896,
+        "sha256_pypi": "b4ec55f4195e3eb5d7abd1bf7e061763e864dd4954231fb8539a0ef8bb8260e5",
+        "sha256_verified": "b4ec55f4195e3eb5d7abd1bf7e061763e864dd4954231fb8539a0ef8bb8260e5",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "aiofiles-24.1.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/a5/45/30bb92d442636f570cb5651bc661f52b610e2eec3f891a5dc3a4c3667db0/aiofiles-24.1.0-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 15896,
+      "sha256_pypi": "b4ec55f4195e3eb5d7abd1bf7e061763e864dd4954231fb8539a0ef8bb8260e5",
+      "sha256_verified": "b4ec55f4195e3eb5d7abd1bf7e061763e864dd4954231fb8539a0ef8bb8260e5",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "aiofiles-24.1.0-py3-none-any.whl::aiofiles-24.1.0.dist-info/licenses/LICENSE": {
+        "saved_as": "aiofiles-24.1.0.dist-info_licenses_LICENSE",
+        "sha256": "cb5e8e7e5f4a3988e1063c142c60dc2df75605f4c46515e776e3aca6df976e14",
+        "bytes": 11325,
+        "from_artifact": "aiofiles-24.1.0-py3-none-any.whl",
+        "artifact_sha256": "b4ec55f4195e3eb5d7abd1bf7e061763e864dd4954231fb8539a0ef8bb8260e5"
+      },
+      "aiofiles-24.1.0-py3-none-any.whl::aiofiles-24.1.0.dist-info/licenses/NOTICE": {
+        "saved_as": "aiofiles-24.1.0.dist-info_licenses_NOTICE",
+        "sha256": "104c58d1d450bd6474c09d8b64bc0182733a60ac3d8c253e334cde8294520ff1",
+        "bytes": 55,
+        "from_artifact": "aiofiles-24.1.0-py3-none-any.whl",
+        "artifact_sha256": "b4ec55f4195e3eb5d7abd1bf7e061763e864dd4954231fb8539a0ef8bb8260e5"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

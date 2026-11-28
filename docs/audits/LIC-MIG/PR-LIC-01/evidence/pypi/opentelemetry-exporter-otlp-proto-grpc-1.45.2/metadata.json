@@ -1,0 +1,205 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "OpenTelemetry Authors <cncf-opentelemetry-contributors@lists.cncf.io>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Framework :: OpenTelemetry",
+        "Framework :: OpenTelemetry :: Exporters",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14"
+      ],
+      "description": "OpenTelemetry Collector Protobuf over gRPC Exporter\n===================================================\n\n|pypi|\n\n.. |pypi| image:: https://badge.fury.io/py/opentelemetry-exporter-otlp-proto-grpc.svg\n   :target: https://pypi.org/project/opentelemetry-exporter-otlp-proto-grpc/\n\nThis library allows to export data to the OpenTelemetry Collector using the OpenTelemetry Protocol using Protobuf over gRPC.\n\nInstallation\n------------\n\n::\n\n     pip install opentelemetry-exporter-otlp-proto-grpc\n\n\nReferences\n----------\n\n* `OpenTelemetry Collector Exporter <https://opentelemetry-python.readthedocs.io/en/latest/exporter/otlp/otlp.html>`_\n* `OpenTelemetry Collector <https://github.com/open-telemetry/opentelemetry-collector/>`_\n* `OpenTelemetry <https://opentelemetry.io/>`_\n* `OpenTelemetry Protocol Specification <https://github.com/open-telemetry/oteps/blob/main/text/0035-opentelemetry-protocol.md>`_\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": null,
+      "license": null,
+      "license_expression": "Apache-2.0",
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "opentelemetry-exporter-otlp-proto-grpc",
+      "package_url": "https://pypi.org/project/opentelemetry-exporter-otlp-proto-grpc/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/opentelemetry-exporter-otlp-proto-grpc/",
+      "project_urls": {
+        "Homepage": "https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp-proto-grpc",
+        "Repository": "https://github.com/open-telemetry/opentelemetry-python"
+      },
+      "provides_extra": [
+        "gcp-auth"
+      ],
+      "release_url": "https://pypi.org/project/opentelemetry-exporter-otlp-proto-grpc/1.45.2/",
+      "requires_dist": [
+        "googleapis-common-protos~=1.57",
+        "grpcio<2.0.0,>=1.63.2; python_version < \"3.13\"",
+        "grpcio<2.0.0,>=1.66.2; python_version == \"3.13\"",
+        "grpcio<2.0.0,>=1.75.1; python_version >= \"3.14\"",
+        "opentelemetry-api~=1.15",
+        "opentelemetry-exporter-otlp-common==0.66b2",
+        "opentelemetry-exporter-otlp-proto-common==1.45.2",
+        "opentelemetry-proto==1.45.2",
+        "opentelemetry-sdk~=1.45.2",
+        "typing-extensions>=4.6.0",
+        "opentelemetry-exporter-credential-provider-gcp>=0.59b0; extra == \"gcp-auth\""
+      ],
+      "requires_python": ">=3.10",
+      "summary": "OpenTelemetry Collector Protobuf over gRPC Exporter",
+      "version": "1.45.2",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 42928764,
+    "ownership": {
+      "organization": "opentelemetry",
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "LeightonC"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "bfd84b76aef3c91b318249ccbe61774132be8a758a34f6ae3bb01d8018c09eca"
+        },
+        "digests": {
+          "blake2b_256": "e84814301cac3d106e795eef7e89e191489f086b4e5ad26e47c9635a198e95f4",
+          "md5": "755b9f351666e1593e2edeb9e44cac50",
+          "sha256": "8a48d60835e90536846bd82de487bfbd81bccb5a1b3d0fb82edeea17db07395c"
+        },
+        "downloads": -1,
+        "filename": "opentelemetry_exporter_otlp_proto_grpc-1.45.2-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "755b9f351666e1593e2edeb9e44cac50",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.10",
+        "size": 19490,
+        "upload_time": "2026-10-29T17:29:18",
+        "upload_time_iso_8601": "2026-10-29T17:29:18.934201Z",
+        "url": "https://files.pythonhosted.org/packages/e8/48/14301cac3d106e795eef7e89e191489f086b4e5ad26e47c9635a198e95f4/opentelemetry_exporter_otlp_proto_grpc-1.45.2-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "462c996861b327ddde01d3c0971582ebcd3f01a376acc720f7b0cb5274df4b70",
+          "md5": "784d85c9ec2d954c4fd5b572d04e87e9",
+          "sha256": "9e4a6490ca7711479fec7c519425bc09808abbc9a2a1775528edecf200d19a5a"
+        },
+        "downloads": -1,
+        "filename": "opentelemetry_exporter_otlp_proto_grpc-1.45.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "784d85c9ec2d954c4fd5b572d04e87e9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.10",
+        "size": 25995,
+        "upload_time": "2026-10-29T17:29:45",
+        "upload_time_iso_8601": "2026-10-29T17:29:45.200828Z",
+        "url": "https://files.pythonhosted.org/packages/46/2c/996861b327ddde01d3c0971582ebcd3f01a376acc720f7b0cb5274df4b70/opentelemetry_exporter_otlp_proto_grpc-1.45.2.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "opentelemetry-exporter-otlp-proto-grpc",
+    "version": "1.45.2",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "8a48d60835e90536846bd82de487bfbd81bccb5a1b3d0fb82edeea17db07395c",
+      "9e4a6490ca7711479fec7c519425bc09808abbc9a2a1775528edecf200d19a5a"
+    ],
+    "retrieved_at": "2026-11-28T12:09:57+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": "Apache-2.0",
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Framework :: OpenTelemetry",
+        "Framework :: OpenTelemetry :: Exporters",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14"
+      ],
+      "requires_python": ">=3.10",
+      "project_urls": {
+        "Homepage": "https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp-proto-grpc",
+        "Repository": "https://github.com/open-telemetry/opentelemetry-python"
+      },
+      "home_page": null,
+      "summary": "OpenTelemetry Collector Protobuf over gRPC Exporter",
+      "author": "OpenTelemetry Authors <cncf-opentelemetry-contributors@lists.cncf.io>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "opentelemetry_exporter_otlp_proto_grpc-1.45.2-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "opentelemetry_exporter_otlp_proto_grpc-1.45.2-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/e8/48/14301cac3d106e795eef7e89e191489f086b4e5ad26e47c9635a198e95f4/opentelemetry_exporter_otlp_proto_grpc-1.45.2-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 19490,
+        "sha256_pypi": "8a48d60835e90536846bd82de487bfbd81bccb5a1b3d0fb82edeea17db07395c",
+        "sha256_verified": "8a48d60835e90536846bd82de487bfbd81bccb5a1b3d0fb82edeea17db07395c",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "opentelemetry_exporter_otlp_proto_grpc-1.45.2-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/e8/48/14301cac3d106e795eef7e89e191489f086b4e5ad26e47c9635a198e95f4/opentelemetry_exporter_otlp_proto_grpc-1.45.2-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 19490,
+      "sha256_pypi": "8a48d60835e90536846bd82de487bfbd81bccb5a1b3d0fb82edeea17db07395c",
+      "sha256_verified": "8a48d60835e90536846bd82de487bfbd81bccb5a1b3d0fb82edeea17db07395c",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "opentelemetry_exporter_otlp_proto_grpc-1.45.2-py3-none-any.whl::opentelemetry_exporter_otlp_proto_grpc-1.45.2.dist-info/licenses/LICENSE": {
+        "saved_as": "opentelemetry_exporter_otlp_proto_grpc-1.45.2.dist-info_licenses_LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "bytes": 11357,
+        "from_artifact": "opentelemetry_exporter_otlp_proto_grpc-1.45.2-py3-none-any.whl",
+        "artifact_sha256": "8a48d60835e90536846bd82de487bfbd81bccb5a1b3d0fb82edeea17db07395c"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

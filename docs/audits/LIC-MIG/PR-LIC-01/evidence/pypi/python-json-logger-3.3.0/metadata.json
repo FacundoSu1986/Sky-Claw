@@ -1,0 +1,223 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "Zakaria Zajac <zak@madzak.com>, Nicholas Hairs <info+python-json-logger@nicholashairs.com>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 6 - Mature",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: BSD License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Topic :: System :: Logging",
+        "Typing :: Typed"
+      ],
+      "description": "[![PyPi](https://img.shields.io/pypi/v/python-json-logger.svg)](https://pypi.python.org/pypi/python-json-logger/)\n[![PyPI - Status](https://img.shields.io/pypi/status/python-json-logger)](https://pypi.python.org/pypi/python-json-logger/)\n[![PyPI - Downloads](https://img.shields.io/pypi/dm/python-json-logger)](https://pypi.python.org/pypi/python-json-logger/)\n[![Python Versions](https://img.shields.io/pypi/pyversions/python-json-logger.svg)](https://github.com/nhairs/python-json-logger)\n[![License](https://img.shields.io/github/license/nhairs/python-json-logger.svg)](https://github.com/nhairs/python-json-logger)\n![Build Status](https://github.com/nhairs/python-json-logger/actions/workflows/test-suite.yml/badge.svg)\n#\n# Python JSON Logger\n\nPython JSON Logger enables you produce JSON logs when using Python's `logging` package.\n\nJSON logs are machine readable allowing for much easier parsing and ingestion into log aggregation tools.\n\n\n## Documentation\n\n- [Documentation](https://nhairs.github.io/python-json-logger/latest/)\n- [Quickstart Guide](https://nhairs.github.io/python-json-logger/latest/quickstart/)\n- [Change Log](https://nhairs.github.io/python-json-logger/latest/changelog/)\n- [Contributing](https://nhairs.github.io/python-json-logger/latest/contributing/)\n\n## License\n\nThis project is licensed under the BSD 2 Clause License - see [`LICENSE`](https://github.com/nhairs/python-json-logger/blob/main/LICENSE)\n\n## Authors and Maintainers\n\nThis project was originally authored by [Zakaria Zajac](https://github.com/madzak) and our wonderful [contributors](https://github.com/nhairs/python-json-logger/graphs/contributors)\n\nIt is currently maintained by:\n\n- [Nicholas Hairs](https://github.com/nhairs) - [nicholashairs.com](https://www.nicholashairs.com)\n",
+      "description_content_type": "text/markdown",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": null,
+      "license": "BSD-2-Clause License",
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": null,
+      "maintainer_email": "Nicholas Hairs <info+python-json-logger@nicholashairs.com>",
+      "name": "python-json-logger",
+      "package_url": "https://pypi.org/project/python-json-logger/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/python-json-logger/",
+      "project_urls": {
+        "GitHub": "https://github.com/nhairs/python-json-logger",
+        "Homepage": "https://nhairs.github.io/python-json-logger"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/python-json-logger/3.3.0/",
+      "requires_dist": [
+        "typing_extensions; python_version < \"3.10\"",
+        "orjson; implementation_name != \"pypy\" and extra == \"dev\"",
+        "msgspec; implementation_name != \"pypy\" and extra == \"dev\"",
+        "validate-pyproject[all]; extra == \"dev\"",
+        "black; extra == \"dev\"",
+        "pylint; extra == \"dev\"",
+        "mypy; extra == \"dev\"",
+        "pytest; extra == \"dev\"",
+        "freezegun; extra == \"dev\"",
+        "backports.zoneinfo; python_version < \"3.9\" and extra == \"dev\"",
+        "tzdata; extra == \"dev\"",
+        "build; extra == \"dev\"",
+        "mkdocs; extra == \"dev\"",
+        "mkdocs-material>=8.5; extra == \"dev\"",
+        "mkdocs-awesome-pages-plugin; extra == \"dev\"",
+        "mdx_truly_sane_lists; extra == \"dev\"",
+        "mkdocstrings[python]; extra == \"dev\"",
+        "mkdocs-gen-files; extra == \"dev\"",
+        "mkdocs-literate-nav; extra == \"dev\"",
+        "mike; extra == \"dev\""
+      ],
+      "requires_python": ">=3.8",
+      "summary": "JSON Log Formatter for the Python Logging Package",
+      "version": "3.3.0",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 44183607,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "nhairs"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": "",
+        "core-metadata": {
+          "sha256": "5df76f65a97f8b67245c787e7cdc34a5c16d55b17676abed663c0e90573f9b6d"
+        },
+        "digests": {
+          "blake2b_256": "08200f2523b9e50a8052bc6a8b732dfc8568abbdc42010aef03a2d750bdab3b2",
+          "md5": "5c5412352a62fd3a71068f09f53fd5e0",
+          "sha256": "dd980fae8cffb24c13caf6e158d3d61c0d6d22342f932cb6e9deedab3d35eec7"
+        },
+        "downloads": -1,
+        "filename": "python_json_logger-3.3.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "5c5412352a62fd3a71068f09f53fd5e0",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.8",
+        "size": 15163,
+        "upload_time": "2025-03-07T07:08:25",
+        "upload_time_iso_8601": "2025-03-07T07:08:25.627942Z",
+        "url": "https://files.pythonhosted.org/packages/08/20/0f2523b9e50a8052bc6a8b732dfc8568abbdc42010aef03a2d750bdab3b2/python_json_logger-3.3.0-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": "",
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "9eded3144a0bceede957f961e975f3752760fbe390d57fbe194baf709d8f1f7b",
+          "md5": "2375e520e621ad8c51218100bc5ac23c",
+          "sha256": "12b7e74b17775e7d565129296105bbe3910842d9d0eb083fc83a6a617aa8df84"
+        },
+        "downloads": -1,
+        "filename": "python_json_logger-3.3.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2375e520e621ad8c51218100bc5ac23c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.8",
+        "size": 16642,
+        "upload_time": "2025-03-07T07:08:27",
+        "upload_time_iso_8601": "2025-03-07T07:08:27.301345Z",
+        "url": "https://files.pythonhosted.org/packages/9e/de/d3144a0bceede957f961e975f3752760fbe390d57fbe194baf709d8f1f7b/python_json_logger-3.3.0.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "python-json-logger",
+    "version": "3.3.0",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "12b7e74b17775e7d565129296105bbe3910842d9d0eb083fc83a6a617aa8df84",
+      "dd980fae8cffb24c13caf6e158d3d61c0d6d22342f932cb6e9deedab3d35eec7"
+    ],
+    "retrieved_at": "2026-11-28T12:09:58+00:00",
+    "pypi_info": {
+      "license": "BSD-2-Clause License",
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: BSD License"
+      ],
+      "classifiers_all": [
+        "Development Status :: 6 - Mature",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: BSD License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Topic :: System :: Logging",
+        "Typing :: Typed"
+      ],
+      "requires_python": ">=3.8",
+      "project_urls": {
+        "GitHub": "https://github.com/nhairs/python-json-logger",
+        "Homepage": "https://nhairs.github.io/python-json-logger"
+      },
+      "home_page": null,
+      "summary": "JSON Log Formatter for the Python Logging Package",
+      "author": "Zakaria Zajac <zak@madzak.com>, Nicholas Hairs <info+python-json-logger@nicholashairs.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "python_json_logger-3.3.0-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "python_json_logger-3.3.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/08/20/0f2523b9e50a8052bc6a8b732dfc8568abbdc42010aef03a2d750bdab3b2/python_json_logger-3.3.0-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 15163,
+        "sha256_pypi": "dd980fae8cffb24c13caf6e158d3d61c0d6d22342f932cb6e9deedab3d35eec7",
+        "sha256_verified": "dd980fae8cffb24c13caf6e158d3d61c0d6d22342f932cb6e9deedab3d35eec7",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "python_json_logger-3.3.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/08/20/0f2523b9e50a8052bc6a8b732dfc8568abbdc42010aef03a2d750bdab3b2/python_json_logger-3.3.0-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 15163,
+      "sha256_pypi": "dd980fae8cffb24c13caf6e158d3d61c0d6d22342f932cb6e9deedab3d35eec7",
+      "sha256_verified": "dd980fae8cffb24c13caf6e158d3d61c0d6d22342f932cb6e9deedab3d35eec7",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "python_json_logger-3.3.0-py3-none-any.whl::python_json_logger-3.3.0.dist-info/LICENSE": {
+        "saved_as": "python_json_logger-3.3.0.dist-info_LICENSE",
+        "sha256": "18ea95179e3a5e0e24eb6ce16c40fbfbe23133c2502933a2f75f8a3e1a055b54",
+        "bytes": 1329,
+        "from_artifact": "python_json_logger-3.3.0-py3-none-any.whl",
+        "artifact_sha256": "dd980fae8cffb24c13caf6e158d3d61c0d6d22342f932cb6e9deedab3d35eec7"
+      },
+      "python_json_logger-3.3.0-py3-none-any.whl::python_json_logger-3.3.0.dist-info/NOTICE": {
+        "saved_as": "python_json_logger-3.3.0.dist-info_NOTICE",
+        "sha256": "b9142715c1990b0b88051d8020756f84a8bdc352a4888fef032ada95fc42b24e",
+        "bytes": 209,
+        "from_artifact": "python_json_logger-3.3.0-py3-none-any.whl",
+        "artifact_sha256": "dd980fae8cffb24c13caf6e158d3d61c0d6d22342f932cb6e9deedab3d35eec7"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

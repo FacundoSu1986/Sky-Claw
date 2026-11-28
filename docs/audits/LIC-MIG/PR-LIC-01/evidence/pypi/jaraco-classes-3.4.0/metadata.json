@@ -1,0 +1,191 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": "Jason R. Coombs",
+      "author_email": "jaraco@jaraco.com",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only"
+      ],
+      "description": ".. image:: https://img.shields.io/pypi/v/jaraco.classes.svg\n   :target: https://pypi.org/project/jaraco.classes\n\n.. image:: https://img.shields.io/pypi/pyversions/jaraco.classes.svg\n\n.. image:: https://github.com/jaraco/jaraco.classes/actions/workflows/main.yml/badge.svg\n   :target: https://github.com/jaraco/jaraco.classes/actions?query=workflow%3A%22tests%22\n   :alt: tests\n\n.. image:: https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/charliermarsh/ruff/main/assets/badge/v2.json\n    :target: https://github.com/astral-sh/ruff\n    :alt: Ruff\n\n.. image:: https://readthedocs.org/projects/jaracoclasses/badge/?version=latest\n   :target: https://jaracoclasses.readthedocs.io/en/latest/?badge=latest\n\n.. image:: https://img.shields.io/badge/skeleton-2024-informational\n   :target: https://blog.jaraco.com/skeleton\n\n.. image:: https://tidelift.com/badges/package/pypi/jaraco.classes\n   :target: https://tidelift.com/subscription/pkg/pypi-jaraco.classes?utm_source=pypi-jaraco.classes&utm_medium=readme\n\nFor Enterprise\n==============\n\nAvailable as part of the Tidelift Subscription.\n\nThis project and the maintainers of thousands of other packages are working with Tidelift to deliver one enterprise subscription that covers all of the open source you use.\n\n`Learn more <https://tidelift.com/subscription/pkg/pypi-jaraco.classes?utm_source=pypi-jaraco.classes&utm_medium=referral&utm_campaign=github>`_.\n",
+      "description_content_type": null,
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": "https://github.com/jaraco/jaraco.classes",
+      "keywords": null,
+      "license": null,
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "jaraco.classes",
+      "package_url": "https://pypi.org/project/jaraco.classes/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/jaraco.classes/",
+      "project_urls": {
+        "Homepage": "https://github.com/jaraco/jaraco.classes"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/jaraco.classes/3.4.0/",
+      "requires_dist": [
+        "more-itertools",
+        "sphinx>=3.5; extra == \"docs\"",
+        "jaraco.packaging>=9.3; extra == \"docs\"",
+        "rst.linker>=1.9; extra == \"docs\"",
+        "furo; extra == \"docs\"",
+        "sphinx-lint; extra == \"docs\"",
+        "jaraco.tidelift>=1.4; extra == \"docs\"",
+        "pytest>=6; extra == \"testing\"",
+        "pytest-checkdocs>=2.4; extra == \"testing\"",
+        "pytest-cov; extra == \"testing\"",
+        "pytest-mypy; extra == \"testing\"",
+        "pytest-enabler>=2.2; extra == \"testing\"",
+        "pytest-ruff>=0.2.1; extra == \"testing\""
+      ],
+      "requires_python": ">=3.8",
+      "summary": "Utility functions for Python class constructs",
+      "version": "3.4.0",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 22557579,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "jaraco"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": "",
+        "core-metadata": {
+          "sha256": "2e6b102232edd45ae1bb8a6b4091fd40cf3201a6bb6fd4bc97c5e8cd765a44b8"
+        },
+        "digests": {
+          "blake2b_256": "7f66b15ce62552d84bbfcec9a4873ab79d993a1dd4edb922cbfccae192bd5b5f",
+          "md5": "7aab256ce5264ccb8c7447eb2bddd7d2",
+          "sha256": "f662826b6bed8cace05e7ff873ce0f9283b5c924470fe664fff1c2f00f581790"
+        },
+        "downloads": -1,
+        "filename": "jaraco.classes-3.4.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "7aab256ce5264ccb8c7447eb2bddd7d2",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.8",
+        "size": 6777,
+        "upload_time": "2024-03-31T07:27:34",
+        "upload_time_iso_8601": "2024-03-31T07:27:34.792832Z",
+        "url": "https://files.pythonhosted.org/packages/7f/66/b15ce62552d84bbfcec9a4873ab79d993a1dd4edb922cbfccae192bd5b5f/jaraco.classes-3.4.0-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": "",
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "06c0ed4a27bc5571b99e3cff68f8a9fa5b56ff7df1c2251cc715a652ddd26402",
+          "md5": "994fb3f2ce9bb538ca6e8abf6ebbdf9c",
+          "sha256": "47a024b51d0239c0dd8c8540c6c7f484be3b8fcf0b2d85c13825780d3b3f3acd"
+        },
+        "downloads": -1,
+        "filename": "jaraco.classes-3.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "994fb3f2ce9bb538ca6e8abf6ebbdf9c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.8",
+        "size": 11780,
+        "upload_time": "2024-03-31T07:27:36",
+        "upload_time_iso_8601": "2024-03-31T07:27:36.643708Z",
+        "url": "https://files.pythonhosted.org/packages/06/c0/ed4a27bc5571b99e3cff68f8a9fa5b56ff7df1c2251cc715a652ddd26402/jaraco.classes-3.4.0.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "jaraco-classes",
+    "version": "3.4.0",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "47a024b51d0239c0dd8c8540c6c7f484be3b8fcf0b2d85c13825780d3b3f3acd",
+      "f662826b6bed8cace05e7ff873ce0f9283b5c924470fe664fff1c2f00f581790"
+    ],
+    "retrieved_at": "2026-11-28T12:09:56+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: MIT License"
+      ],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only"
+      ],
+      "requires_python": ">=3.8",
+      "project_urls": {
+        "Homepage": "https://github.com/jaraco/jaraco.classes"
+      },
+      "home_page": "https://github.com/jaraco/jaraco.classes",
+      "summary": "Utility functions for Python class constructs",
+      "author": "jaraco@jaraco.com"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "jaraco.classes-3.4.0-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "jaraco.classes-3.4.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/7f/66/b15ce62552d84bbfcec9a4873ab79d993a1dd4edb922cbfccae192bd5b5f/jaraco.classes-3.4.0-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 6777,
+        "sha256_pypi": "f662826b6bed8cace05e7ff873ce0f9283b5c924470fe664fff1c2f00f581790",
+        "sha256_verified": "f662826b6bed8cace05e7ff873ce0f9283b5c924470fe664fff1c2f00f581790",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "jaraco.classes-3.4.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/7f/66/b15ce62552d84bbfcec9a4873ab79d993a1dd4edb922cbfccae192bd5b5f/jaraco.classes-3.4.0-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 6777,
+      "sha256_pypi": "f662826b6bed8cace05e7ff873ce0f9283b5c924470fe664fff1c2f00f581790",
+      "sha256_verified": "f662826b6bed8cace05e7ff873ce0f9283b5c924470fe664fff1c2f00f581790",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "jaraco.classes-3.4.0-py3-none-any.whl::jaraco.classes-3.4.0.dist-info/LICENSE": {
+        "saved_as": "jaraco.classes-3.4.0.dist-info_LICENSE",
+        "sha256": "86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741",
+        "bytes": 1023,
+        "from_artifact": "jaraco.classes-3.4.0-py3-none-any.whl",
+        "artifact_sha256": "f662826b6bed8cace05e7ff873ce0f9283b5c924470fe664fff1c2f00f581790"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

@@ -1,0 +1,222 @@
+{
+  "sky_claw/app/gui/assets/parchment.png": {
+    "sha256": "b97be60bd023d46750b7fcaa2a89bce4dabbb2b8b7ef8812e1bc0b3fafabfb87",
+    "manifest": {
+      "active_manifest": "urn:c2pa:ce8cbc69-7a7b-3047-efb7-467839ca7eba",
+      "manifests": {
+        "urn:c2pa:ce8cbc69-7a7b-3047-efb7-467839ca7eba": {
+          "assertions": [
+            {
+              "created": true,
+              "data": {
+                "actions": [
+                  {
+                    "action": "c2pa.created",
+                    "description": "Created by Google Generative AI.",
+                    "digitalSourceType": "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"
+                  },
+                  {
+                    "action": "c2pa.edited",
+                    "description": "Applied imperceptible SynthID watermark.",
+                    "digitalSourceType": "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"
+                  }
+                ]
+              },
+              "label": "c2pa.actions.v2"
+            }
+          ],
+          "claim_generator_info": [
+            {
+              "name": "Google C2PA Core Generator Library",
+              "version": "889977083:891957646"
+            }
+          ],
+          "claim_version": 2,
+          "instance_id": "a1bb9874-16f0-209c-35ba-46d0ed96f9f4",
+          "label": "urn:c2pa:ce8cbc69-7a7b-3047-efb7-467839ca7eba",
+          "signature_info": {
+            "alg": "Es256",
+            "cert_serial_number": "3538769668273185232431161852199326737017347790",
+            "common_name": "Google Media Processing Services",
+            "issuer": "Google LLC",
+            "time": "2026-04-01T20:12:23+00:00"
+          }
+        }
+      },
+      "validation_results": {
+        "activeManifest": {
+          "failure": [
+            {
+              "code": "signingCredential.untrusted",
+              "explanation": "signing certificate untrusted",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ce8cbc69-7a7b-3047-efb7-467839ca7eba/c2pa.signature"
+            }
+          ],
+          "informational": [
+            {
+              "code": "signingCredential.ocsp.skipped",
+              "explanation": "OCSP fetching skipped",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ce8cbc69-7a7b-3047-efb7-467839ca7eba/c2pa.signature"
+            },
+            {
+              "code": "timeStamp.untrusted",
+              "explanation": "timestamp cert untrusted: Google Core Time Stamping Authority T11",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ce8cbc69-7a7b-3047-efb7-467839ca7eba/c2pa.signature"
+            }
+          ],
+          "success": [
+            {
+              "code": "timeStamp.validated",
+              "explanation": "timestamp message digest matched: Google Core Time Stamping Authority T11",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ce8cbc69-7a7b-3047-efb7-467839ca7eba/c2pa.signature"
+            },
+            {
+              "code": "claimSignature.insideValidity",
+              "explanation": "claim signature valid",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ce8cbc69-7a7b-3047-efb7-467839ca7eba/c2pa.signature"
+            },
+            {
+              "code": "claimSignature.validated",
+              "explanation": "claim signature valid",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ce8cbc69-7a7b-3047-efb7-467839ca7eba/c2pa.signature"
+            },
+            {
+              "code": "assertion.hashedURI.match",
+              "explanation": "hashed uri matched: self#jumbf=c2pa.assertions/c2pa.actions.v2",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ce8cbc69-7a7b-3047-efb7-467839ca7eba/c2pa.assertions/c2pa.actions.v2"
+            },
+            {
+              "code": "assertion.hashedURI.match",
+              "explanation": "hashed uri matched: self#jumbf=c2pa.assertions/c2pa.hash.data",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ce8cbc69-7a7b-3047-efb7-467839ca7eba/c2pa.assertions/c2pa.hash.data"
+            },
+            {
+              "code": "assertion.dataHash.match",
+              "explanation": "data hash valid",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ce8cbc69-7a7b-3047-efb7-467839ca7eba/c2pa.assertions/c2pa.hash.data"
+            }
+          ]
+        },
+        "specVersion": "2.4.0"
+      },
+      "validation_state": "Valid",
+      "validation_status": [
+        {
+          "code": "signingCredential.untrusted",
+          "explanation": "signing certificate untrusted",
+          "url": "self#jumbf=/c2pa/urn:c2pa:ce8cbc69-7a7b-3047-efb7-467839ca7eba/c2pa.signature"
+        }
+      ]
+    }
+  },
+  "sky_claw/app/gui/assets/stone_bg.png": {
+    "sha256": "ece12abc26e8786664eaba37e664e3a68c33bb0a59667acd6be3357dec287adf",
+    "manifest": {
+      "active_manifest": "urn:c2pa:ee1fbdde-57ac-3220-2922-46703f668e2b",
+      "manifests": {
+        "urn:c2pa:ee1fbdde-57ac-3220-2922-46703f668e2b": {
+          "assertions": [
+            {
+              "created": true,
+              "data": {
+                "actions": [
+                  {
+                    "action": "c2pa.created",
+                    "description": "Created by Google Generative AI.",
+                    "digitalSourceType": "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"
+                  },
+                  {
+                    "action": "c2pa.edited",
+                    "description": "Applied imperceptible SynthID watermark.",
+                    "digitalSourceType": "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"
+                  }
+                ]
+              },
+              "label": "c2pa.actions.v2"
+            }
+          ],
+          "claim_generator_info": [
+            {
+              "name": "Google C2PA Core Generator Library",
+              "version": "889977083:891957646"
+            }
+          ],
+          "claim_version": 2,
+          "instance_id": "ee759b5f-94e8-f1fa-2b34-4f3f22734a71",
+          "label": "urn:c2pa:ee1fbdde-57ac-3220-2922-46703f668e2b",
+          "signature_info": {
+            "alg": "Es256",
+            "cert_serial_number": "3538769668273185232431161852199326737017347790",
+            "common_name": "Google Media Processing Services",
+            "issuer": "Google LLC",
+            "time": "2026-04-01T20:12:49+00:00"
+          }
+        }
+      },
+      "validation_results": {
+        "activeManifest": {
+          "failure": [
+            {
+              "code": "signingCredential.untrusted",
+              "explanation": "signing certificate untrusted",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ee1fbdde-57ac-3220-2922-46703f668e2b/c2pa.signature"
+            }
+          ],
+          "informational": [
+            {
+              "code": "signingCredential.ocsp.skipped",
+              "explanation": "OCSP fetching skipped",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ee1fbdde-57ac-3220-2922-46703f668e2b/c2pa.signature"
+            },
+            {
+              "code": "timeStamp.untrusted",
+              "explanation": "timestamp cert untrusted: Google Core Time Stamping Authority T12",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ee1fbdde-57ac-3220-2922-46703f668e2b/c2pa.signature"
+            }
+          ],
+          "success": [
+            {
+              "code": "timeStamp.validated",
+              "explanation": "timestamp message digest matched: Google Core Time Stamping Authority T12",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ee1fbdde-57ac-3220-2922-46703f668e2b/c2pa.signature"
+            },
+            {
+              "code": "claimSignature.insideValidity",
+              "explanation": "claim signature valid",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ee1fbdde-57ac-3220-2922-46703f668e2b/c2pa.signature"
+            },
+            {
+              "code": "claimSignature.validated",
+              "explanation": "claim signature valid",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ee1fbdde-57ac-3220-2922-46703f668e2b/c2pa.signature"
+            },
+            {
+              "code": "assertion.hashedURI.match",
+              "explanation": "hashed uri matched: self#jumbf=c2pa.assertions/c2pa.actions.v2",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ee1fbdde-57ac-3220-2922-46703f668e2b/c2pa.assertions/c2pa.actions.v2"
+            },
+            {
+              "code": "assertion.hashedURI.match",
+              "explanation": "hashed uri matched: self#jumbf=c2pa.assertions/c2pa.hash.data",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ee1fbdde-57ac-3220-2922-46703f668e2b/c2pa.assertions/c2pa.hash.data"
+            },
+            {
+              "code": "assertion.dataHash.match",
+              "explanation": "data hash valid",
+              "url": "self#jumbf=/c2pa/urn:c2pa:ee1fbdde-57ac-3220-2922-46703f668e2b/c2pa.assertions/c2pa.hash.data"
+            }
+          ]
+        },
+        "specVersion": "2.4.0"
+      },
+      "validation_state": "Valid",
+      "validation_status": [
+        {
+          "code": "signingCredential.untrusted",
+          "explanation": "signing certificate untrusted",
+          "url": "self#jumbf=/c2pa/urn:c2pa:ee1fbdde-57ac-3220-2922-46703f668e2b/c2pa.signature"
+        }
+      ]
+    }
+  }
+}

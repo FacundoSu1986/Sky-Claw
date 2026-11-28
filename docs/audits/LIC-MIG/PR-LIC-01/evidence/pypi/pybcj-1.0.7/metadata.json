@@ -1,0 +1,1554 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "Hiroshi Miura <miurahr@linux.com>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Topic :: Software Development :: Libraries :: Python Modules"
+      ],
+      "description": "=======================================\nBCJ(Branch-Call-Jump) filter for python\n=======================================\n\n.. image:: https://badge.fury.io/py/pybcj.svg\n  :target: https://badge.fury.io/py/pybcj\n\n.. image:: https://img.shields.io/conda/vn/conda-forge/pybcj\n  :target: https://anaconda.org/conda-forge/pybcj\n\n.. image:: https://coveralls.io/repos/github/miurahr/pybcj/badge.svg?branch=main\n  :target: https://coveralls.io/github/miurahr/pybcj?branch=main\n\n\nIn data compression, BCJ, short for Branch-Call-Jump, refers to a technique that improves the compression of\nmachine code of executable binaries by replacing relative branch addresses with absolute ones.\nThis allows a LZMA compressor to identify duplicate targets and archive higher compression rate.\n\nBCJ is used in 7-zip compression utility as default filter for executable binaries.\n\npybcj is a python bindings with BCJ implementation by C language.\nThe C codes are derived from p7zip, portable 7-zip implementation.\npybcj support Intel/Amd x86/x86_64, Arm/Arm64, ArmThumb, Sparc, PPC, and IA64.\n\n\nDevelopment status\n==================\n\nA development status is considered as ``Beta`` state.\n\n\nInstallation\n============\n\nAs usual, you can install pybcj using python standard pip command.\n\n.. code-block::\n\n    pip install pybcj\n\nAlternatively, one can also use conda:\n\n.. code-block::\n\n    conda install -c conda-forge pybcj\n\nWARNING\n-------\n\n* When use it on MSYS2/Mingw64 environment, please set environment variable\n  `SETUPTOOLS_USE_DISTUTILS=stdlib` to install.\n\nLicense\n=======\n\n- SPDX-License-Identifier: LGPL-2.1-or-later\n- SPDX-URL: https://spdx.org/licenses/LGPL-2.1-or-later.html\n\n* Copyright (C) 2020-2025 Hiroshi Miura\n* Copyright (C) 1999-2010 Igor Pavlov\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": [
+        "License-File"
+      ],
+      "home_page": null,
+      "keywords": "lzma, bcj",
+      "license": "LGPL-2.1-or-later",
+      "license_expression": null,
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "pybcj",
+      "package_url": "https://pypi.org/project/pybcj/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/pybcj/",
+      "project_urls": {
+        "Bug Tracker": "https://github.com/miurahr/pybcj/issues",
+        "Changelog": "https://github.com/miurahr/pybcj/blob/main/Changelog.rst",
+        "Homepage": "https://pypi.org/project/pybcj",
+        "Source": "https://github.com/miurahr/pybcj"
+      },
+      "provides_extra": [
+        "test",
+        "check"
+      ],
+      "release_url": "https://pypi.org/project/pybcj/1.0.7/",
+      "requires_dist": [
+        "pytest>=6.0; extra == \"test\"",
+        "pytest-cov; extra == \"test\"",
+        "hypothesis; extra == \"test\"",
+        "coverage[toml]>=5.2; extra == \"test\"",
+        "mypy>=1.10.0; extra == \"check\"",
+        "check-manifest; extra == \"check\"",
+        "flake8<8; extra == \"check\"",
+        "flake8-black; extra == \"check\"",
+        "flake8-colors; extra == \"check\"",
+        "flake8-isort; extra == \"check\"",
+        "flake8-pyi; extra == \"check\"",
+        "flake8-typing-imports; extra == \"check\"",
+        "readme-renderer; extra == \"check\"",
+        "pygments; extra == \"check\""
+      ],
+      "requires_python": ">=3.10",
+      "summary": "bcj filter library",
+      "version": "1.0.7",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 39077770,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "miurahr"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "a28b8dad8e96268349363184a77ca7a0f9ab3941d0e84e41d75fd4be8ac25494",
+          "md5": "794475bc14057a00a1f940a004867e71",
+          "sha256": "618ec7345775c306d83527750e2d0ab3f42ffdc5ad6282f62f88cb53c9b2b679"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp310-cp310-macosx_10_9_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "794475bc14057a00a1f940a004867e71",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 31780,
+        "upload_time": "2025-11-29T00:52:22",
+        "upload_time_iso_8601": "2025-11-29T00:52:22.317814Z",
+        "url": "https://files.pythonhosted.org/packages/a2/8b/8dad8e96268349363184a77ca7a0f9ab3941d0e84e41d75fd4be8ac25494/pybcj-1.0.7-cp310-cp310-macosx_10_9_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "9814dc0cc7b4f876c733519956a764a64b4fa46b0da353a578f5eacdc5a24897",
+          "md5": "37295c55b07a537d10e4860bbb026b2b",
+          "sha256": "d7e7faa1b0f7d894685e4567dd41268b93df89cff347ebfdfdc48b4bc0d68cb2"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp310-cp310-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "37295c55b07a537d10e4860bbb026b2b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 23690,
+        "upload_time": "2025-11-29T00:52:24",
+        "upload_time_iso_8601": "2025-11-29T00:52:24.356160Z",
+        "url": "https://files.pythonhosted.org/packages/98/14/dc0cc7b4f876c733519956a764a64b4fa46b0da353a578f5eacdc5a24897/pybcj-1.0.7-cp310-cp310-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "e8bf102510783410dde5aadbc4caa98a1d45dba2c9c304ff02320c0297456a6a",
+          "md5": "70b71e29a70dea73490a3e37e666f52c",
+          "sha256": "3cd4b2d05272df605d5bdb54b3386985a2b074b4d97072da944736abd639fdee"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp310-cp310-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "70b71e29a70dea73490a3e37e666f52c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 24072,
+        "upload_time": "2025-11-29T00:52:25",
+        "upload_time_iso_8601": "2025-11-29T00:52:25.419265Z",
+        "url": "https://files.pythonhosted.org/packages/e8/bf/102510783410dde5aadbc4caa98a1d45dba2c9c304ff02320c0297456a6a/pybcj-1.0.7-cp310-cp310-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "24da1fe5aa16188260408e21e850268a758863cf9683049f29b03336e46585dc",
+          "md5": "635d8f6d4bc4229edfe10a3ea7daa3d6",
+          "sha256": "8eb5cd6f52df8857a8d9de594ca28a71683169b9de5af7e727c0e510aedb4550"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "635d8f6d4bc4229edfe10a3ea7daa3d6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 50614,
+        "upload_time": "2025-11-29T00:52:26",
+        "upload_time_iso_8601": "2025-11-29T00:52:26.748841Z",
+        "url": "https://files.pythonhosted.org/packages/24/da/1fe5aa16188260408e21e850268a758863cf9683049f29b03336e46585dc/pybcj-1.0.7-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "8d6e5bfc159a996a8c009cc3ac2dbb1d2603f3afefbf03f674ec7f784448fb57",
+          "md5": "a4e9921a2c1555a242c15ffa2b40c4ec",
+          "sha256": "d9d10760356b7d254b7b04ff38e052d5229c5f5a69a5514c9c31cb1dbb7d7f82"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "a4e9921a2c1555a242c15ffa2b40c4ec",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 49451,
+        "upload_time": "2025-11-29T00:52:28",
+        "upload_time_iso_8601": "2025-11-29T00:52:28.189697Z",
+        "url": "https://files.pythonhosted.org/packages/8d/6e/5bfc159a996a8c009cc3ac2dbb1d2603f3afefbf03f674ec7f784448fb57/pybcj-1.0.7-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "8985050a9dd0aaacce88fb223a9842fb8f58674e0f485c3ccf65aa08bfef07ff",
+          "md5": "68faed49503246d59c1dcde90550d83f",
+          "sha256": "1696d9b50971e317f72802bebd18f9b53684892ad3c43e0258f34e0a01738484"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp310-cp310-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "68faed49503246d59c1dcde90550d83f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 49738,
+        "upload_time": "2025-11-29T00:52:29",
+        "upload_time_iso_8601": "2025-11-29T00:52:29.298281Z",
+        "url": "https://files.pythonhosted.org/packages/89/85/050a9dd0aaacce88fb223a9842fb8f58674e0f485c3ccf65aa08bfef07ff/pybcj-1.0.7-cp310-cp310-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "73c9c6b06dd5845ca1c00e7b2ea2ba5bddfd660a0c7fcf7168b67af1b9d2ba76",
+          "md5": "d2ca7e653c32981657fc2070565e0d32",
+          "sha256": "4e3d91b5dfdb0a200545b68145d81dae4edd2c385d89643dc45d6d01291f5c04"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp310-cp310-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "d2ca7e653c32981657fc2070565e0d32",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 49112,
+        "upload_time": "2025-11-29T00:52:30",
+        "upload_time_iso_8601": "2025-11-29T00:52:30.787345Z",
+        "url": "https://files.pythonhosted.org/packages/73/c9/c6b06dd5845ca1c00e7b2ea2ba5bddfd660a0c7fcf7168b67af1b9d2ba76/pybcj-1.0.7-cp310-cp310-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "93ff3f3caa817ec9f71bc6f2efd1d64f85785ae44ef8872bb6f92e1508d8a96d"
+        },
+        "digests": {
+          "blake2b_256": "3280bd8c01fe6804319a19bcdacf0c725b898508696705b0e17cdaf1abee59f3",
+          "md5": "43f1c8ea7305dbf794e22a3628bc5499",
+          "sha256": "74df8f4c897f937105e8cd830df3b4ddf65ab5b5ba3e63cd6e3aeb3f4ecb0864"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp310-cp310-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "43f1c8ea7305dbf794e22a3628bc5499",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 24900,
+        "upload_time": "2025-11-29T00:52:32",
+        "upload_time_iso_8601": "2025-11-29T00:52:32.174346Z",
+        "url": "https://files.pythonhosted.org/packages/32/80/bd8c01fe6804319a19bcdacf0c725b898508696705b0e17cdaf1abee59f3/pybcj-1.0.7-cp310-cp310-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "93ff3f3caa817ec9f71bc6f2efd1d64f85785ae44ef8872bb6f92e1508d8a96d"
+        },
+        "digests": {
+          "blake2b_256": "95b95d70116ea216474077fe6e9c8b326a576d367bcb3c1ec03255ccab33a600",
+          "md5": "627edaeaf6513d8b45492954cb14616a",
+          "sha256": "dc121ecb26fdc1a4173a20b3c7cca5d8cc81494b485d4b44a62ed8448f8c796e"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp310-cp310-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "627edaeaf6513d8b45492954cb14616a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 23396,
+        "upload_time": "2025-11-29T00:52:33",
+        "upload_time_iso_8601": "2025-11-29T00:52:33.216913Z",
+        "url": "https://files.pythonhosted.org/packages/95/b9/5d70116ea216474077fe6e9c8b326a576d367bcb3c1ec03255ccab33a600/pybcj-1.0.7-cp310-cp310-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "9ec793567f1a9624b41e7755978243f7abbf198e153242ff7737862376edf468",
+          "md5": "5b38f0e86133425c5347551330cf21b5",
+          "sha256": "906ee707e89302253813a123f90a36d94d1f3c8785a4a1b853b31ac67296857a"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp311-cp311-macosx_10_9_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "5b38f0e86133425c5347551330cf21b5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 31780,
+        "upload_time": "2025-11-29T00:52:34",
+        "upload_time_iso_8601": "2025-11-29T00:52:34.233823Z",
+        "url": "https://files.pythonhosted.org/packages/9e/c7/93567f1a9624b41e7755978243f7abbf198e153242ff7737862376edf468/pybcj-1.0.7-cp311-cp311-macosx_10_9_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "cbf6c96a25b4ded3eabe58b07e05528cca0c0ff5b5142a67dc117979d43ae2c2",
+          "md5": "08fdb52731e77fdde9439c6717b47167",
+          "sha256": "93da8503161fd51e01843aca031444fd46dce83e8a8bb4972f0256d6b3d280d3"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp311-cp311-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "08fdb52731e77fdde9439c6717b47167",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 23696,
+        "upload_time": "2025-11-29T00:52:35",
+        "upload_time_iso_8601": "2025-11-29T00:52:35.990374Z",
+        "url": "https://files.pythonhosted.org/packages/cb/f6/c96a25b4ded3eabe58b07e05528cca0c0ff5b5142a67dc117979d43ae2c2/pybcj-1.0.7-cp311-cp311-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "5e90893d290def15f687c35806ffb2fd45c3f34b07c61bd0348220cb602c8c38",
+          "md5": "3403e9752a890243058e16a43d773e95",
+          "sha256": "bcb4a52cd573f4359a89fd3a4a1d82c914f8b758a5c9f16cd5dd13fb8aa24436"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp311-cp311-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "3403e9752a890243058e16a43d773e95",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 24067,
+        "upload_time": "2025-11-29T00:52:37",
+        "upload_time_iso_8601": "2025-11-29T00:52:37.013671Z",
+        "url": "https://files.pythonhosted.org/packages/5e/90/893d290def15f687c35806ffb2fd45c3f34b07c61bd0348220cb602c8c38/pybcj-1.0.7-cp311-cp311-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "1f5119a45c2cb92c722a214b8cfd9a39d1e144b5d1f76c7d92c128b479f4e405",
+          "md5": "86dc12bf8381f3e98ed68eda3a22a218",
+          "sha256": "a6d9a26fa9e627eb2fbba0f5b376ab42246bebdaf38cf437e384a6b7e3d78e23"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "86dc12bf8381f3e98ed68eda3a22a218",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 51675,
+        "upload_time": "2025-11-29T00:52:38",
+        "upload_time_iso_8601": "2025-11-29T00:52:38.180168Z",
+        "url": "https://files.pythonhosted.org/packages/1f/51/19a45c2cb92c722a214b8cfd9a39d1e144b5d1f76c7d92c128b479f4e405/pybcj-1.0.7-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "55fc3c9e2323b97bbbe295d4b0bb1eb24f0ddb81e2fe67181b9668ab502ccefe",
+          "md5": "1cf6afb0f6dd4fd785205756af251dc0",
+          "sha256": "47207b69997fdc39e91a66812477506267964284b7d45fed68876dd74323d44f"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "1cf6afb0f6dd4fd785205756af251dc0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 50539,
+        "upload_time": "2025-11-29T00:52:39",
+        "upload_time_iso_8601": "2025-11-29T00:52:39.469475Z",
+        "url": "https://files.pythonhosted.org/packages/55/fc/3c9e2323b97bbbe295d4b0bb1eb24f0ddb81e2fe67181b9668ab502ccefe/pybcj-1.0.7-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "f687625dbdbb575cbee728b736bffc8f14bb0a8ee6cc23874d5cb598c28a67a5",
+          "md5": "04d5e98f3c7a2a97b2a71c0e88749ae7",
+          "sha256": "b33d6ef1de94720f4856e198bd2b8eca978015ed685aef4138755ba3910eb963"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "04d5e98f3c7a2a97b2a71c0e88749ae7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 49720,
+        "upload_time": "2025-11-29T00:52:40",
+        "upload_time_iso_8601": "2025-11-29T00:52:40.822434Z",
+        "url": "https://files.pythonhosted.org/packages/f6/87/625dbdbb575cbee728b736bffc8f14bb0a8ee6cc23874d5cb598c28a67a5/pybcj-1.0.7-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "de6461dab2d5078ce5a36402fee31ba9ee637755b1700aeec3c4fe39ebb11c39",
+          "md5": "2cd81dd0cf6355011bafe38d621d703e",
+          "sha256": "053c7cda499a8934151d0c915b6efce8e53fa6b47d162434a5b24afef7af5d17"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "2cd81dd0cf6355011bafe38d621d703e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 49213,
+        "upload_time": "2025-11-29T00:52:41",
+        "upload_time_iso_8601": "2025-11-29T00:52:41.951954Z",
+        "url": "https://files.pythonhosted.org/packages/de/64/61dab2d5078ce5a36402fee31ba9ee637755b1700aeec3c4fe39ebb11c39/pybcj-1.0.7-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "93ff3f3caa817ec9f71bc6f2efd1d64f85785ae44ef8872bb6f92e1508d8a96d"
+        },
+        "digests": {
+          "blake2b_256": "9c194b756dc90d51492c1c13439b3de5da00137bd068001d4d6293e20686ff60",
+          "md5": "2d85d53bee868d87cd4517b8e0bc3b17",
+          "sha256": "555e90270d665d94cd34d2e50b096f68dba6baf7035ae11ac65c2bc126f8cef7"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp311-cp311-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "2d85d53bee868d87cd4517b8e0bc3b17",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 24900,
+        "upload_time": "2025-11-29T00:52:43",
+        "upload_time_iso_8601": "2025-11-29T00:52:43.484796Z",
+        "url": "https://files.pythonhosted.org/packages/9c/19/4b756dc90d51492c1c13439b3de5da00137bd068001d4d6293e20686ff60/pybcj-1.0.7-cp311-cp311-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "93ff3f3caa817ec9f71bc6f2efd1d64f85785ae44ef8872bb6f92e1508d8a96d"
+        },
+        "digests": {
+          "blake2b_256": "e950426be36573eeeab9e771aa41ab9824edbb285bc5035c226ba766deec0ef9",
+          "md5": "8feb4ce2f12ea467d26a3f3f022c7dfa",
+          "sha256": "22bdb390da9a4e38b2191070a62b88ad52edc3f6e12fe7eea278217ccfdbc02c"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp311-cp311-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "8feb4ce2f12ea467d26a3f3f022c7dfa",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 23394,
+        "upload_time": "2025-11-29T00:52:44",
+        "upload_time_iso_8601": "2025-11-29T00:52:44.528169Z",
+        "url": "https://files.pythonhosted.org/packages/e9/50/426be36573eeeab9e771aa41ab9824edbb285bc5035c226ba766deec0ef9/pybcj-1.0.7-cp311-cp311-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "f56039b51114e3e740b61844448c3b61be146781a5c0ffabcd473a17ba7f4336",
+          "md5": "00b4f5bb09122cc6b52c2010a2594c97",
+          "sha256": "d39787b85678d2ab1c67e2f21dd2e71be851f08e5c9fe619c605877b57dd529d"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp312-cp312-macosx_10_13_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "00b4f5bb09122cc6b52c2010a2594c97",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 31858,
+        "upload_time": "2025-11-29T00:52:45",
+        "upload_time_iso_8601": "2025-11-29T00:52:45.566462Z",
+        "url": "https://files.pythonhosted.org/packages/f5/60/39b51114e3e740b61844448c3b61be146781a5c0ffabcd473a17ba7f4336/pybcj-1.0.7-cp312-cp312-macosx_10_13_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "ee15df4cd94bdf6a73c2b6ecf5e99dd9dcfe654215992a0114860ff1c94752b5",
+          "md5": "12f5dc1dfa4f4c0c5fc936ca631a4ff2",
+          "sha256": "8cd5dd166093a1fb146fb78859aac0f00b45db6c11074705517bc72a940a1c8e"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp312-cp312-macosx_10_13_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "12f5dc1dfa4f4c0c5fc936ca631a4ff2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 23746,
+        "upload_time": "2025-11-29T00:52:46",
+        "upload_time_iso_8601": "2025-11-29T00:52:46.947563Z",
+        "url": "https://files.pythonhosted.org/packages/ee/15/df4cd94bdf6a73c2b6ecf5e99dd9dcfe654215992a0114860ff1c94752b5/pybcj-1.0.7-cp312-cp312-macosx_10_13_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "151af8bbe5f9ad95a0c2d1853006a93021aa1c2851b25a6bccc0894b1d72c0f4",
+          "md5": "72fe2b4266d6901a2421b8eff55453bc",
+          "sha256": "82152e8641f5ce68638f3504227065f27b6b1efe96479ffbf20d81530c220062"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp312-cp312-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "72fe2b4266d6901a2421b8eff55453bc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 24088,
+        "upload_time": "2025-11-29T00:52:47",
+        "upload_time_iso_8601": "2025-11-29T00:52:47.962787Z",
+        "url": "https://files.pythonhosted.org/packages/15/1a/f8bbe5f9ad95a0c2d1853006a93021aa1c2851b25a6bccc0894b1d72c0f4/pybcj-1.0.7-cp312-cp312-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "e92353675b56f9dbcb7a4dd681af8c05b1abf95fea3cdf7bf64872b9e0fdc8c8",
+          "md5": "7a0cc2a5450f53bc6145cc4a42c5aa4e",
+          "sha256": "2095b45d05f8d19430167b7df52ebd920df854ab8d064bae879df0a4611374b3"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "7a0cc2a5450f53bc6145cc4a42c5aa4e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 52407,
+        "upload_time": "2025-11-29T00:52:49",
+        "upload_time_iso_8601": "2025-11-29T00:52:49.527380Z",
+        "url": "https://files.pythonhosted.org/packages/e9/23/53675b56f9dbcb7a4dd681af8c05b1abf95fea3cdf7bf64872b9e0fdc8c8/pybcj-1.0.7-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "a1563008e748c7d35c407db97b77af52ade07756033250d0e208a6af231131ca",
+          "md5": "d485280906b3b777be5dd99a48f1cf18",
+          "sha256": "20b400c9f48faed01edb7f0df54b4354270325c886e785f31c866c581a46023b"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "d485280906b3b777be5dd99a48f1cf18",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 51462,
+        "upload_time": "2025-11-29T00:52:51",
+        "upload_time_iso_8601": "2025-11-29T00:52:51.016910Z",
+        "url": "https://files.pythonhosted.org/packages/a1/56/3008e748c7d35c407db97b77af52ade07756033250d0e208a6af231131ca/pybcj-1.0.7-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "83f48e8b079af7ac6a51b2edcb8bed6040a9748542cb1daf55387f769f9571d0",
+          "md5": "3c6effda26265c2b66a3c1fe7c3b4f65",
+          "sha256": "8210e51a2d4e5ccb4fdb75a1e692dd8c121858b589026bb28988ed7ffdb7ed00"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "3c6effda26265c2b66a3c1fe7c3b4f65",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 50320,
+        "upload_time": "2025-11-29T00:52:52",
+        "upload_time_iso_8601": "2025-11-29T00:52:52.835940Z",
+        "url": "https://files.pythonhosted.org/packages/83/f4/8e8b079af7ac6a51b2edcb8bed6040a9748542cb1daf55387f769f9571d0/pybcj-1.0.7-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "e184c2277eeb083029313f5822a491c39d7af91ebd1e717f42c772d56b8c3c4e",
+          "md5": "2ece42a801cd0f8324337cf791f1dfb6",
+          "sha256": "c6c3fe420083186ae2e5f75c23aa6563dcb030b8fc188d00778ce374d1df1984"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "2ece42a801cd0f8324337cf791f1dfb6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 49987,
+        "upload_time": "2025-11-29T00:52:53",
+        "upload_time_iso_8601": "2025-11-29T00:52:53.904039Z",
+        "url": "https://files.pythonhosted.org/packages/e1/84/c2277eeb083029313f5822a491c39d7af91ebd1e717f42c772d56b8c3c4e/pybcj-1.0.7-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "93ff3f3caa817ec9f71bc6f2efd1d64f85785ae44ef8872bb6f92e1508d8a96d"
+        },
+        "digests": {
+          "blake2b_256": "a052711a94d5ae634ff3dd51324a40885158f819ba660b4601653bd78bbd33cd",
+          "md5": "3907bedeb35fb2ab43afd34932bc810d",
+          "sha256": "c435062d66364f85674a639541980000e37657b98367a2ce2699514e44b8ab05"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp312-cp312-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "3907bedeb35fb2ab43afd34932bc810d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 24940,
+        "upload_time": "2025-11-29T00:52:54",
+        "upload_time_iso_8601": "2025-11-29T00:52:54.973565Z",
+        "url": "https://files.pythonhosted.org/packages/a0/52/711a94d5ae634ff3dd51324a40885158f819ba660b4601653bd78bbd33cd/pybcj-1.0.7-cp312-cp312-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "93ff3f3caa817ec9f71bc6f2efd1d64f85785ae44ef8872bb6f92e1508d8a96d"
+        },
+        "digests": {
+          "blake2b_256": "5ed402e3ca25deca3359e63b70e5804bdbae9f400d03f93d0c66341e0471bb39",
+          "md5": "6971a825015fe9e52c70f6dd3cdd75f1",
+          "sha256": "3f74fd70b08092e58b1ee13c67fbf9de63d73eb1c61ab06670a0d7161efeb252"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp312-cp312-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "6971a825015fe9e52c70f6dd3cdd75f1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 23410,
+        "upload_time": "2025-11-29T00:52:55",
+        "upload_time_iso_8601": "2025-11-29T00:52:55.944925Z",
+        "url": "https://files.pythonhosted.org/packages/5e/d4/02e3ca25deca3359e63b70e5804bdbae9f400d03f93d0c66341e0471bb39/pybcj-1.0.7-cp312-cp312-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "fc6fb08d5be15209b584858981b44a447ae7a6d8c591487e502e212b5420f94e",
+          "md5": "2449f3a1ad1c3e30bc2b9ee4e19a3fa6",
+          "sha256": "8d5e0feeeee3a659b30d7afbd89bf41da84e8c8fe13e5b997457e799a70fa550"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp313-cp313-macosx_10_13_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "2449f3a1ad1c3e30bc2b9ee4e19a3fa6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 31869,
+        "upload_time": "2025-11-29T00:52:56",
+        "upload_time_iso_8601": "2025-11-29T00:52:56.973886Z",
+        "url": "https://files.pythonhosted.org/packages/fc/6f/b08d5be15209b584858981b44a447ae7a6d8c591487e502e212b5420f94e/pybcj-1.0.7-cp313-cp313-macosx_10_13_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "47e568bffbc87581ea96bb4aea623d8cd085786f36d5b912ed8d9bade3265110",
+          "md5": "30ee2b7640dd7b3405e0259c39540f32",
+          "sha256": "60baaf9f0da31438515a401145f920f75f2ec7d511165bbf57475467af72a3e6"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp313-cp313-macosx_10_13_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "30ee2b7640dd7b3405e0259c39540f32",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 23750,
+        "upload_time": "2025-11-29T00:52:57",
+        "upload_time_iso_8601": "2025-11-29T00:52:57.986582Z",
+        "url": "https://files.pythonhosted.org/packages/47/e5/68bffbc87581ea96bb4aea623d8cd085786f36d5b912ed8d9bade3265110/pybcj-1.0.7-cp313-cp313-macosx_10_13_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "edad718d6daa0d5e15e2131301220eaefbf6bc8cd0c90791c5ac18c893be111a",
+          "md5": "d08b3507aa96fa8e232ed3375da5af2d",
+          "sha256": "b9c6e726618c3d43c730df5a4067fc19653b360f89c2f72f4323dae10d324552"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp313-cp313-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "d08b3507aa96fa8e232ed3375da5af2d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 24089,
+        "upload_time": "2025-11-29T00:52:59",
+        "upload_time_iso_8601": "2025-11-29T00:52:59.457246Z",
+        "url": "https://files.pythonhosted.org/packages/ed/ad/718d6daa0d5e15e2131301220eaefbf6bc8cd0c90791c5ac18c893be111a/pybcj-1.0.7-cp313-cp313-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "b0a67df6b55b64b370e2d42aa51b88402336d7f17c97eda284755f404d8d6047",
+          "md5": "c937bea8744db334e2b008bec777378c",
+          "sha256": "8a5fcd40a4ce8f0c5428032ec5db9f03abb42214b993886cdf558e5644de636e"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "c937bea8744db334e2b008bec777378c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 52454,
+        "upload_time": "2025-11-29T00:53:00",
+        "upload_time_iso_8601": "2025-11-29T00:53:00.468068Z",
+        "url": "https://files.pythonhosted.org/packages/b0/a6/7df6b55b64b370e2d42aa51b88402336d7f17c97eda284755f404d8d6047/pybcj-1.0.7-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "86432ce282501a39f32f27cef2a3ee11c621f9d5348da4441d2326f2fcc9b17e",
+          "md5": "7b6014b99d06000ace63946943b76704",
+          "sha256": "029112255c22de66e0117bec932c8be341ed20c56dcf6a961c14689f7f0ce772"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "7b6014b99d06000ace63946943b76704",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 51522,
+        "upload_time": "2025-11-29T00:53:01",
+        "upload_time_iso_8601": "2025-11-29T00:53:01.714976Z",
+        "url": "https://files.pythonhosted.org/packages/86/43/2ce282501a39f32f27cef2a3ee11c621f9d5348da4441d2326f2fcc9b17e/pybcj-1.0.7-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "7d2af75ea5f09c91e01456a13759a325e007663855fa16af28830ce7d44d5427",
+          "md5": "de749acc92e453c8bec742b9f794ef90",
+          "sha256": "6492bcef5cb6883506b9dce5e48cb81217407305957b0e602c6c689c60097c5e"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "de749acc92e453c8bec742b9f794ef90",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 50398,
+        "upload_time": "2025-11-29T00:53:02",
+        "upload_time_iso_8601": "2025-11-29T00:53:02.839021Z",
+        "url": "https://files.pythonhosted.org/packages/7d/2a/f75ea5f09c91e01456a13759a325e007663855fa16af28830ce7d44d5427/pybcj-1.0.7-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "5b146d49e0c62a0ab68aa3325e6f141c33f37e5bc9d61cc9a1186c0a2d324fbe",
+          "md5": "b97173c0add896256d770e043ef514a5",
+          "sha256": "22a7f4a51d36a1abb67a61e93248f997eb2be278f788d681096f5044ae18b4f9"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "b97173c0add896256d770e043ef514a5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 50087,
+        "upload_time": "2025-11-29T00:53:03",
+        "upload_time_iso_8601": "2025-11-29T00:53:03.966075Z",
+        "url": "https://files.pythonhosted.org/packages/5b/14/6d49e0c62a0ab68aa3325e6f141c33f37e5bc9d61cc9a1186c0a2d324fbe/pybcj-1.0.7-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "93ff3f3caa817ec9f71bc6f2efd1d64f85785ae44ef8872bb6f92e1508d8a96d"
+        },
+        "digests": {
+          "blake2b_256": "5c71a0d58633236783028c08e585b3c4f4715a4286970b4ec4a25acfe23794f1",
+          "md5": "43d70f417a45273c9c84b8db8b9c1dd2",
+          "sha256": "ebcce9b419fe5d3109150a1fab0fc93a64d5cd812ca44c5ddb7d4f7128ea369f"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp313-cp313-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "43d70f417a45273c9c84b8db8b9c1dd2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 24939,
+        "upload_time": "2025-11-29T00:53:05",
+        "upload_time_iso_8601": "2025-11-29T00:53:05.363700Z",
+        "url": "https://files.pythonhosted.org/packages/5c/71/a0d58633236783028c08e585b3c4f4715a4286970b4ec4a25acfe23794f1/pybcj-1.0.7-cp313-cp313-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "93ff3f3caa817ec9f71bc6f2efd1d64f85785ae44ef8872bb6f92e1508d8a96d"
+        },
+        "digests": {
+          "blake2b_256": "fa988856cd8bc07e66322a55750ab87a264829cdfbc6cd85c5844340cf06bc53",
+          "md5": "b47efad22a8dc4423097f335cce02540",
+          "sha256": "bc6acf0320976b4e31bdc0e59b16689083d5c346a6c62ac4f799685d1cc5cf27"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp313-cp313-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "b47efad22a8dc4423097f335cce02540",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 23409,
+        "upload_time": "2025-11-29T00:53:06",
+        "upload_time_iso_8601": "2025-11-29T00:53:06.749244Z",
+        "url": "https://files.pythonhosted.org/packages/fa/98/8856cd8bc07e66322a55750ab87a264829cdfbc6cd85c5844340cf06bc53/pybcj-1.0.7-cp313-cp313-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "bd9eeb50f11ea7fb6342167bb8353d48966b490afa8ae47c98917e9acd045b71",
+          "md5": "c58c02e257eec2068c959c251bfc7249",
+          "sha256": "293f951eb3877840acab79f0c4dcfc06eab03e087cb9e4c004ec058e093acb1d"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314-macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "c58c02e257eec2068c959c251bfc7249",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 32409,
+        "upload_time": "2025-11-29T00:53:08",
+        "upload_time_iso_8601": "2025-11-29T00:53:08.152237Z",
+        "url": "https://files.pythonhosted.org/packages/bd/9e/eb50f11ea7fb6342167bb8353d48966b490afa8ae47c98917e9acd045b71/pybcj-1.0.7-cp314-cp314-macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "2cf6b55f4a5faf9bd162426f49de84873fbf813698d1b018234c3c99816a9662",
+          "md5": "6bfb8cfcff198528c94fe6bb3871c702",
+          "sha256": "3ae64960904f362d33ffca10715803afd9f9a6a2a592f871dcb335acf82edf29"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "6bfb8cfcff198528c94fe6bb3871c702",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 23818,
+        "upload_time": "2025-11-29T00:53:09",
+        "upload_time_iso_8601": "2025-11-29T00:53:09.236556Z",
+        "url": "https://files.pythonhosted.org/packages/2c/f6/b55f4a5faf9bd162426f49de84873fbf813698d1b018234c3c99816a9662/pybcj-1.0.7-cp314-cp314-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "4c2478cf0973b3deded1e072479ac35d387083a626b3dc0b29e2e099cf73e082",
+          "md5": "d62beb8381c243c26142aa22314ebcd7",
+          "sha256": "70aa4476910f982025f878e598c136559a6d78b59fc20ba8b4b592306cde6051"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "d62beb8381c243c26142aa22314ebcd7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 24115,
+        "upload_time": "2025-11-29T00:53:10",
+        "upload_time_iso_8601": "2025-11-29T00:53:10.241400Z",
+        "url": "https://files.pythonhosted.org/packages/4c/24/78cf0973b3deded1e072479ac35d387083a626b3dc0b29e2e099cf73e082/pybcj-1.0.7-cp314-cp314-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "e669e044d7127018158c67b119e6ed26d1a4b34b1e1defd9b0d3de029a782b9f",
+          "md5": "126fa9f7f19817ab2775c09407930444",
+          "sha256": "79ce3ce9b380b1b75c5e490abc3888ee3b5b2d28c22b59618674bf410b9cee16"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "126fa9f7f19817ab2775c09407930444",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 52484,
+        "upload_time": "2025-11-29T00:53:11",
+        "upload_time_iso_8601": "2025-11-29T00:53:11.710236Z",
+        "url": "https://files.pythonhosted.org/packages/e6/69/e044d7127018158c67b119e6ed26d1a4b34b1e1defd9b0d3de029a782b9f/pybcj-1.0.7-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "980555337b0a9807887967b2cf49dd6f3bf47c7745786b0bda51a5cbfda66c78",
+          "md5": "7a12a6d372a2bff218e8e0601df3522e",
+          "sha256": "fc73ee1bc064d6f97dfd66051d3859b32e1b6a4cf89b077f5c8ef6c2dccb71af"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "7a12a6d372a2bff218e8e0601df3522e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 51471,
+        "upload_time": "2025-11-29T00:53:12",
+        "upload_time_iso_8601": "2025-11-29T00:53:12.860994Z",
+        "url": "https://files.pythonhosted.org/packages/98/05/55337b0a9807887967b2cf49dd6f3bf47c7745786b0bda51a5cbfda66c78/pybcj-1.0.7-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "59096c57cbbf4931ac304f822ef78f478dd6b34b00b08e9530d308737959f064",
+          "md5": "3722c0e56bc6e853ca6d26070b17502a",
+          "sha256": "5b0d13f41a9f85b3f95dd5dc7bfaa9539e80f8ae60a96db7f34c07ed732e4a82"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "3722c0e56bc6e853ca6d26070b17502a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 50435,
+        "upload_time": "2025-11-29T00:53:14",
+        "upload_time_iso_8601": "2025-11-29T00:53:14.264151Z",
+        "url": "https://files.pythonhosted.org/packages/59/09/6c57cbbf4931ac304f822ef78f478dd6b34b00b08e9530d308737959f064/pybcj-1.0.7-cp314-cp314-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "bc9326415ca1b96456e27550dae67092023af3e8454621b1efa701079d8acb64",
+          "md5": "f45bed292b9daa0d756025e8b060a8f8",
+          "sha256": "597d7e9a8cbb30a6ed54d552fd3436edb32bbb821a7ac2fa8e5c7ebd1f7e0e93"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "f45bed292b9daa0d756025e8b060a8f8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 50010,
+        "upload_time": "2025-11-29T00:53:15",
+        "upload_time_iso_8601": "2025-11-29T00:53:15.396579Z",
+        "url": "https://files.pythonhosted.org/packages/bc/93/26415ca1b96456e27550dae67092023af3e8454621b1efa701079d8acb64/pybcj-1.0.7-cp314-cp314-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "626e5e14c70f3ddc268f28e7ac912510c8bc2b5430f18bb7f326bbb9d1878955",
+          "md5": "2eacc03645dacc191dfcebbf655124f1",
+          "sha256": "9bbd835873de147481d62c11ba91a75d26a72df1142de3516b384b04e5a1db6d"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314t-macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "2eacc03645dacc191dfcebbf655124f1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 33016,
+        "upload_time": "2025-11-29T00:53:19",
+        "upload_time_iso_8601": "2025-11-29T00:53:19.434465Z",
+        "url": "https://files.pythonhosted.org/packages/62/6e/5e14c70f3ddc268f28e7ac912510c8bc2b5430f18bb7f326bbb9d1878955/pybcj-1.0.7-cp314-cp314t-macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "49c125a1a8d5811c5d2a2ca3439c548abbba882fa72eba9a6eb41040206fdc26",
+          "md5": "ad5322ae706f16a250b0b7bbc23623d4",
+          "sha256": "b7576b25d7b01a953e2f987e77cef93c001db7b95924a5541d5a55f9195a7e89"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314t-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "ad5322ae706f16a250b0b7bbc23623d4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 24114,
+        "upload_time": "2025-11-29T00:53:20",
+        "upload_time_iso_8601": "2025-11-29T00:53:20.476760Z",
+        "url": "https://files.pythonhosted.org/packages/49/c1/25a1a8d5811c5d2a2ca3439c548abbba882fa72eba9a6eb41040206fdc26/pybcj-1.0.7-cp314-cp314t-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "356609567564cdc6cc2713d729bd29794367ebb67fa9ea5c10313c49608c08fa",
+          "md5": "27073704715285f9b491dd1f1ca28189",
+          "sha256": "57b36920498f82ca6a325a98b13e0fbff8fc29bade7aaaddc7d284640bffd87d"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314t-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "27073704715285f9b491dd1f1ca28189",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 24428,
+        "upload_time": "2025-11-29T00:53:21",
+        "upload_time_iso_8601": "2025-11-29T00:53:21.522183Z",
+        "url": "https://files.pythonhosted.org/packages/35/66/09567564cdc6cc2713d729bd29794367ebb67fa9ea5c10313c49608c08fa/pybcj-1.0.7-cp314-cp314t-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "c5494f6793624eb418cc2536ef39e67c8783d7ca542f6139a051e9d2d76fdc80",
+          "md5": "1d52137eee94713fcb02e8813f079ac2",
+          "sha256": "aac2a46faf41e373939f6d3e6a5aa2121bf09e2446972c14a8e5d1ca3b0f8130"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "1d52137eee94713fcb02e8813f079ac2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 58806,
+        "upload_time": "2025-11-29T00:53:22",
+        "upload_time_iso_8601": "2025-11-29T00:53:22.568629Z",
+        "url": "https://files.pythonhosted.org/packages/c5/49/4f6793624eb418cc2536ef39e67c8783d7ca542f6139a051e9d2d76fdc80/pybcj-1.0.7-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "be1c8604f7fe360a9340bbf798b826a88f8e9d186fc031eb531bcd11ac9e684b",
+          "md5": "72461e49af28df696b02561580c1697b",
+          "sha256": "3c7d6156ef2b4e8ecd450b62dc4cc3a89e8dda307cb26288b670952ef0df3a37"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "72461e49af28df696b02561580c1697b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 56975,
+        "upload_time": "2025-11-29T00:53:23",
+        "upload_time_iso_8601": "2025-11-29T00:53:23.691793Z",
+        "url": "https://files.pythonhosted.org/packages/be/1c/8604f7fe360a9340bbf798b826a88f8e9d186fc031eb531bcd11ac9e684b/pybcj-1.0.7-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "8371d706b4220f60fa4e6a5756dc0051fb76c32a5615958fc12f0dcacef3f86b",
+          "md5": "8c1c0fc40a0247060267d813eace8141",
+          "sha256": "0fe306213de1e764abae63c06ae5a4e9a83632f62612805f1f883b8d74431901"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314t-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "8c1c0fc40a0247060267d813eace8141",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 56023,
+        "upload_time": "2025-11-29T00:53:25",
+        "upload_time_iso_8601": "2025-11-29T00:53:25.135183Z",
+        "url": "https://files.pythonhosted.org/packages/83/71/d706b4220f60fa4e6a5756dc0051fb76c32a5615958fc12f0dcacef3f86b/pybcj-1.0.7-cp314-cp314t-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "931d52c814458ddb6fcd98480b9f4842e5334eec1e45e3791ac73f50076a3d02"
+        },
+        "digests": {
+          "blake2b_256": "3e28ad306f5acb1226241960bb86e9021b4e32bb7da426ccdc824d9d36d61261",
+          "md5": "3b2ccd1893bb436d96e2106773bab36d",
+          "sha256": "00448182d535cca37e8f24d892d480fa86f80ff20c79385f6eca75f118efcbb4"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314t-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3b2ccd1893bb436d96e2106773bab36d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 55194,
+        "upload_time": "2025-11-29T00:53:26",
+        "upload_time_iso_8601": "2025-11-29T00:53:26.209461Z",
+        "url": "https://files.pythonhosted.org/packages/3e/28/ad306f5acb1226241960bb86e9021b4e32bb7da426ccdc824d9d36d61261/pybcj-1.0.7-cp314-cp314t-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "93ff3f3caa817ec9f71bc6f2efd1d64f85785ae44ef8872bb6f92e1508d8a96d"
+        },
+        "digests": {
+          "blake2b_256": "2ed870c5e5701926fc67dae02101f0298d21c0b89ff83fa705712c3b4da252e5",
+          "md5": "65ecc8c8d0ec19d484e41549d022f6b4",
+          "sha256": "7e94aa712d0fa5fda9875828441755ece7121fc3f8c5cc3bc8ee92d05b853590"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314t-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "65ecc8c8d0ec19d484e41549d022f6b4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 25826,
+        "upload_time": "2025-11-29T00:53:27",
+        "upload_time_iso_8601": "2025-11-29T00:53:27.655463Z",
+        "url": "https://files.pythonhosted.org/packages/2e/d8/70c5e5701926fc67dae02101f0298d21c0b89ff83fa705712c3b4da252e5/pybcj-1.0.7-cp314-cp314t-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "93ff3f3caa817ec9f71bc6f2efd1d64f85785ae44ef8872bb6f92e1508d8a96d"
+        },
+        "digests": {
+          "blake2b_256": "d15d7a87ba32c0c0756f36000fafe642fa4609be2c26a50a7913a057a47eabdf",
+          "md5": "8c70539804ba29b9f2f14612b62f3d94",
+          "sha256": "16fd4e51a5556d1f38d7ba5d1fab588bfb60ae23d2299b5179779bf9900adf71"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314t-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "8c70539804ba29b9f2f14612b62f3d94",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 24049,
+        "upload_time": "2025-11-29T00:53:28",
+        "upload_time_iso_8601": "2025-11-29T00:53:28.679031Z",
+        "url": "https://files.pythonhosted.org/packages/d1/5d/7a87ba32c0c0756f36000fafe642fa4609be2c26a50a7913a057a47eabdf/pybcj-1.0.7-cp314-cp314t-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "93ff3f3caa817ec9f71bc6f2efd1d64f85785ae44ef8872bb6f92e1508d8a96d"
+        },
+        "digests": {
+          "blake2b_256": "91f7d4e55aede85143adff3ded89a1ae87bbf29060ddc2249fb861d78b103d4a",
+          "md5": "126b438f78195b78376a1eef9e9013bd",
+          "sha256": "4603cc41ceb1236abe9169e2ead344140be5d2c3ac01bbc5e44cb1b13078a009"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "126b438f78195b78376a1eef9e9013bd",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 25283,
+        "upload_time": "2025-11-29T00:53:16",
+        "upload_time_iso_8601": "2025-11-29T00:53:16.472862Z",
+        "url": "https://files.pythonhosted.org/packages/91/f7/d4e55aede85143adff3ded89a1ae87bbf29060ddc2249fb861d78b103d4a/pybcj-1.0.7-cp314-cp314-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "93ff3f3caa817ec9f71bc6f2efd1d64f85785ae44ef8872bb6f92e1508d8a96d"
+        },
+        "digests": {
+          "blake2b_256": "f6199939ba437140d7375aecf8063d8695dfeea56ca40f57ddaa6ca3b828c131",
+          "md5": "64490a784867e5d938ada04f791d7d3b",
+          "sha256": "adf985e816ddd59f3bf6d1066b7fa89de7424a4f19f3725f9976284cabe54e28"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7-cp314-cp314-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "64490a784867e5d938ada04f791d7d3b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 23622,
+        "upload_time": "2025-11-29T00:53:17",
+        "upload_time_iso_8601": "2025-11-29T00:53:17.994076Z",
+        "url": "https://files.pythonhosted.org/packages/f6/19/9939ba437140d7375aecf8063d8695dfeea56ca40f57ddaa6ca3b828c131/pybcj-1.0.7-cp314-cp314-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "120c2670b672655b18454841b8e88f024b9159d637a4c07f6ce6db85accf8467",
+          "md5": "6ef2447748977e417b2b91cf1f740e5a",
+          "sha256": "72d64574069ffb0a800020668376b7ebd7adea159adbf4d35f8effc62f0daa67"
+        },
+        "downloads": -1,
+        "filename": "pybcj-1.0.7.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6ef2447748977e417b2b91cf1f740e5a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.10",
+        "size": 31282,
+        "upload_time": "2025-11-29T00:53:29",
+        "upload_time_iso_8601": "2025-11-29T00:53:29.738173Z",
+        "url": "https://files.pythonhosted.org/packages/12/0c/2670b672655b18454841b8e88f024b9159d637a4c07f6ce6db85accf8467/pybcj-1.0.7.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "pybcj",
+    "version": "1.0.7",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "00448182d535cca37e8f24d892d480fa86f80ff20c79385f6eca75f118efcbb4",
+      "029112255c22de66e0117bec932c8be341ed20c56dcf6a961c14689f7f0ce772",
+      "053c7cda499a8934151d0c915b6efce8e53fa6b47d162434a5b24afef7af5d17",
+      "0fe306213de1e764abae63c06ae5a4e9a83632f62612805f1f883b8d74431901",
+      "1696d9b50971e317f72802bebd18f9b53684892ad3c43e0258f34e0a01738484",
+      "16fd4e51a5556d1f38d7ba5d1fab588bfb60ae23d2299b5179779bf9900adf71",
+      "2095b45d05f8d19430167b7df52ebd920df854ab8d064bae879df0a4611374b3",
+      "20b400c9f48faed01edb7f0df54b4354270325c886e785f31c866c581a46023b",
+      "22a7f4a51d36a1abb67a61e93248f997eb2be278f788d681096f5044ae18b4f9",
+      "22bdb390da9a4e38b2191070a62b88ad52edc3f6e12fe7eea278217ccfdbc02c",
+      "293f951eb3877840acab79f0c4dcfc06eab03e087cb9e4c004ec058e093acb1d",
+      "3ae64960904f362d33ffca10715803afd9f9a6a2a592f871dcb335acf82edf29",
+      "3c7d6156ef2b4e8ecd450b62dc4cc3a89e8dda307cb26288b670952ef0df3a37",
+      "3cd4b2d05272df605d5bdb54b3386985a2b074b4d97072da944736abd639fdee",
+      "3f74fd70b08092e58b1ee13c67fbf9de63d73eb1c61ab06670a0d7161efeb252",
+      "4603cc41ceb1236abe9169e2ead344140be5d2c3ac01bbc5e44cb1b13078a009",
+      "47207b69997fdc39e91a66812477506267964284b7d45fed68876dd74323d44f",
+      "4e3d91b5dfdb0a200545b68145d81dae4edd2c385d89643dc45d6d01291f5c04",
+      "555e90270d665d94cd34d2e50b096f68dba6baf7035ae11ac65c2bc126f8cef7",
+      "57b36920498f82ca6a325a98b13e0fbff8fc29bade7aaaddc7d284640bffd87d",
+      "597d7e9a8cbb30a6ed54d552fd3436edb32bbb821a7ac2fa8e5c7ebd1f7e0e93",
+      "5b0d13f41a9f85b3f95dd5dc7bfaa9539e80f8ae60a96db7f34c07ed732e4a82",
+      "60baaf9f0da31438515a401145f920f75f2ec7d511165bbf57475467af72a3e6",
+      "618ec7345775c306d83527750e2d0ab3f42ffdc5ad6282f62f88cb53c9b2b679",
+      "6492bcef5cb6883506b9dce5e48cb81217407305957b0e602c6c689c60097c5e",
+      "70aa4476910f982025f878e598c136559a6d78b59fc20ba8b4b592306cde6051",
+      "72d64574069ffb0a800020668376b7ebd7adea159adbf4d35f8effc62f0daa67",
+      "74df8f4c897f937105e8cd830df3b4ddf65ab5b5ba3e63cd6e3aeb3f4ecb0864",
+      "79ce3ce9b380b1b75c5e490abc3888ee3b5b2d28c22b59618674bf410b9cee16",
+      "7e94aa712d0fa5fda9875828441755ece7121fc3f8c5cc3bc8ee92d05b853590",
+      "8210e51a2d4e5ccb4fdb75a1e692dd8c121858b589026bb28988ed7ffdb7ed00",
+      "82152e8641f5ce68638f3504227065f27b6b1efe96479ffbf20d81530c220062",
+      "8a5fcd40a4ce8f0c5428032ec5db9f03abb42214b993886cdf558e5644de636e",
+      "8cd5dd166093a1fb146fb78859aac0f00b45db6c11074705517bc72a940a1c8e",
+      "8d5e0feeeee3a659b30d7afbd89bf41da84e8c8fe13e5b997457e799a70fa550",
+      "8eb5cd6f52df8857a8d9de594ca28a71683169b9de5af7e727c0e510aedb4550",
+      "906ee707e89302253813a123f90a36d94d1f3c8785a4a1b853b31ac67296857a",
+      "93da8503161fd51e01843aca031444fd46dce83e8a8bb4972f0256d6b3d280d3",
+      "9bbd835873de147481d62c11ba91a75d26a72df1142de3516b384b04e5a1db6d",
+      "a6d9a26fa9e627eb2fbba0f5b376ab42246bebdaf38cf437e384a6b7e3d78e23",
+      "aac2a46faf41e373939f6d3e6a5aa2121bf09e2446972c14a8e5d1ca3b0f8130",
+      "adf985e816ddd59f3bf6d1066b7fa89de7424a4f19f3725f9976284cabe54e28",
+      "b33d6ef1de94720f4856e198bd2b8eca978015ed685aef4138755ba3910eb963",
+      "b7576b25d7b01a953e2f987e77cef93c001db7b95924a5541d5a55f9195a7e89",
+      "b9c6e726618c3d43c730df5a4067fc19653b360f89c2f72f4323dae10d324552",
+      "bc6acf0320976b4e31bdc0e59b16689083d5c346a6c62ac4f799685d1cc5cf27",
+      "bcb4a52cd573f4359a89fd3a4a1d82c914f8b758a5c9f16cd5dd13fb8aa24436",
+      "c435062d66364f85674a639541980000e37657b98367a2ce2699514e44b8ab05",
+      "c6c3fe420083186ae2e5f75c23aa6563dcb030b8fc188d00778ce374d1df1984",
+      "d39787b85678d2ab1c67e2f21dd2e71be851f08e5c9fe619c605877b57dd529d",
+      "d7e7faa1b0f7d894685e4567dd41268b93df89cff347ebfdfdc48b4bc0d68cb2",
+      "d9d10760356b7d254b7b04ff38e052d5229c5f5a69a5514c9c31cb1dbb7d7f82",
+      "dc121ecb26fdc1a4173a20b3c7cca5d8cc81494b485d4b44a62ed8448f8c796e",
+      "ebcce9b419fe5d3109150a1fab0fc93a64d5cd812ca44c5ddb7d4f7128ea369f",
+      "fc73ee1bc064d6f97dfd66051d3859b32e1b6a4cf89b077f5c8ef6c2dccb71af"
+    ],
+    "retrieved_at": "2026-11-28T12:09:58+00:00",
+    "pypi_info": {
+      "license": "LGPL-2.1-or-later",
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)"
+      ],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Topic :: Software Development :: Libraries :: Python Modules"
+      ],
+      "requires_python": ">=3.10",
+      "project_urls": {
+        "Bug Tracker": "https://github.com/miurahr/pybcj/issues",
+        "Changelog": "https://github.com/miurahr/pybcj/blob/main/Changelog.rst",
+        "Homepage": "https://pypi.org/project/pybcj",
+        "Source": "https://github.com/miurahr/pybcj"
+      },
+      "home_page": null,
+      "summary": "bcj filter library",
+      "author": "Hiroshi Miura <miurahr@linux.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "pybcj-1.0.7-cp311-cp311-win_amd64.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "pybcj-1.0.7-cp311-cp311-win_amd64.whl",
+        "url": "https://files.pythonhosted.org/packages/9c/19/4b756dc90d51492c1c13439b3de5da00137bd068001d4d6293e20686ff60/pybcj-1.0.7-cp311-cp311-win_amd64.whl",
+        "packagetype": "bdist_wheel",
+        "size": 24900,
+        "sha256_pypi": "555e90270d665d94cd34d2e50b096f68dba6baf7035ae11ac65c2bc126f8cef7",
+        "sha256_verified": "555e90270d665d94cd34d2e50b096f68dba6baf7035ae11ac65c2bc126f8cef7",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "pybcj-1.0.7-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/9c/19/4b756dc90d51492c1c13439b3de5da00137bd068001d4d6293e20686ff60/pybcj-1.0.7-cp311-cp311-win_amd64.whl",
+      "packagetype": "bdist_wheel",
+      "size": 24900,
+      "sha256_pypi": "555e90270d665d94cd34d2e50b096f68dba6baf7035ae11ac65c2bc126f8cef7",
+      "sha256_verified": "555e90270d665d94cd34d2e50b096f68dba6baf7035ae11ac65c2bc126f8cef7",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "pybcj-1.0.7-cp311-cp311-win_amd64.whl::pybcj-1.0.7.dist-info/licenses/LICENSE": {
+        "saved_as": "pybcj-1.0.7.dist-info_licenses_LICENSE",
+        "sha256": "1e7e6bae5a5bde32f1ae5a7c37a082d1ab03cf89354f7f936ac40be9e39a6531",
+        "bytes": 27032,
+        "from_artifact": "pybcj-1.0.7-cp311-cp311-win_amd64.whl",
+        "artifact_sha256": "555e90270d665d94cd34d2e50b096f68dba6baf7035ae11ac65c2bc126f8cef7"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

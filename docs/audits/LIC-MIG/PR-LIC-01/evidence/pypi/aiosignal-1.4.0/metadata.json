@@ -1,0 +1,210 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": null,
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Framework :: AsyncIO",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: Apache Software License",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only"
+      ],
+      "description": "=========\naiosignal\n=========\n\n.. image:: https://github.com/aio-libs/aiosignal/workflows/CI/badge.svg\n   :target: https://github.com/aio-libs/aiosignal/actions?query=workflow%3ACI\n   :alt: GitHub status for master branch\n\n.. image:: https://codecov.io/gh/aio-libs/aiosignal/branch/master/graph/badge.svg?flag=pytest\n   :target: https://codecov.io/gh/aio-libs/aiosignal?flags[0]=pytest\n   :alt: codecov.io status for master branch\n\n.. image:: https://badge.fury.io/py/aiosignal.svg\n   :target: https://pypi.org/project/aiosignal\n   :alt: Latest PyPI package version\n\n.. image:: https://readthedocs.org/projects/aiosignal/badge/?version=latest\n   :target: https://aiosignal.readthedocs.io/\n   :alt: Latest Read The Docs\n\n.. image:: https://img.shields.io/discourse/topics?server=https%3A%2F%2Faio-libs.discourse.group%2F\n   :target: https://aio-libs.discourse.group/\n   :alt: Discourse group for io-libs\n\n.. image:: https://badges.gitter.im/Join%20Chat.svg\n   :target: https://gitter.im/aio-libs/Lobby\n   :alt: Chat on Gitter\n\nIntroduction\n============\n\nA project to manage callbacks in `asyncio` projects.\n\n``Signal`` is a list of registered asynchronous callbacks.\n\nThe signal's life-cycle has two stages: after creation its content\ncould be filled by using standard list operations: ``sig.append()``\netc.\n\nAfter you call ``sig.freeze()`` the signal is *frozen*: adding, removing\nand dropping callbacks is forbidden.\n\nThe only available operation is calling the previously registered\ncallbacks by using ``await sig.send(data)``.\n\nFor concrete usage examples see the `Signals\n<https://docs.aiohttp.org/en/stable/web_advanced.html#aiohttp-web-signals>\nsection of the `Web Server Advanced\n<https://docs.aiohttp.org/en/stable/web_advanced.html>` chapter of the `aiohttp\ndocumentation`_.\n\n\nInstallation\n------------\n\n::\n\n   $ pip install aiosignal\n\n\nDocumentation\n=============\n\nhttps://aiosignal.readthedocs.io/\n\nLicense\n=======\n\n``aiosignal`` is offered under the Apache 2 license.\n\nSource code\n===========\n\nThe project is hosted on GitHub_\n\nPlease file an issue in the `bug tracker\n<https://github.com/aio-libs/aiosignal/issues>`_ if you have found a bug\nor have some suggestions to improve the library.\n\n.. _GitHub: https://github.com/aio-libs/aiosignal\n.. _aiohttp documentation: https://docs.aiohttp.org/\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": [
+        "License-File"
+      ],
+      "home_page": "https://github.com/aio-libs/aiosignal",
+      "keywords": null,
+      "license": "Apache 2.0",
+      "license_expression": null,
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": "aiohttp team <team@aiohttp.org>",
+      "maintainer_email": "team@aiohttp.org",
+      "name": "aiosignal",
+      "package_url": "https://pypi.org/project/aiosignal/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/aiosignal/",
+      "project_urls": {
+        "CI: GitHub Actions": "https://github.com/aio-libs/aiosignal/actions",
+        "Chat: Gitter": "https://gitter.im/aio-libs/Lobby",
+        "Coverage: codecov": "https://codecov.io/github/aio-libs/aiosignal",
+        "Docs: RTD": "https://docs.aiosignal.org",
+        "GitHub: issues": "https://github.com/aio-libs/aiosignal/issues",
+        "GitHub: repo": "https://github.com/aio-libs/aiosignal",
+        "Homepage": "https://github.com/aio-libs/aiosignal"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/aiosignal/1.4.0/",
+      "requires_dist": [
+        "frozenlist>=1.1.0",
+        "typing-extensions>=4.2; python_version < \"3.13\""
+      ],
+      "requires_python": ">=3.9",
+      "summary": "aiosignal: a list of registered asynchronous callbacks",
+      "version": "1.4.0",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 29967904,
+    "ownership": {
+      "organization": "aio-libs",
+      "roles": [
+        {
+          "role": "Maintainer",
+          "user": "Andrew.Svetlov"
+        },
+        {
+          "role": "Maintainer",
+          "user": "mj"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09247ef1da8bc696728d47130e702e4307f6f7d101d6c485bff9f3a71ce7008d"
+        },
+        "digests": {
+          "blake2b_256": "fb76641ae371508676492379f16e2fa48f4e2c11741bd63c48be4b12a6b09cba",
+          "md5": "acabfc37fbc3224ecac26c857e082d17",
+          "sha256": "053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e"
+        },
+        "downloads": -1,
+        "filename": "aiosignal-1.4.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "acabfc37fbc3224ecac26c857e082d17",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.9",
+        "size": 7490,
+        "upload_time": "2025-07-03T22:54:42",
+        "upload_time_iso_8601": "2025-07-03T22:54:42.156277Z",
+        "url": "https://files.pythonhosted.org/packages/fb/76/641ae371508676492379f16e2fa48f4e2c11741bd63c48be4b12a6b09cba/aiosignal-1.4.0-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "616206741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1",
+          "md5": "9c692735b1422a94f16bd066ebf1fb7c",
+          "sha256": "f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7"
+        },
+        "downloads": -1,
+        "filename": "aiosignal-1.4.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9c692735b1422a94f16bd066ebf1fb7c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.9",
+        "size": 25007,
+        "upload_time": "2025-07-03T22:54:43",
+        "upload_time_iso_8601": "2025-07-03T22:54:43.528302Z",
+        "url": "https://files.pythonhosted.org/packages/61/62/06741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1/aiosignal-1.4.0.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "aiosignal",
+    "version": "1.4.0",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e",
+      "f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7"
+    ],
+    "retrieved_at": "2026-11-28T12:09:54+00:00",
+    "pypi_info": {
+      "license": "Apache 2.0",
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: Apache Software License"
+      ],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Framework :: AsyncIO",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: Apache Software License",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only"
+      ],
+      "requires_python": ">=3.9",
+      "project_urls": {
+        "CI: GitHub Actions": "https://github.com/aio-libs/aiosignal/actions",
+        "Chat: Gitter": "https://gitter.im/aio-libs/Lobby",
+        "Coverage: codecov": "https://codecov.io/github/aio-libs/aiosignal",
+        "Docs: RTD": "https://docs.aiosignal.org",
+        "GitHub: issues": "https://github.com/aio-libs/aiosignal/issues",
+        "GitHub: repo": "https://github.com/aio-libs/aiosignal",
+        "Homepage": "https://github.com/aio-libs/aiosignal"
+      },
+      "home_page": "https://github.com/aio-libs/aiosignal",
+      "summary": "aiosignal: a list of registered asynchronous callbacks",
+      "author": "team@aiohttp.org"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "aiosignal-1.4.0-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "aiosignal-1.4.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/fb/76/641ae371508676492379f16e2fa48f4e2c11741bd63c48be4b12a6b09cba/aiosignal-1.4.0-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 7490,
+        "sha256_pypi": "053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e",
+        "sha256_verified": "053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "aiosignal-1.4.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/fb/76/641ae371508676492379f16e2fa48f4e2c11741bd63c48be4b12a6b09cba/aiosignal-1.4.0-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 7490,
+      "sha256_pypi": "053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e",
+      "sha256_verified": "053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "aiosignal-1.4.0-py3-none-any.whl::aiosignal-1.4.0.dist-info/licenses/LICENSE": {
+        "saved_as": "aiosignal-1.4.0.dist-info_licenses_LICENSE",
+        "sha256": "6fd5243e92dd7f98ec69c7ac377728e74905709ff527a5bf98d6d0263c04f5b6",
+        "bytes": 11332,
+        "from_artifact": "aiosignal-1.4.0-py3-none-any.whl",
+        "artifact_sha256": "053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

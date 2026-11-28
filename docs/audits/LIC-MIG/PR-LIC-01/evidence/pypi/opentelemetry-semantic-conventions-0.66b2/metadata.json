@@ -1,0 +1,192 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "OpenTelemetry Authors <cncf-opentelemetry-contributors@lists.cncf.io>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Framework :: OpenTelemetry",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14"
+      ],
+      "description": "OpenTelemetry Semantic Conventions\n==================================\n\n|pypi|\n\n.. |pypi| image:: https://badge.fury.io/py/opentelemetry-semantic-conventions.svg\n   :target: https://pypi.org/project/opentelemetry-semantic-conventions/\n\nThis library contains generated code for the semantic conventions defined by the OpenTelemetry specification.\n\nInstallation\n------------\n\n::\n\n    pip install opentelemetry-semantic-conventions\n\nCode Generation\n---------------\n\nThese files were generated automatically from code in semconv_.\nTo regenerate the code, run ``../scripts/semconv/generate.sh``.\n\nTo build against a new release or specific commit of opentelemetry-specification_,\nupdate the ``SPEC_VERSION`` variable in\n``../scripts/semconv/generate.sh``. Then run the script and commit the changes.\n\n.. _opentelemetry-specification: https://github.com/open-telemetry/opentelemetry-specification\n.. _semconv: https://github.com/open-telemetry/opentelemetry-python/tree/main/scripts/semconv\n\n\nReferences\n----------\n\n* `OpenTelemetry Project <https://opentelemetry.io/>`_\n* `OpenTelemetry Semantic Conventions Definitions <https://github.com/open-telemetry/semantic-conventions/blob/main/docs/README.md>`_\n* `generate.sh script <https://github.com/open-telemetry/opentelemetry-python/blob/main/scripts/semconv/generate.sh>`_\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": null,
+      "license": null,
+      "license_expression": "Apache-2.0",
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "opentelemetry-semantic-conventions",
+      "package_url": "https://pypi.org/project/opentelemetry-semantic-conventions/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/opentelemetry-semantic-conventions/",
+      "project_urls": {
+        "Homepage": "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-semantic-conventions",
+        "Repository": "https://github.com/open-telemetry/opentelemetry-python"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/opentelemetry-semantic-conventions/0.66b2/",
+      "requires_dist": [
+        "opentelemetry-api==1.45.2",
+        "typing-extensions>=4.5.0"
+      ],
+      "requires_python": ">=3.10",
+      "summary": "OpenTelemetry Semantic Conventions",
+      "version": "0.66b2",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 42928785,
+    "ownership": {
+      "organization": "opentelemetry",
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "LeightonC"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "7e443b23ebb345b06a7be96db4803ae81ac7ec8995e37f6814d0f2006b8e6447"
+        },
+        "digests": {
+          "blake2b_256": "67bd6bf33ed31521c565931c037e9e81bac47c1acb000e850c6e24220e2a0c00",
+          "md5": "5acb3a513930b673ece91de2d252d2ad",
+          "sha256": "4cbe61e5f9275d57ab31708446e7938ef4291ebbe6a7fca6f7a629c5acae87d8"
+        },
+        "downloads": -1,
+        "filename": "opentelemetry_semantic_conventions-0.66b2-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "5acb3a513930b673ece91de2d252d2ad",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.10",
+        "size": 206280,
+        "upload_time": "2026-10-29T17:29:35",
+        "upload_time_iso_8601": "2026-10-29T17:29:35.062112Z",
+        "url": "https://files.pythonhosted.org/packages/67/bd/6bf33ed31521c565931c037e9e81bac47c1acb000e850c6e24220e2a0c00/opentelemetry_semantic_conventions-0.66b2-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "373f50f95972b50e8e353f5b9342034c9cd17730f1956f009ce6a3fbbd89f9ce",
+          "md5": "86788566309d6d919d815edfb9ec75f9",
+          "sha256": "7da5f1a5dc4383eb66711d4d3d3e71824d9403ac1559fea021cc103c1a4c4976"
+        },
+        "downloads": -1,
+        "filename": "opentelemetry_semantic_conventions-0.66b2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "86788566309d6d919d815edfb9ec75f9",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.10",
+        "size": 150246,
+        "upload_time": "2026-10-29T17:29:55",
+        "upload_time_iso_8601": "2026-10-29T17:29:55.682731Z",
+        "url": "https://files.pythonhosted.org/packages/37/3f/50f95972b50e8e353f5b9342034c9cd17730f1956f009ce6a3fbbd89f9ce/opentelemetry_semantic_conventions-0.66b2.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "opentelemetry-semantic-conventions",
+    "version": "0.66b2",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "4cbe61e5f9275d57ab31708446e7938ef4291ebbe6a7fca6f7a629c5acae87d8",
+      "7da5f1a5dc4383eb66711d4d3d3e71824d9403ac1559fea021cc103c1a4c4976"
+    ],
+    "retrieved_at": "2026-11-28T12:09:57+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": "Apache-2.0",
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Framework :: OpenTelemetry",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14"
+      ],
+      "requires_python": ">=3.10",
+      "project_urls": {
+        "Homepage": "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-semantic-conventions",
+        "Repository": "https://github.com/open-telemetry/opentelemetry-python"
+      },
+      "home_page": null,
+      "summary": "OpenTelemetry Semantic Conventions",
+      "author": "OpenTelemetry Authors <cncf-opentelemetry-contributors@lists.cncf.io>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "opentelemetry_semantic_conventions-0.66b2-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "opentelemetry_semantic_conventions-0.66b2-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/67/bd/6bf33ed31521c565931c037e9e81bac47c1acb000e850c6e24220e2a0c00/opentelemetry_semantic_conventions-0.66b2-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 206280,
+        "sha256_pypi": "4cbe61e5f9275d57ab31708446e7938ef4291ebbe6a7fca6f7a629c5acae87d8",
+        "sha256_verified": "4cbe61e5f9275d57ab31708446e7938ef4291ebbe6a7fca6f7a629c5acae87d8",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "opentelemetry_semantic_conventions-0.66b2-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/67/bd/6bf33ed31521c565931c037e9e81bac47c1acb000e850c6e24220e2a0c00/opentelemetry_semantic_conventions-0.66b2-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 206280,
+      "sha256_pypi": "4cbe61e5f9275d57ab31708446e7938ef4291ebbe6a7fca6f7a629c5acae87d8",
+      "sha256_verified": "4cbe61e5f9275d57ab31708446e7938ef4291ebbe6a7fca6f7a629c5acae87d8",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "opentelemetry_semantic_conventions-0.66b2-py3-none-any.whl::opentelemetry_semantic_conventions-0.66b2.dist-info/licenses/LICENSE": {
+        "saved_as": "opentelemetry_semantic_conventions-0.66b2.dist-info_licenses_LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "bytes": 11357,
+        "from_artifact": "opentelemetry_semantic_conventions-0.66b2-py3-none-any.whl",
+        "artifact_sha256": "4cbe61e5f9275d57ab31708446e7938ef4291ebbe6a7fca6f7a629c5acae87d8"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

@@ -1,0 +1,183 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": "",
+      "author_email": "Joshua Bronson <jabronson@gmail.com>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Typing :: Typed"
+      ],
+      "description": ".. role:: doc\n.. (Forward declaration for the \"doc\" role that Sphinx defines for interop with renderers that\n   are often used to show this doc and that are unaware of Sphinx (GitHub.com, PyPI.org, etc.).\n   Use :doc: rather than :ref: here for better interop as well.)\n\n\nbidict\n======\n\n*The bidirectional mapping library for Python.*\n\n\nStatus\n------\n\n.. image:: https://img.shields.io/pypi/v/bidict.svg\n   :target: https://pypi.org/project/bidict\n   :alt: Latest release\n\n.. image:: https://img.shields.io/readthedocs/bidict/main.svg\n   :target: https://bidict.readthedocs.io/en/main/\n   :alt: Documentation\n\n.. image:: https://github.com/jab/bidict/actions/workflows/test.yml/badge.svg\n   :target: https://github.com/jab/bidict/actions/workflows/test.yml?query=branch%3Amain\n   :alt: GitHub Actions CI status\n\n.. image:: https://img.shields.io/pypi/l/bidict.svg\n   :target: https://raw.githubusercontent.com/jab/bidict/main/LICENSE\n   :alt: License\n\n.. image:: https://static.pepy.tech/badge/bidict\n   :target: https://pepy.tech/project/bidict\n   :alt: PyPI Downloads\n\n.. image:: https://img.shields.io/badge/GitHub-sponsor-ff69b4\n   :target: https://github.com/sponsors/jab\n   :alt: Sponsor\n\n\nFeatures\n--------\n\n- Mature: Depended on by\n  Google, Venmo, CERN, Baidu, Tencent,\n  and teams across the world since 2009\n\n- Familiar, Pythonic APIs\n  that are carefully designed for\n  safety, simplicity, flexibility, and ergonomics\n\n- Lightweight, with no runtime dependencies\n  outside Python's standard library\n\n- Implemented in\n  concise, well-factored, fully type-hinted Python code\n  that is optimized for running efficiently\n  as well as for long-term maintenance and stability\n  (as well as `joy <#learning-from-bidict>`__)\n\n- Extensively `documented <https://bidict.readthedocs.io>`__\n\n- 100% test coverage\n  running continuously across all supported Python versions\n  (including property-based tests and benchmarks)\n\n\nInstallation\n------------\n\n``pip install bidict``\n\n\nQuick Start\n-----------\n\n.. code:: python\n\n   >>> from bidict import bidict\n   >>> element_by_symbol = bidict({'H': 'hydrogen'})\n   >>> element_by_symbol['H']\n   'hydrogen'\n   >>> element_by_symbol.inverse['hydrogen']\n   'H'\n\n\nFor more usage documentation,\nhead to the :doc:`intro` [#fn-intro]_\nand proceed from there.\n\n\nEnterprise Support\n------------------\n\nEnterprise-level support for bidict can be obtained via the\n`Tidelift subscription <https://tidelift.com/subscription/pkg/pypi-bidict?utm_source=pypi-bidict&utm_medium=referral&utm_campaign=readme>`__\nor by `contacting me directly <mailto:jabronson@gmail.com>`__.\n\nI have a US-based LLC set up for invoicing,\nand I have 15+ years of professional experience\ndelivering software and support to companies successfully.\n\nYou can also sponsor my work through several platforms, including GitHub Sponsors.\nSee the `Sponsoring <#sponsoring>`__ section below for details,\nincluding rationale and examples of companies\nsupporting the open source projects they depend on.\n\n\nVoluntary Community Support\n---------------------------\n\nPlease search through already-asked questions and answers\nin `GitHub Discussions <https://github.com/jab/bidict/discussions>`__\nand the `issue tracker <https://github.com/jab/bidict/issues?q=is%3Aissue>`__\nin case your question has already been addressed.\n\nOtherwise, please feel free to\n`start a new discussion <https://github.com/jab/bidict/discussions>`__\nor `create a new issue <https://github.com/jab/bidict/issues/new>`__ on GitHub\nfor voluntary community support.\n\n\nNotice of Usage\n---------------\n\nIf you use bidict,\nand especially if your usage or your organization is significant in some way,\nplease let me know in any of the following ways:\n\n- `star bidict on GitHub <https://github.com/jab/bidict>`__\n- post in `GitHub Discussions <https://github.com/jab/bidict/discussions>`__\n- `email me <mailto:jabronson@gmail.com>`__\n\n\nChangelog\n---------\n\nFor bidict release notes, see the :doc:`changelog`. [#fn-changelog]_\n\n\nRelease Notifications\n---------------------\n\n.. duplicated in CHANGELOG.rst:\n   (Would use `.. include::` but GitHub's renderer doesn't support it.)\n\nWatch `bidict releases on GitHub <https://github.com/jab/bidict/releases>`__\nto be notified when new versions of bidict are published.\nClick the \"Watch\" dropdown, choose \"Custom\", and then choose \"Releases\".\n\n\nLearning from bidict\n--------------------\n\nOne of the best things about bidict\nis that it touches a surprising number of\ninteresting Python corners,\nespecially given its small size and scope.\n\nCheck out :doc:`learning-from-bidict` [#fn-learning]_\nif you're interested in learning more.\n\n\nContributing\n------------\n\nI have been bidict's sole maintainer\nand `active contributor <https://github.com/jab/bidict/graphs/contributors>`__\nsince I started the project ~15 years ago.\n\nYour help would be most welcome!\nSee the :doc:`contributors-guide` [#fn-contributing]_\nfor more information.\n\n\nSponsoring\n----------\n\n.. duplicated in CONTRIBUTING.rst\n   (Would use `.. include::` but GitHub's renderer doesn't support it.)\n\n.. image:: https://img.shields.io/badge/GitHub-sponsor-ff69b4\n  :target: https://github.com/sponsors/jab\n  :alt: Sponsor through GitHub\n\nBidict is the product of thousands of hours of my unpaid work\nover the 15+ years that I've been the sole maintainer.\n\nIf bidict has helped you or your company accomplish your work,\nplease sponsor my work through one of the following,\nand/or ask your company to do the same:\n\n- `GitHub <https://github.com/sponsors/jab>`__\n- `PayPal <https://www.paypal.com/cgi-bin/webscr?cmd=_xclick&business=jabronson%40gmail%2ecom&lc=US&item_name=Sponsor%20bidict>`__\n- `Tidelift <https://tidelift.com>`__\n- `thanks.dev <https://thanks.dev>`__\n- `Gumroad <https://gumroad.com/l/bidict>`__\n- `a support engagement with my LLC <#enterprise-support>`__\n\nIf you're not sure which to use, GitHub is an easy option,\nespecially if you already have a GitHub account.\nJust choose a monthly or one-time amount, and GitHub handles everything else.\nYour bidict sponsorship on GitHub will automatically go\non the same regular bill as any other GitHub charges you pay for.\nPayPal is another easy option for one-time contributions.\n\nSee the following for rationale and examples of companies\nsupporting the open source projects they depend on\nin this manner:\n\n- `<https://engineering.atspotify.com/2022/04/announcing-the-spotify-foss-fund/>`__\n- `<https://blog.sentry.io/2021/10/21/we-just-gave-154-999-dollars-and-89-cents-to-open-source-maintainers>`__\n- `<https://engineering.indeedblog.com/blog/2019/07/foss-fund-six-months-in/>`__\n\n.. - `<https://sethmlarson.dev/blog/people-in-your-software-supply-chain>`__\n.. - `<https://www.cognitect.com/blog/supporting-open-source-developers>`__\n.. - `<https://vorpus.org/blog/the-unreasonable-effectiveness-of-investment-in-open-source-infrastructure/>`__\n\n\nFinding Documentation\n---------------------\n\nIf you're viewing this on `<https://bidict.readthedocs.io>`__,\nnote that multiple versions of the documentation are available,\nand you can choose a different version using the popup menu at the bottom-right.\nPlease make sure you're viewing the version of the documentation\nthat corresponds to the version of bidict you'd like to use.\n\nIf you're viewing this on GitHub, PyPI, or some other place\nthat can't render and link this documentation properly\nand are seeing broken links,\ntry these alternate links instead:\n\n.. [#fn-intro] `<https://bidict.readthedocs.io/intro.html>`__ | `<docs/intro.rst>`__\n\n.. [#fn-changelog] `<https://bidict.readthedocs.io/changelog.html>`__ | `<CHANGELOG.rst>`__\n\n.. [#fn-learning] `<https://bidict.readthedocs.io/learning-from-bidict.html>`__ | `<docs/learning-from-bidict.rst>`__\n\n.. [#fn-contributing] `<https://bidict.readthedocs.io/contributors-guide.html>`__ | `<CONTRIBUTING.rst>`__\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": "",
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": "",
+      "keywords": "bidict,bimap,bidirectional,dict,dictionary,mapping,collections",
+      "license": "MPL 2.0",
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": "",
+      "maintainer_email": "",
+      "name": "bidict",
+      "package_url": "https://pypi.org/project/bidict/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/bidict/",
+      "project_urls": {
+        "Changelog": "https://bidict.readthedocs.io/changelog.html",
+        "Documentation": "https://bidict.readthedocs.io",
+        "Funding": "https://bidict.readthedocs.io/#sponsoring",
+        "Repository": "https://github.com/jab/bidict"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/bidict/0.23.1/",
+      "requires_dist": null,
+      "requires_python": ">=3.8",
+      "summary": "The bidirectional mapping library for Python.",
+      "version": "0.23.1",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 40390987,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "jab"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": "",
+        "core-metadata": {
+          "sha256": "da8bc8466e837fc81dc0031e906aa4781485e535a3da6bf58e99a1e16e24b3ba"
+        },
+        "digests": {
+          "blake2b_256": "9937e8730c3587a65eb5645d4aba2d27aae48e8003614d6aaf15dda67f702f1f",
+          "md5": "6a5e2f284d5fdd9bf7d83989bc4e87c5",
+          "sha256": "5dae8d4d79b552a71cbabc7deb25dfe8ce710b17ff41711e13010ead2abfc3e5"
+        },
+        "downloads": -1,
+        "filename": "bidict-0.23.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "6a5e2f284d5fdd9bf7d83989bc4e87c5",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.8",
+        "size": 32764,
+        "upload_time": "2024-02-18T19:09:04",
+        "upload_time_iso_8601": "2024-02-18T19:09:04.156501Z",
+        "url": "https://files.pythonhosted.org/packages/99/37/e8730c3587a65eb5645d4aba2d27aae48e8003614d6aaf15dda67f702f1f/bidict-0.23.1-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": "",
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "9a6e026678aa5a830e07cd9498a05d3e7e650a4f56a42f267a53d22bcda1bdc9",
+          "md5": "561cd7fd5c3036bbfa2c5185531e7b19",
+          "sha256": "03069d763bc387bbd20e7d49914e75fc4132a41937fa3405417e1a5a2d006d71"
+        },
+        "downloads": -1,
+        "filename": "bidict-0.23.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "561cd7fd5c3036bbfa2c5185531e7b19",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.8",
+        "size": 29093,
+        "upload_time": "2024-02-18T19:09:05",
+        "upload_time_iso_8601": "2024-02-18T19:09:05.748838Z",
+        "url": "https://files.pythonhosted.org/packages/9a/6e/026678aa5a830e07cd9498a05d3e7e650a4f56a42f267a53d22bcda1bdc9/bidict-0.23.1.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "bidict",
+    "version": "0.23.1",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "03069d763bc387bbd20e7d49914e75fc4132a41937fa3405417e1a5a2d006d71",
+      "5dae8d4d79b552a71cbabc7deb25dfe8ce710b17ff41711e13010ead2abfc3e5"
+    ],
+    "retrieved_at": "2026-11-28T12:09:54+00:00",
+    "pypi_info": {
+      "license": "MPL 2.0",
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)"
+      ],
+      "classifiers_all": [
+        "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Typing :: Typed"
+      ],
+      "requires_python": ">=3.8",
+      "project_urls": {
+        "Changelog": "https://bidict.readthedocs.io/changelog.html",
+        "Documentation": "https://bidict.readthedocs.io",
+        "Funding": "https://bidict.readthedocs.io/#sponsoring",
+        "Repository": "https://github.com/jab/bidict"
+      },
+      "home_page": "",
+      "summary": "The bidirectional mapping library for Python.",
+      "author": "Joshua Bronson <jabronson@gmail.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "bidict-0.23.1-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "bidict-0.23.1-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/99/37/e8730c3587a65eb5645d4aba2d27aae48e8003614d6aaf15dda67f702f1f/bidict-0.23.1-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 32764,
+        "sha256_pypi": "5dae8d4d79b552a71cbabc7deb25dfe8ce710b17ff41711e13010ead2abfc3e5",
+        "sha256_verified": "5dae8d4d79b552a71cbabc7deb25dfe8ce710b17ff41711e13010ead2abfc3e5",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "bidict-0.23.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/99/37/e8730c3587a65eb5645d4aba2d27aae48e8003614d6aaf15dda67f702f1f/bidict-0.23.1-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 32764,
+      "sha256_pypi": "5dae8d4d79b552a71cbabc7deb25dfe8ce710b17ff41711e13010ead2abfc3e5",
+      "sha256_verified": "5dae8d4d79b552a71cbabc7deb25dfe8ce710b17ff41711e13010ead2abfc3e5",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "bidict-0.23.1-py3-none-any.whl::bidict-0.23.1.dist-info/LICENSE": {
+        "saved_as": "bidict-0.23.1.dist-info_LICENSE",
+        "sha256": "f3f53adcecaa48d73a66e238fa5ba906cb41876783b45d28a1346b3142eebd9a",
+        "bytes": 16784,
+        "from_artifact": "bidict-0.23.1-py3-none-any.whl",
+        "artifact_sha256": "5dae8d4d79b552a71cbabc7deb25dfe8ce710b17ff41711e13010ead2abfc3e5"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

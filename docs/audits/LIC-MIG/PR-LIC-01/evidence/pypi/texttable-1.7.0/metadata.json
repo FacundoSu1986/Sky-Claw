@@ -1,0 +1,209 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": "Gerome Fournier",
+      "author_email": "jef@foutaise.org",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Environment :: Console",
+        "Intended Audience :: Developers",
+        "Intended Audience :: End Users/Desktop",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: MacOS",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 2",
+        "Programming Language :: Python :: 2.7",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.5",
+        "Programming Language :: Python :: 3.6",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Topic :: Text Processing",
+        "Topic :: Utilities"
+      ],
+      "description": "# texttable\n\nPython module to create simple ASCII tables\n\n## Availability\n\nThis module is available on [PyPI](https://pypi.org/project/texttable/), and has been packaged for several Linux/Unix platforms\n([Debian](https://packages.debian.org/search?&searchon=names&keywords=python-texttable+),\n[FreeBSD](https://www.freebsd.org/cgi/ports.cgi?query=texttable&stype=all), Fedora, Suse...).\n\n## Dependencies\n\nIf available, [cjkwrap](https://github.com/fgallaire/cjkwrap) library is used instead of textwrap, for a better wrapping of CJK text.\n\nIf available, [wcwidth](https://github.com/jquast/wcwidth) library is used for a better rendering (basic emoji support).\n\n## Documentation\n\n```\nNAME\n    texttable - module to create simple ASCII tables\n\nFILE\n    /usr/local/lib/python2.7/dist-packages/texttable.py\n\nDESCRIPTION\n\n    Example:\n\n        table = Texttable()\n        table.set_cols_align([\"l\", \"r\", \"c\"])\n        table.set_cols_valign([\"t\", \"m\", \"b\"])\n        table.add_rows([[\"Name\", \"Age\", \"Nickname\"],\n                        [\"Mr\\nXavier\\nHuon\", 32, \"Xav'\"],\n                        [\"Mr\\nBaptiste\\nClement\", 1, \"Baby\"],\n                        [\"Mme\\nLouise\\nBourgeau\", 28, \"Lou\\n\\nLoue\"]])\n        print(table.draw())\n        print()\n\n        table = Texttable()\n        table.set_deco(Texttable.HEADER)\n        table.set_cols_dtype(['t',  # text\n                              'f',  # float (decimal)\n                              'e',  # float (exponent)\n                              'i',  # integer\n                              'a']) # automatic\n        table.set_cols_align([\"l\", \"r\", \"r\", \"r\", \"l\"])\n        table.add_rows([[\"text\",    \"float\", \"exp\", \"int\", \"auto\"],\n                        [\"abcd\",    \"67\",    654,   89,    128.001],\n                        [\"efghijk\", 67.5434, .654,  89.6,  12800000000000000000000.00023],\n                        [\"lmn\",     5e-78,   5e-78, 89.4,  .000000000000128],\n                        [\"opqrstu\", .023,    5e+78, 92.,   12800000000000000000000]])\n        print(table.draw())\n\n    Result:\n\n        +----------+-----+----------+\n        |   Name   | Age | Nickname |\n        +==========+=====+==========+\n        | Mr       |     |          |\n        | Xavier   |  32 |          |\n        | Huon     |     |   Xav'   |\n        +----------+-----+----------+\n        | Mr       |     |          |\n        | Baptiste |   1 |          |\n        | Clement  |     |   Baby   |\n        +----------+-----+----------+\n        | Mme      |     |   Lou    |\n        | Louise   |  28 |          |\n        | Bourgeau |     |   Loue   |\n        +----------+-----+----------+\n\n         text     float       exp      int     auto\n        ==============================================\n        abcd      67.000   6.540e+02    89   128.001\n        efghijk   67.543   6.540e-01    90   1.280e+22\n        lmn        0.000   5.000e-78    89   0.000\n        opqrstu    0.023   5.000e+78    92   1.280e+22\n\nCLASSES\n    class Texttable\n     |  Methods defined here:\n     |\n     |  __init__(self, max_width=80)\n     |      Constructor\n     |\n     |      - max_width is an integer, specifying the maximum width of the table\n     |      - if set to 0, size is unlimited, therefore cells won't be wrapped\n     |\n     |  add_row(self, array)\n     |      Add a row in the rows stack\n     |\n     |      - cells can contain newlines and tabs\n     |\n     |  add_rows(self, rows, header=True)\n     |      Add several rows in the rows stack\n     |\n     |      - The 'rows' argument can be either an iterator returning arrays,\n     |        or a by-dimensional array\n     |      - 'header' specifies if the first row should be used as the header\n     |        of the table\n     |\n     |  draw(self)\n     |      Draw the table\n     |\n     |      - the table is returned as a whole string\n     |\n     |  header(self, array)\n     |      Specify the header of the table\n     |\n     |  reset(self)\n     |      Reset the instance\n     |\n     |      - reset rows and header\n     |\n     |  set_chars(self, array)\n     |      Set the characters used to draw lines between rows and columns\n     |\n     |      - the array should contain 4 fields:\n     |\n     |          [horizontal, vertical, corner, header]\n     |\n     |      - default is set to:\n     |\n     |          ['-', '|', '+', '=']\n     |\n     |  set_cols_align(self, array)\n     |      Set the desired columns alignment\n     |\n     |      - the elements of the array should be either \"l\", \"c\" or \"r\":\n     |\n     |          * \"l\": column flushed left\n     |          * \"c\": column centered\n     |          * \"r\": column flushed right\n     |\n     |  set_cols_dtype(self, array)\n     |      Set the desired columns datatype for the cols.\n     |\n     |      - the elements of the array should be either a callable or any of\n     |        \"a\", \"t\", \"f\", \"e\" or \"i\":\n     |\n     |          * \"a\": automatic (try to use the most appropriate datatype)\n     |          * \"t\": treat as text\n     |          * \"f\": treat as float in decimal format\n     |          * \"e\": treat as float in exponential format\n     |          * \"i\": treat as int\n     |          * \"b\": treat as boolean\n     |          * a callable: should return formatted string for any value given\n     |\n     |      - by default, automatic datatyping is used for each column\n     |\n     |  set_cols_valign(self, array)\n     |      Set the desired columns vertical alignment\n     |\n     |      - the elements of the array should be either \"t\", \"m\" or \"b\":\n     |\n     |          * \"t\": column aligned on the top of the cell\n     |          * \"m\": column aligned on the middle of the cell\n     |          * \"b\": column aligned on the bottom of the cell\n     |\n     |  set_cols_width(self, array)\n     |      Set the desired columns width\n     |\n     |      - the elements of the array should be integers, specifying the\n     |        width of each column. For example:\n     |\n     |              [10, 20, 5]\n     |\n     |  set_deco(self, deco)\n     |      Set the table decoration\n     |\n     |      - 'deco' can be a combination of:\n     |\n     |          Texttable.BORDER: Border around the table\n     |          Texttable.HEADER: Horizontal line below the header\n     |          Texttable.HLINES: Horizontal lines between rows\n     |          Texttable.VLINES: Vertical lines between columns\n     |\n     |         All of them are enabled by default\n     |\n     |      - example:\n     |\n     |          Texttable.BORDER | Texttable.HEADER\n     |\n     |  set_header_align(self, array)\n     |      Set the desired header alignment\n     |\n     |      - the elements of the array should be either \"l\", \"c\" or \"r\":\n     |\n     |          * \"l\": column flushed left\n     |          * \"c\": column centered\n     |          * \"r\": column flushed right\n     |\n     |  set_max_width(self, max_width)\n     |      Set the maximum width of the table\n     |\n     |      - max_width is an integer, specifying the maximum width of the table\n     |      - if set to 0, size is unlimited, therefore cells won't be wrapped\n     |\n     |  set_precision(self, width)\n     |      Set the desired precision for float/exponential formats\n     |\n     |      - width must be an integer >= 0\n     |\n     |      - default value is set to 3\n     |\n     |  ----------------------------------------------------------------------\n     |  Data and other attributes defined here:\n     |\n     |  BORDER = 1\n     |\n     |  HEADER = 2\n     |\n     |  HLINES = 4\n     |\n     |  VLINES = 8\n\nDATA\n    __all__ = ['Texttable', 'ArraySizeError']\n    __author__ = 'Gerome Fournier <jef(at)foutaise.org>'\n    __credits__ = 'Jeff Kowalczyk:\\n    - textwrap improved import\\n ...at...\n    __license__ = 'MIT'\n    __version__ = '1.7.0'\n\nVERSION\n    1.7.0\n\nAUTHOR\n    Gerome Fournier <jef(at)foutaise.org>\n\nCREDITS\n    Jeff Kowalczyk:\n        - textwrap improved import\n        - comment concerning header output\n\n    Anonymous:\n        - add_rows method, for adding rows in one go\n\n    Sergey Simonenko:\n        - redefined len() function to deal with non-ASCII characters\n\n    Roger Lew:\n        - columns datatype specifications\n\n    Brian Peterson:\n        - better handling of unicode errors\n\n    Frank Sachsenheim:\n        - add Python 2/3-compatibility\n\n    Maximilian Hils:\n        - fix minor bug for Python 3 compatibility\n\n    frinkelpi:\n        - preserve empty lines\n```\n\n## Forks\n\n* [latextable](https://github.com/JAEarly/latextable) is a fork of texttable that provide a LaTeX backend.\n",
+      "description_content_type": "text/markdown",
+      "docs_url": null,
+      "download_url": "https://github.com/foutaise/texttable/archive/v1.7.0.tar.gz",
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": "https://github.com/foutaise/texttable/",
+      "keywords": "",
+      "license": "MIT",
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": "",
+      "maintainer_email": "",
+      "name": "texttable",
+      "package_url": "https://pypi.org/project/texttable/",
+      "platform": "any",
+      "project_url": "https://pypi.org/project/texttable/",
+      "project_urls": {
+        "Download": "https://github.com/foutaise/texttable/archive/v1.7.0.tar.gz",
+        "Homepage": "https://github.com/foutaise/texttable/"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/texttable/1.7.0/",
+      "requires_dist": null,
+      "requires_python": "",
+      "summary": "module to create simple ASCII tables",
+      "version": "1.7.0",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 44267862,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "jefke"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": "",
+        "core-metadata": {
+          "sha256": "4242fbffb65362c5917c349ea25c7ba600bb055b0078ce5355911e3438464f65"
+        },
+        "digests": {
+          "blake2b_256": "24994772b8e00a136f3e01236de33b0efda31ee7077203ba5967fcc76da94d65",
+          "md5": "9cc007cdc8238cb128dc7a6a822e5e91",
+          "sha256": "72227d592c82b3d7f672731ae73e4d1f88cd8e2ef5b075a7a7f01a23a3743917"
+        },
+        "downloads": -1,
+        "filename": "texttable-1.7.0-py2.py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "9cc007cdc8238cb128dc7a6a822e5e91",
+        "packagetype": "bdist_wheel",
+        "python_version": "py2.py3",
+        "requires_python": null,
+        "size": 10768,
+        "upload_time": "2023-10-03T09:48:10",
+        "upload_time_iso_8601": "2023-10-03T09:48:10.434218Z",
+        "url": "https://files.pythonhosted.org/packages/24/99/4772b8e00a136f3e01236de33b0efda31ee7077203ba5967fcc76da94d65/texttable-1.7.0-py2.py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": "",
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "1cdc0aff23d6036a4d3bf4f1d8c8204c5c79c4437e25e0ae94ffe4bbb55ee3c2",
+          "md5": "e5d380c04fab132ccf0bbfd4f761bd51",
+          "sha256": "2d2068fb55115807d3ac77a4ca68fa48803e84ebb0ee2340f858107a36522638"
+        },
+        "downloads": -1,
+        "filename": "texttable-1.7.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "e5d380c04fab132ccf0bbfd4f761bd51",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": null,
+        "size": 12831,
+        "upload_time": "2023-10-03T09:48:12",
+        "upload_time_iso_8601": "2023-10-03T09:48:12.272499Z",
+        "url": "https://files.pythonhosted.org/packages/1c/dc/0aff23d6036a4d3bf4f1d8c8204c5c79c4437e25e0ae94ffe4bbb55ee3c2/texttable-1.7.0.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "texttable",
+    "version": "1.7.0",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "2d2068fb55115807d3ac77a4ca68fa48803e84ebb0ee2340f858107a36522638",
+      "72227d592c82b3d7f672731ae73e4d1f88cd8e2ef5b075a7a7f01a23a3743917"
+    ],
+    "retrieved_at": "2026-11-28T12:09:59+00:00",
+    "pypi_info": {
+      "license": "MIT",
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: MIT License"
+      ],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Environment :: Console",
+        "Intended Audience :: Developers",
+        "Intended Audience :: End Users/Desktop",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: MacOS",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 2",
+        "Programming Language :: Python :: 2.7",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.5",
+        "Programming Language :: Python :: 3.6",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Topic :: Text Processing",
+        "Topic :: Utilities"
+      ],
+      "requires_python": "",
+      "project_urls": {
+        "Download": "https://github.com/foutaise/texttable/archive/v1.7.0.tar.gz",
+        "Homepage": "https://github.com/foutaise/texttable/"
+      },
+      "home_page": "https://github.com/foutaise/texttable/",
+      "summary": "module to create simple ASCII tables",
+      "author": "jef@foutaise.org"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "texttable-1.7.0-py2.py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "texttable-1.7.0-py2.py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/24/99/4772b8e00a136f3e01236de33b0efda31ee7077203ba5967fcc76da94d65/texttable-1.7.0-py2.py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 10768,
+        "sha256_pypi": "72227d592c82b3d7f672731ae73e4d1f88cd8e2ef5b075a7a7f01a23a3743917",
+        "sha256_verified": "72227d592c82b3d7f672731ae73e4d1f88cd8e2ef5b075a7a7f01a23a3743917",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "texttable-1.7.0-py2.py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/24/99/4772b8e00a136f3e01236de33b0efda31ee7077203ba5967fcc76da94d65/texttable-1.7.0-py2.py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 10768,
+      "sha256_pypi": "72227d592c82b3d7f672731ae73e4d1f88cd8e2ef5b075a7a7f01a23a3743917",
+      "sha256_verified": "72227d592c82b3d7f672731ae73e4d1f88cd8e2ef5b075a7a7f01a23a3743917",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "texttable-1.7.0-py2.py3-none-any.whl::texttable-1.7.0.dist-info/LICENSE": {
+        "saved_as": "texttable-1.7.0.dist-info_LICENSE",
+        "sha256": "4ba7bdab54504a3bc44eb33ecca873a26a63ab902822101a87bb46235da63594",
+        "bytes": 1083,
+        "from_artifact": "texttable-1.7.0-py2.py3-none-any.whl",
+        "artifact_sha256": "72227d592c82b3d7f672731ae73e4d1f88cd8e2ef5b075a7a7f01a23a3743917"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

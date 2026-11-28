@@ -1,0 +1,1471 @@
+{
+  "imports_de_primer_nivel_en_sky_claw": [
+    "PIL",
+    "PyQt6",
+    "__future__",
+    "abc",
+    "aiofiles",
+    "aiohttp",
+    "aiosqlite",
+    "argparse",
+    "ast",
+    "ast_guardian",
+    "asyncio",
+    "atexit",
+    "base64",
+    "binascii",
+    "bisect",
+    "codecs",
+    "collections",
+    "comtypes",
+    "concurrent",
+    "configparser",
+    "contextlib",
+    "contextvars",
+    "copy",
+    "cryptography",
+    "ctypes",
+    "dataclasses",
+    "datetime",
+    "decimal",
+    "defusedxml",
+    "enum",
+    "errno",
+    "fastembed",
+    "fcntl",
+    "filecmp",
+    "fnmatch",
+    "functools",
+    "getpass",
+    "hashlib",
+    "hmac",
+    "html",
+    "importlib",
+    "inspect",
+    "io",
+    "ipaddress",
+    "itertools",
+    "json",
+    "keyring",
+    "logging",
+    "math",
+    "mmap",
+    "mobase",
+    "msvcrt",
+    "nicegui",
+    "ntpath",
+    "numpy",
+    "opentelemetry",
+    "os",
+    "pathlib",
+    "pefile",
+    "pkgutil",
+    "platform",
+    "prometheus_client",
+    "psutil",
+    "py7zr",
+    "pydantic",
+    "pynvml",
+    "pythonjsonlogger",
+    "queue",
+    "random",
+    "rarfile",
+    "re",
+    "secrets",
+    "select",
+    "shutil",
+    "signal",
+    "sky_claw",
+    "socket",
+    "sqlite3",
+    "ssl",
+    "stat",
+    "string",
+    "struct",
+    "subprocess",
+    "sys",
+    "tempfile",
+    "tenacity",
+    "threading",
+    "time",
+    "tomli_w",
+    "tomllib",
+    "traceback",
+    "tracemalloc",
+    "types",
+    "typing",
+    "unicodedata",
+    "urllib",
+    "uuid",
+    "warnings",
+    "weakref",
+    "webbrowser",
+    "websockets",
+    "winreg",
+    "xml",
+    "yaml",
+    "zipfile",
+    "zlib"
+  ],
+  "hiddenimports_del_spec": [
+    "aiofiles",
+    "aiofiles.os",
+    "aiohttp",
+    "aiosqlite",
+    "certifi",
+    "comtypes",
+    "comtypes.client",
+    "comtypes.gen.UIAutomationClient",
+    "defusedxml",
+    "defusedxml.ElementTree",
+    "py7zr",
+    "pydantic",
+    "pydantic.deprecated.decorator",
+    "pydantic_core",
+    "rarfile",
+    "sky_claw.app.agent.hermes_parser",
+    "sky_claw.app.agent.providers",
+    "sky_claw.app.agent.router",
+    "sky_claw.app.agent.tools",
+    "sky_claw.app.agent.xml_tool_call_parser",
+    "sky_claw.app.comms.telegram",
+    "sky_claw.app.comms.telegram_sender",
+    "sky_claw.app.core.dlq_manager",
+    "sky_claw.app.db.async_registry",
+    "sky_claw.app.db.registry",
+    "sky_claw.app.orchestrator.sync_engine",
+    "sky_claw.app.orchestrator.tool_dispatcher",
+    "sky_claw.app.orchestrator.tool_strategies",
+    "sky_claw.app.orchestrator.tool_strategies.base",
+    "sky_claw.app.orchestrator.tool_strategies.execute_loot_sorting",
+    "sky_claw.app.orchestrator.tool_strategies.execute_synthesis",
+    "sky_claw.app.orchestrator.tool_strategies.generate_bashed_patch",
+    "sky_claw.app.orchestrator.tool_strategies.generate_lods",
+    "sky_claw.app.orchestrator.tool_strategies.middleware",
+    "sky_claw.app.orchestrator.tool_strategies.query_mod_metadata",
+    "sky_claw.app.orchestrator.tool_strategies.resolve_conflict_patch",
+    "sky_claw.app.orchestrator.tool_strategies.scan_asset_conflicts",
+    "sky_claw.app.orchestrator.tool_strategies.validate_plugin_limit",
+    "sky_claw.app.scraper.masterlist",
+    "sky_claw.app.scraper.nexus_downloader",
+    "sky_claw.app.security.hitl",
+    "sky_claw.app.security.loop_guardrail",
+    "sky_claw.app.security.network_gateway",
+    "sky_claw.app.security.path_validator",
+    "sky_claw.app.security.sanitize",
+    "sky_claw.app.web",
+    "sky_claw.app.web.app",
+    "sky_claw.local.fomod.installer",
+    "sky_claw.local.fomod.parser",
+    "sky_claw.local.fomod.resolver",
+    "sky_claw.local.local_config",
+    "sky_claw.local.loot.cli",
+    "sky_claw.local.mo2.vfs",
+    "sky_claw.local.mo2.vfs_arranque",
+    "sky_claw.local.mo2.vfs_broker",
+    "sky_claw.local.mo2.vfs_worker",
+    "sky_claw.local.tools.dyndolod_uia_driver_ejecutor",
+    "sky_claw.local.tools.dyndolod_uia_driver_helper",
+    "sky_claw.local.tools.dyndolod_uia_driver_windows",
+    "sky_claw.local.tools.dyndolod_uia_ejecutor",
+    "sky_claw.local.tools.dyndolod_uia_helper",
+    "sky_claw.local.tools.dyndolod_uia_windows",
+    "sky_claw.local.tools_installer",
+    "sky_claw.local.xedit.conflict_analyzer",
+    "sky_claw.local.xedit.output_parser",
+    "sky_claw.local.xedit.runner",
+    "sqlite3",
+    "ssl",
+    "tenacity"
+  ],
+  "distribuciones_en_lock": 94,
+  "alcanzables": 93,
+  "no_alcanzables": [
+    "sv-ttk"
+  ],
+  "nota": "«no alcanzable» NO equivale a «no redistribuido»: puede entrar por un hook de PyInstaller o por import dinámico no declarado. La prueba definitiva es el Analysis TOC (EVIDENCE_MISSING en esta fase).",
+  "filas": [
+    {
+      "distribution": "aiofiles",
+      "canonical": "aiofiles",
+      "modules": [
+        "aiofiles"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "aiofiles"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "aiohappyeyeballs",
+      "canonical": "aiohappyeyeballs",
+      "modules": [
+        "aiohappyeyeballs"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "aiohttp",
+      "canonical": "aiohttp",
+      "modules": [
+        "aiohttp"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "aiohttp"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "aiosignal",
+      "canonical": "aiosignal",
+      "modules": [
+        "aiosignal"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "aiosqlite",
+      "canonical": "aiosqlite",
+      "modules": [
+        "aiosqlite"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "aiosqlite"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "annotated-doc",
+      "canonical": "annotated-doc",
+      "modules": [
+        "annotated_doc"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "annotated-types",
+      "canonical": "annotated-types",
+      "modules": [
+        "annotated_types"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "anyio",
+      "canonical": "anyio",
+      "modules": [
+        "anyio"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "attrs",
+      "canonical": "attrs",
+      "modules": [
+        "attrs"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "backports-tarfile",
+      "canonical": "backports-tarfile",
+      "modules": [
+        "backports"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "backports-zstd",
+      "canonical": "backports-zstd",
+      "modules": [
+        "backports"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "bidict",
+      "canonical": "bidict",
+      "modules": [
+        "bidict"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "brotli",
+      "canonical": "brotli",
+      "modules": [
+        "brotli"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "certifi",
+      "canonical": "certifi",
+      "modules": [
+        "certifi"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "certifi"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "cffi",
+      "canonical": "cffi",
+      "modules": [
+        "cffi"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "click",
+      "canonical": "click",
+      "modules": [
+        "click"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "colorama",
+      "canonical": "colorama",
+      "modules": [
+        "colorama"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "comtypes",
+      "canonical": "comtypes",
+      "modules": [
+        "comtypes"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "comtypes"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "cryptography",
+      "canonical": "cryptography",
+      "modules": [
+        "cryptography"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "cryptography"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "defusedxml",
+      "canonical": "defusedxml",
+      "modules": [
+        "defusedxml"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "defusedxml"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "docutils",
+      "canonical": "docutils",
+      "modules": [
+        "docutils"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "fastapi",
+      "canonical": "fastapi",
+      "modules": [
+        "fastapi"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "frozenlist",
+      "canonical": "frozenlist",
+      "modules": [
+        "frozenlist"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "googleapis-common-protos",
+      "canonical": "googleapis-common-protos",
+      "modules": [
+        "google"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "grpcio",
+      "canonical": "grpcio",
+      "modules": [
+        "grpc"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "h11",
+      "canonical": "h11",
+      "modules": [
+        "h11"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "httpcore",
+      "canonical": "httpcore",
+      "modules": [
+        "httpcore"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "httptools",
+      "canonical": "httptools",
+      "modules": [
+        "httptools"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "httpx",
+      "canonical": "httpx",
+      "modules": [
+        "httpx"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "idna",
+      "canonical": "idna",
+      "modules": [
+        "idna"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "ifaddr",
+      "canonical": "ifaddr",
+      "modules": [
+        "ifaddr"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "importlib-metadata",
+      "canonical": "importlib-metadata",
+      "modules": [
+        "importlib_metadata"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "inflate64",
+      "canonical": "inflate64",
+      "modules": [
+        "inflate64"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "itsdangerous",
+      "canonical": "itsdangerous",
+      "modules": [
+        "itsdangerous"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "jaraco-classes",
+      "canonical": "jaraco-classes",
+      "modules": [
+        "jaraco"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "jaraco-context",
+      "canonical": "jaraco-context",
+      "modules": [
+        "jaraco"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "jaraco-functools",
+      "canonical": "jaraco-functools",
+      "modules": [
+        "jaraco"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "jinja2",
+      "canonical": "jinja2",
+      "modules": [
+        "jinja2"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "keyring",
+      "canonical": "keyring",
+      "modules": [
+        "keyring"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "keyring"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "lxml",
+      "canonical": "lxml",
+      "modules": [
+        "lxml"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "lxml-html-clean",
+      "canonical": "lxml-html-clean",
+      "modules": [
+        "lxml_html_clean"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "markdown2",
+      "canonical": "markdown2",
+      "modules": [
+        "markdown2"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "markupsafe",
+      "canonical": "markupsafe",
+      "modules": [
+        "markupsafe"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "more-itertools",
+      "canonical": "more-itertools",
+      "modules": [
+        "more_itertools"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "multidict",
+      "canonical": "multidict",
+      "modules": [
+        "multidict"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "multivolumefile",
+      "canonical": "multivolumefile",
+      "modules": [
+        "multivolumefile"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "nicegui",
+      "canonical": "nicegui",
+      "modules": [
+        "nicegui"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "nicegui"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "numpy",
+      "canonical": "numpy",
+      "modules": [
+        "numpy"
+      ],
+      "lock_base": false,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "numpy"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "opentelemetry-api",
+      "canonical": "opentelemetry-api",
+      "modules": [
+        "opentelemetry"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "opentelemetry"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "opentelemetry-exporter-otlp-common",
+      "canonical": "opentelemetry-exporter-otlp-common",
+      "modules": [
+        "opentelemetry"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "opentelemetry"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "opentelemetry-exporter-otlp-proto-common",
+      "canonical": "opentelemetry-exporter-otlp-proto-common",
+      "modules": [
+        "opentelemetry"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "opentelemetry"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "opentelemetry-exporter-otlp-proto-grpc",
+      "canonical": "opentelemetry-exporter-otlp-proto-grpc",
+      "modules": [
+        "opentelemetry"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "opentelemetry"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "opentelemetry-proto",
+      "canonical": "opentelemetry-proto",
+      "modules": [
+        "opentelemetry"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "opentelemetry"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "opentelemetry-sdk",
+      "canonical": "opentelemetry-sdk",
+      "modules": [
+        "opentelemetry"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "opentelemetry"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "opentelemetry-semantic-conventions",
+      "canonical": "opentelemetry-semantic-conventions",
+      "modules": [
+        "opentelemetry"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "opentelemetry"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "orjson",
+      "canonical": "orjson",
+      "modules": [
+        "orjson"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "pefile",
+      "canonical": "pefile",
+      "modules": [
+        "pefile"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "pefile"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "pillow",
+      "canonical": "pillow",
+      "modules": [
+        "PIL"
+      ],
+      "lock_base": false,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "PIL"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "prometheus-client",
+      "canonical": "prometheus-client",
+      "modules": [
+        "prometheus_client"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "prometheus_client"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "propcache",
+      "canonical": "propcache",
+      "modules": [
+        "propcache"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "protobuf",
+      "canonical": "protobuf",
+      "modules": [
+        "google"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "psutil",
+      "canonical": "psutil",
+      "modules": [
+        "psutil"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "psutil"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "py7zr",
+      "canonical": "py7zr",
+      "modules": [
+        "py7zr"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "py7zr"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "pybcj",
+      "canonical": "pybcj",
+      "modules": [
+        "pybcj"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "pycparser",
+      "canonical": "pycparser",
+      "modules": [
+        "pycparser"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "pycryptodomex",
+      "canonical": "pycryptodomex",
+      "modules": [
+        "Cryptodome"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "pydantic",
+      "canonical": "pydantic",
+      "modules": [
+        "pydantic"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "pydantic"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "pydantic-core",
+      "canonical": "pydantic-core",
+      "modules": [
+        "pydantic_core"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "pydantic_core"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "pygments",
+      "canonical": "pygments",
+      "modules": [
+        "pygments"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "pyppmd",
+      "canonical": "pyppmd",
+      "modules": [
+        "pyppmd"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "python-dotenv",
+      "canonical": "python-dotenv",
+      "modules": [
+        "dotenv"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "python-engineio",
+      "canonical": "python-engineio",
+      "modules": [
+        "engineio"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "python-json-logger",
+      "canonical": "python-json-logger",
+      "modules": [
+        "pythonjsonlogger"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "pythonjsonlogger"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "python-multipart",
+      "canonical": "python-multipart",
+      "modules": [
+        "multipart"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "python-socketio",
+      "canonical": "python-socketio",
+      "modules": [
+        "socketio"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "pywin32-ctypes",
+      "canonical": "pywin32-ctypes",
+      "modules": [
+        "win32ctypes"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "pyyaml",
+      "canonical": "pyyaml",
+      "modules": [
+        "yaml"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "yaml"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "rarfile",
+      "canonical": "rarfile",
+      "modules": [
+        "rarfile"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "rarfile"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "simple-websocket",
+      "canonical": "simple-websocket",
+      "modules": [
+        "simple_websocket"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "starlette",
+      "canonical": "starlette",
+      "modules": [
+        "starlette"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "sv-ttk",
+      "canonical": "sv-ttk",
+      "modules": [
+        "sv_ttk"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": false,
+      "redistribucion_probable": false,
+      "motivo": "no alcanzable desde __main__ ni hiddenimports"
+    },
+    {
+      "distribution": "tenacity",
+      "canonical": "tenacity",
+      "modules": [
+        "tenacity"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "tenacity"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "texttable",
+      "canonical": "texttable",
+      "modules": [
+        "texttable"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "tinycss2",
+      "canonical": "tinycss2",
+      "modules": [
+        "tinycss2"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "tomli-w",
+      "canonical": "tomli-w",
+      "modules": [
+        "tomli_w"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "tomli_w"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "typing-extensions",
+      "canonical": "typing-extensions",
+      "modules": [
+        "typing_extensions"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "typing-inspection",
+      "canonical": "typing-inspection",
+      "modules": [
+        "typing_inspection"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "uvicorn",
+      "canonical": "uvicorn",
+      "modules": [
+        "uvicorn"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "watchfiles",
+      "canonical": "watchfiles",
+      "modules": [
+        "watchfiles"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "webencodings",
+      "canonical": "webencodings",
+      "modules": [
+        "webencodings"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "websockets",
+      "canonical": "websockets",
+      "modules": [
+        "websockets"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [
+        "websockets"
+      ],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "import directo/hidden"
+    },
+    {
+      "distribution": "wsproto",
+      "canonical": "wsproto",
+      "modules": [
+        "wsproto"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "yarl",
+      "canonical": "yarl",
+      "modules": [
+        "yarl"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    },
+    {
+      "distribution": "zipp",
+      "canonical": "zipp",
+      "modules": [
+        "zipp"
+      ],
+      "lock_base": true,
+      "lock_native_parallax": true,
+      "import_directo_o_hidden": [],
+      "alcanzable_transitivo": true,
+      "redistribucion_probable": true,
+      "motivo": "dependency closure"
+    }
+  ]
+}

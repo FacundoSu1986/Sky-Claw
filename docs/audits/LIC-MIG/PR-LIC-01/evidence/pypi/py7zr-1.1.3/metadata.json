@@ -1,0 +1,257 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "Hiroshi Miura <miurahr@linux.com>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Topic :: Software Development :: Libraries :: Python Modules"
+      ],
+      "description": "======================================\n|logo| py7zr -- a 7z library on python\n======================================\n\n.. |logo| image:: logo.svg\n    :width: 80pt\n    :height: 80pt\n    :target: https://pypi.org/project/py7zr\n\n.. image:: https://readthedocs.org/projects/py7zr/badge/?version=latest\n  :target: https://py7zr.readthedocs.io/en/latest/?badge=latest\n\n.. image:: https://badge.fury.io/py/py7zr.svg\n  :target: https://badge.fury.io/py/py7zr\n\n.. image:: https://img.shields.io/pypi/dd/py7zr\n  :target: https://pypi.org/project/py7zr\n\n.. image:: https://img.shields.io/conda/vn/conda-forge/py7zr\n  :target: https://anaconda.org/conda-forge/py7zr\n\n.. image:: https://github.com/miurahr/py7zr/workflows/Run%20Tox%20tests/badge.svg\n  :target: https://github.com/miurahr/py7zr/actions\n\n.. image:: https://dev.azure.com/miurahr/github/_apis/build/status/miurahr.py7zr?branchName=master\n  :target: https://dev.azure.com/miurahr/github/_build/latest?definitionId=14&branchName=master\n\n.. image:: https://coveralls.io/repos/github/miurahr/py7zr/badge.svg?branch=master\n  :target: https://coveralls.io/github/miurahr/py7zr?branch=master\n\n.. image:: https://img.shields.io/pypi/l/py7zr\n  :target: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html\n  \n.. image:: https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg\n  :target: https://github.com/vshymanskyy/StandWithUkraine/blob/main/docs/README.md\n  \n.. image:: https://snyk.io/advisor/python/py7zr/badge.svg\n  :target: https://snyk.io/advisor/python/py7zr\n  :alt: py7zr\n  \n.. image:: https://app.codacy.com/project/badge/Grade/d9d82e1c1708470a921a3a974ea0eedd\n  :target: https://app.codacy.com/gh/miurahr/py7zr/dashboard\n  :alt: Codacy\n\n\npy7zr is a library and utility to support 7zip archive compression, decompression,\nencryption and decryption written by Python programming language.\n\nIncompatible change\n===================\n\nThere is incompatible change between v1.0.0-rc1 to v1.0.0-rc2.\nI abandon methods ``read`` and ``readall``.\nWhen you want to extract the archive to memory, you need to use\n``extract`` method with ``factory`` argument. The ``factory`` takes a factory class, as of the GoF design pattern,\nthat provides object implements ``Py7zIO`` interface as a call back instance.\n``SevenZipFile`` extract and write uncompressed data into your ``Py7zIO`` object.\n\nDiscussion Forum\n================\n\nYou are welcome to join discussions on project forum/builtin-board at\nhttps://github.com/miurahr/py7zr/discussions\n\nYou can see announcements of new releases, questions and answers, and\nnew feature ideas. When you doubt for usage of py7zr library with unclear\nmanuals, please feel easy to raise question on forum.\n\nCompression algorithms\n======================\n\n``py7zr`` supports algorithms and filters which `lzma module`_ and `liblzma`_ support,\nand supports BZip2 and Deflate that are implemented in python core libraries,\nIt also supports ZStandard, Brotli and PPMd with third party libraries.\n\n``py7zr`` is also able to encrypt and decrypt data using 3rd party encryption library.\n\n\nSupported algorithms\n--------------------\n\n* compress\n    * LZMA2\n    * LZMA\n    * Bzip2\n    * Deflate\n    * Copy\n    * ZStandard\n    * Brotli\n    * PPMd\n    * Enhanced Deflate (Experimental)\n\n* crypt\n    * 7zAES\n\n* Filters\n    * Delta\n    * BCJ(X86,ARMT,ARM,PPC,SPARC,IA64)\n\n.. note::\n  * A feature handling symbolic link is basically compatible with ``p7zip`` implementation,\n    but not work with original 7-zip because the original does not implement the feature.\n  * ``py7zr`` try checking symbolic links strictly and raise ValueError when bad link is requested,\n    but it does **not** guarantee to block all the bad cases.\n  * ZStandard and Brotli is not default methods of 7-zip, so these archives are considered\n    not to be compatible with original 7-zip on windows/p7zip on linux/mac.\n  * Enhanced Deflate is also known as ``DEFLATE64`` :sup:`TM` that is a registered trademark of ``PKWARE, Inc.``\n  * Enhanced Deflate is tested only on CPython. It is disabled on PyPy.\n\nNot supported algorithms\n------------------------\n\n* BCJ2 (Standard `lzma module`_ does not provide).\n\n\nInstall\n=======\n\nYou can install py7zr as usual other libraries using pip.\n\n.. code-block:: shell\n\n    $ pip install py7zr\n\nOR, alternatively using conda:\n\n.. code-block:: shell\n\n    $ conda install -c conda-forge py7zr\n\nDocuments\n=========\n\nUser manuals\n------------\n\n* `User Guide`_ for latest version.\n\n* `API Guide`_ for latest version.\n\n* `Manual`_ for stable version.\n\nDeveloper guide\n---------------\n\n* `Contribution guidelines`_ for this project.\n\n* `Contribution guidelines(html)`_  for this project.\n\n* `7z file specification`_ that py7zr stand on.\n\n\n.. _`User Guide`: https://py7zr.readthedocs.io/en/latest/user_guide.html\n\n.. _`API Guide` : https://py7zr.readthedocs.io/en/latest/api.html\n\n.. _`Manual` : https://py7zr.readthedocs.io/en/stable/\n\n.. _`Contribution guidelines(html)` : https://py7zr.readthedocs.io/en/latest/contribution.html\n\n.. _`Contribution guidelines` : docs/contribution.rst\n\n.. _`7z file specification` : https://py7zr.readthedocs.io/en/latest/archive_format.html\n\n\nCLI Usage\n=========\n\nYou can run command script py7zr like as follows;\n\n* List archive contents\n\n.. code-block:: shell\n\n    $ py7zr l test.7z\n\n* Extract archive\n\n.. code-block:: shell\n\n    $ py7zr x test.7z\n\n* Extract archive with password\n\n.. code-block:: shell\n\n    $ py7zr x -P test.7z\n      password?: ****\n\n* Create and compress to archive\n\n.. code-block:: shell\n\n    $ py7zr c target.7z test_dir\n\n* Create multi-volume archive\n\n.. code-block:: shell\n\n    $ py7zr c -v 500k target.7z test_dir\n\n* Test archive\n\n.. code-block:: shell\n\n    $ py7zr t test.7z\n\n* Append files to archive\n\n.. code-block:: shell\n\n    $ py7zr a test.7z test_dir\n\n* Show information\n\n.. code-block:: shell\n\n    $ py7zr i\n\n* Show version\n\n.. code-block:: shell\n\n    $ py7zr --version\n\n\nSevenZipFile Class Usage\n========================\n\npy7zr is a library which can use in your python application.\n\nDecompression/Decryption\n------------------------\n\nHere is a code snippet how to decompress some file in your application.\n\n.. code-block:: python\n\n    import py7zr\n\n    archive = py7zr.SevenZipFile('sample.7z', mode='r')\n    archive.extractall(path=\"/tmp\")\n    archive.close()\n\n\n\nYou can also use 'with' block because py7zr provide context manager(v0.6 and later).\n\n.. code-block:: python\n\n    import py7zr\n\n    with py7zr.SevenZipFile('sample.7z', mode='r') as z:\n        z.extractall()\n\n    with py7zr.SevenZipFile('target.7z', 'w') as z:\n        z.writeall('./base_dir')\n\n\n``py7zr`` also supports extraction of single or selected files by 'extract(targets=['file path'])'.\nNote: if you specify only a file but not a parent directory, it will fail.\n\n.. code-block:: python\n\n    import py7zr\n    import re\n\n    filter_pattern = re.compile(r'<your/target/file_and_directories/regex/expression>')\n    with py7zr.SevenZipFile('archive.7z', 'r') as archive:\n        allfiles = archive.getnames()\n        selective_files = [f for f in allfiles if filter_pattern.match(f)]\n        archive.extract(targets=selective_files)\n\n\npy7zr support an extraction of password protected archive.(v0.6 and later)\n\n.. code-block:: python\n\n    import py7zr\n\n    with py7zr.SevenZipFile('encrypted.7z', mode='r', password='secret') as z:\n        z.extractall()\n\nCompression/Encryption\n----------------------\n\nHere is a code snippet how to produce archive.\n\n.. code-block:: python\n\n    import py7zr\n\n    with py7zr.SevenZipFile('target.7z', 'w') as archive:\n        archive.writeall('/path/to/base_dir', 'base')\n\n\nTo create encrypted archive, please pass a password.\n\n.. code-block:: python\n\n    import py7zr\n\n    with py7zr.SevenZipFile('target.7z', 'w', password='secret') as archive:\n        archive.writeall('/path/to/base_dir', 'base')\n\n\nTo create archive with algorithms such as zstandard, you can call with custom filter.\n\n.. code-block:: python\n\n    import py7zr\n\n    my_filters = [{\"id\": py7zr.FILTER_ZSTD}]\n    another_filters = [{\"id\": py7zr.FILTER_ARM}, {\"id\": py7zr.FILTER_LZMA2, \"preset\": 7}]\n    with py7zr.SevenZipFile('target.7z', 'w', filters=my_filters) as archive:\n        archive.writeall('/path/to/base_dir', 'base')\n\n\nshutil helper\n=============\n\npy7zr also support `shutil`  interface.\n\n.. code-block:: python\n\n    from py7zr import pack_7zarchive, unpack_7zarchive\n    import shutil\n\n    # register file format at first.\n    shutil.register_archive_format('7zip', pack_7zarchive, description='7zip archive')\n    shutil.register_unpack_format('7zip', ['.7z'], unpack_7zarchive)\n\n    # extraction\n    shutil.unpack_archive('test.7z', '/tmp')\n\n    # compression\n    shutil.make_archive('target', '7zip', 'src')\n\n\nRequirements\n============\n\n`py7zr` uses a python3 standard `lzma module`_ for extraction and compression.\nThe standard lzma module uses `liblzma`_ that support core compression algorithm of 7zip.\n\nMinimum required version is Python 3.10.\n\n``py7zr`` tested on Linux, macOS, Windows and Ubuntu aarch64.\n\nIt hopefully works on M1 Mac too.\n\nRecommended versions are:\n\n- CPython 3.10.0 and later.\n- PyPy3.10-7.3.17 and later.\n\nFollowing fixes are included in these versions, and it is not fixed on python3.6.\n\n- `BPO-21872`_: LZMA library sometimes fails to decompress a file\n- `PyPy3-3090`_: lzma.LZMADecomporessor.decompress does not respect max_length\n- `PyPy3-3242`_: '_lzma_cffi' has no function named 'lzma_stream_encoder'\n\nFollowing improvements are included in CPython 3.10\n\n- `BPO-41486`_: Faster bz2/lzma/zlib via new output buffering\n\n.. _`lzma module`: https://docs.python.org/3/library/lzma.html\n.. _`liblzma`: https://tukaani.org/xz/\n.. _`BPO-21872`: https://bugs.python.org/issue21872\n.. _`BPO-41486`: https://bugs.python.org/issue41486\n.. _`PyPy3-3090`: https://foss.heptapod.net/pypy/pypy/-/issues/3090\n.. _`PyPy3-3242`: https://foss.heptapod.net/pypy/pypy/-/issues/3242\n\n\n\nDependencies\n============\n\nThere are several dependencies to support algorithms and CLI expressions.\n\n===================== ===============================\nPackage               Purpose\n===================== ===============================\n`PyCryptodomex`_      7zAES encryption\n`backports.zstd`      ZStandard compression for Python before 3.14\n`PyPPMd`_             PPMd compression\n`Brotli`_             Brotli compression (CPython)\n`BrotliCFFI`_         Brotli compression (PyPy)\n`inflate64`_          Enhanced deflate compression\n`pybcj`_              BCJ filters\n`multivolumefile`_    Multi-volume archive read/write\n`texttable`_          CLI formatter\n===================== ===============================\n\n\n.. _`Pycryptodomex` : https://www.pycryptodome.org/en/latest/index.html\n.. _`backports.zstd` : https://pypi.org/project/backports.zstd\n.. _`PyPPMd` : https://pypi.org/project/pyppmd\n.. _`Brotli` : https://pypi.org/project/brotli\n.. _`BrotliCFFI` : https://pypi.org/project/brotlicffi\n.. _`inflate64` : https://pypi.org/project/inflate64\n.. _`pybcj` : https://pypi.org/project/pybcj\n.. _`multivolumefile` : https://pypi.org/project/multivolumefile\n.. _`texttable` : https://pypi.org/project/texttable\n\n\nPerformance\n===========\n\nYou can find a compression and decompression benchmark results at\n[Github issue](https://github.com/miurahr/py7zr/issues/297) and [wiki page](https://github.com/miurahr/py7zr/wiki/Benchmarks)\n\npy7zr works well, but slower than ``7-zip`` and ``p7zip`` C/C++ implementation by several reasons.\nWhen compression/decompression **speed** is important, it is recommended to use these\nalternatives through ``subprocess.run`` python interface.\n\npy7zr consumes some memory to decompress and compress data. It requires about 300MiB - 700MiB free memory to work well at least.\n\n\nUse Cases\n=========\n\n- `PyTorch`_  Open-source deep learning framework.\n- `aqtinstall`_ Another (unofficial) Qt (aqt) CLI Installer on multi-platforms.\n- PreNLP_ Preprocessing Library for Natural Language Processing\n- mlox_  a tool for sorting and analyzing Morrowind plugin load order\n\n.. _`PyTorch`: https://pytorch.org/\n.. _aqtinstall: https://github.com/miurahr/aqtinstall\n.. _PreNLP: https://github.com/lyeoni/prenlp\n.. _mlox: https://github.com/mlox/mlox\n\nSecurity\n========\n\nPlease find a `Security Policy`_ of this project.\n\nVersion 0.20.0, 0.19.0, 0.18.10 or before has a `vulnerability for path traversal`_  attack.\nDetails are on \"CVE-2022-44900: path traversal vulnerability in py7zr\" `disclose article`_ .\n\nAffected versions  are vulnerable to Directory Traversal due to insufficient checks in the 'py7zr.py' and 'helpers.py' files\n\nYou are recommend to update immediately to version 0.20.2 or later\n\n.. _`vulnerability for path traversal`: https://security.snyk.io/vuln/SNYK-PYTHON-PY7ZR-3092461\n\nI really appreciate Mr. Matteo Cosentino for notification and corporation on security improvement.\n\n.. _`disclose article`: https://lessonsec.com/cve/cve-2022-44900/\n\n.. _`Security Policy` : https://py7zr.readthedocs.io/en/latest/SECURITY.html\n\nLicense\n=======\n\n* Copyright (C) 2019-2024 Hiroshi Miura\n\n* pylzma Copyright (c) 2004-2015 by Joachim Bauch\n* 7-Zip Copyright (C) 1999-2010 Igor Pavlov\n* LZMA SDK Copyright (C) 1999-2010 Igor Pavlov\n\nThis library is free software; you can redistribute it and/or\nmodify it under the terms of the GNU Lesser General Public\nLicense as published by the Free Software Foundation; either\nversion 2.1 of the License, or (at your option) any later version.\n\nThis library is distributed in the hope that it will be useful,\nbut WITHOUT ANY WARRANTY; without even the implied warranty of\nMERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU\nLesser General Public License for more details.\n\nYou should have received a copy of the GNU Lesser General Public\nLicense along with this library; if not, write to the Free Software\nFoundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA\n\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": [
+        "License-File"
+      ],
+      "home_page": null,
+      "keywords": "compression, 7zip, lzma, zstandard, ppmd, lzma2, bcj, archive",
+      "license": null,
+      "license_expression": "LGPL-2.1-or-later",
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "py7zr",
+      "package_url": "https://pypi.org/project/py7zr/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/py7zr/",
+      "project_urls": {
+        "Bug Tracker": "https://github.com/miurahr/py7zr/issues",
+        "Changelog": "https://py7zr.readthedocs.io/en/latest/Changelog.html",
+        "Documentation": "https://py7zr.readthedocs.io/en/stable/",
+        "Homepage": "https://py7zr.readthedocs.io/",
+        "Source": "https://github.com/miurahr/py7zr"
+      },
+      "provides_extra": [
+        "test",
+        "docs",
+        "check",
+        "debug"
+      ],
+      "release_url": "https://pypi.org/project/py7zr/1.1.3/",
+      "requires_dist": [
+        "texttable",
+        "pycryptodomex>=3.20.0",
+        "brotli>=1.2.0; platform_python_implementation == \"CPython\"",
+        "brotlicffi>=1.2.0.0; platform_python_implementation == \"PyPy\"",
+        "psutil; sys_platform != \"cygwin\"",
+        "backports.zstd>=1.0.0; python_version < \"3.14\"",
+        "pyppmd>=1.3.1",
+        "pybcj>=1.0.6",
+        "multivolumefile>=0.2.3",
+        "inflate64>=1.0.4",
+        "pytest; extra == \"test\"",
+        "pytest-benchmark; extra == \"test\"",
+        "pytest-cov; extra == \"test\"",
+        "pytest-remotedata; extra == \"test\"",
+        "pytest-timeout; extra == \"test\"",
+        "py-cpuinfo; extra == \"test\"",
+        "coverage[toml]>=7.10.7; extra == \"test\"",
+        "coveralls>=4.0.2; extra == \"test\"",
+        "requests; extra == \"test\"",
+        "pytest-httpserver; extra == \"test\"",
+        "sphinx>=8.0.0; extra == \"docs\"",
+        "sphinx-py3doc-enhanced-theme; extra == \"docs\"",
+        "sphinx-a4doc; extra == \"docs\"",
+        "docutils; extra == \"docs\"",
+        "mypy>=1.17.0; extra == \"check\"",
+        "mypy_extensions>=1.1.0; extra == \"check\"",
+        "lxml; extra == \"check\"",
+        "types-psutil; extra == \"check\"",
+        "check-manifest; extra == \"check\"",
+        "flake8<8; extra == \"check\"",
+        "flake8-black>=0.3.6; extra == \"check\"",
+        "flake8-deprecated; extra == \"check\"",
+        "flake8-isort; extra == \"check\"",
+        "isort>=7.0.0; extra == \"check\"",
+        "pygments; extra == \"check\"",
+        "readme-renderer; extra == \"check\"",
+        "twine; extra == \"check\"",
+        "black>=25.1.0; extra == \"check\"",
+        "pylint; extra == \"check\"",
+        "pytest; extra == \"debug\"",
+        "pytest-leaks; extra == \"debug\"",
+        "pytest-profiling; extra == \"debug\""
+      ],
+      "requires_python": ">=3.10",
+      "summary": "Pure python 7-zip library",
+      "version": "1.1.3",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 42129365,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "miurahr"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "65afc9424f32fabaa69478e7c1afdec14f0ccf23569a10383306b346a62af908"
+        },
+        "digests": {
+          "blake2b_256": "8840dc7f804abd0ea167ea8d4d9b3f5455321aaf671d040fcef647e9e952e714",
+          "md5": "7b96554fce198444f0604c5d35acfb63",
+          "sha256": "17934a35089e026dec6c72ee275d9b841e646881ef822d618e805c3006661d9a"
+        },
+        "downloads": -1,
+        "filename": "py7zr-1.1.3-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "7b96554fce198444f0604c5d35acfb63",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.10",
+        "size": 72242,
+        "upload_time": "2026-06-19T09:28:27",
+        "upload_time_iso_8601": "2026-06-19T09:28:27.512244Z",
+        "url": "https://files.pythonhosted.org/packages/88/40/dc7f804abd0ea167ea8d4d9b3f5455321aaf671d040fcef647e9e952e714/py7zr-1.1.3-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "593fac248f25f3901d3d6cf80ac99d5bac6fd1e5e6543c1812c79b02b6074c60",
+          "md5": "365b7b692cf81ded8bc1ee1e36aaf25d",
+          "sha256": "8d51894abb38355bf14881088bb97f01fe4cb5b14ebe22f66d6297668c7e1a74"
+        },
+        "downloads": -1,
+        "filename": "py7zr-1.1.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "365b7b692cf81ded8bc1ee1e36aaf25d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.10",
+        "size": 71695,
+        "upload_time": "2026-06-19T09:28:29",
+        "upload_time_iso_8601": "2026-06-19T09:28:29.339290Z",
+        "url": "https://files.pythonhosted.org/packages/59/3f/ac248f25f3901d3d6cf80ac99d5bac6fd1e5e6543c1812c79b02b6074c60/py7zr-1.1.3.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "py7zr",
+    "version": "1.1.3",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "17934a35089e026dec6c72ee275d9b841e646881ef822d618e805c3006661d9a",
+      "8d51894abb38355bf14881088bb97f01fe4cb5b14ebe22f66d6297668c7e1a74"
+    ],
+    "retrieved_at": "2026-11-28T12:09:58+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": "LGPL-2.1-or-later",
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Topic :: Software Development :: Libraries :: Python Modules"
+      ],
+      "requires_python": ">=3.10",
+      "project_urls": {
+        "Bug Tracker": "https://github.com/miurahr/py7zr/issues",
+        "Changelog": "https://py7zr.readthedocs.io/en/latest/Changelog.html",
+        "Documentation": "https://py7zr.readthedocs.io/en/stable/",
+        "Homepage": "https://py7zr.readthedocs.io/",
+        "Source": "https://github.com/miurahr/py7zr"
+      },
+      "home_page": null,
+      "summary": "Pure python 7-zip library",
+      "author": "Hiroshi Miura <miurahr@linux.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "py7zr-1.1.3-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "py7zr-1.1.3-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/88/40/dc7f804abd0ea167ea8d4d9b3f5455321aaf671d040fcef647e9e952e714/py7zr-1.1.3-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 72242,
+        "sha256_pypi": "17934a35089e026dec6c72ee275d9b841e646881ef822d618e805c3006661d9a",
+        "sha256_verified": "17934a35089e026dec6c72ee275d9b841e646881ef822d618e805c3006661d9a",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "py7zr-1.1.3-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/88/40/dc7f804abd0ea167ea8d4d9b3f5455321aaf671d040fcef647e9e952e714/py7zr-1.1.3-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 72242,
+      "sha256_pypi": "17934a35089e026dec6c72ee275d9b841e646881ef822d618e805c3006661d9a",
+      "sha256_verified": "17934a35089e026dec6c72ee275d9b841e646881ef822d618e805c3006661d9a",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "py7zr-1.1.3-py3-none-any.whl::py7zr-1.1.3.dist-info/licenses/LICENSE": {
+        "saved_as": "py7zr-1.1.3.dist-info_licenses_LICENSE",
+        "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551",
+        "bytes": 26530,
+        "from_artifact": "py7zr-1.1.3-py3-none-any.whl",
+        "artifact_sha256": "17934a35089e026dec6c72ee275d9b841e646881ef822d618e805c3006661d9a"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

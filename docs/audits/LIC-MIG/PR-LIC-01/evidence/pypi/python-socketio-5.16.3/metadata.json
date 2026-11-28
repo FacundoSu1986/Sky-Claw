@@ -1,0 +1,193 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "Miguel Grinberg <miguel.grinberg@gmail.com>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Environment :: Web Environment",
+        "Intended Audience :: Developers",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3"
+      ],
+      "description": "python-socketio\n===============\n\n[![Build status](https://github.com/miguelgrinberg/python-socketio/workflows/build/badge.svg)](https://github.com/miguelgrinberg/python-socketio/actions) [![codecov](https://codecov.io/gh/miguelgrinberg/python-socketio/branch/main/graph/badge.svg)](https://codecov.io/gh/miguelgrinberg/python-socketio)\n\nPython implementation of the `Socket.IO` realtime client and server.\n\nSponsors\n--------\n\nThe following organizations are funding this project:\n\n![Socket.IO](https://images.opencollective.com/socketio/050e5eb/logo/64.png)<br>[Socket.IO](https://socket.io)  | [Add your company here!](https://github.com/sponsors/miguelgrinberg)|\n-|-\n\nMany individual sponsors also support this project through small ongoing contributions. Why not [join them](https://github.com/sponsors/miguelgrinberg)?\n\nVersion compatibility\n---------------------\n\nThe Socket.IO protocol has been through a number of revisions, and some of these\nintroduced backward incompatible changes, which means that the client and the\nserver must use compatible versions for everything to work.\n\nIf you are using the Python client and server, the easiest way to ensure compatibility\nis to use the same version of this package for the client and the server. If you are\nusing this package with a different client or server, then you must ensure the\nversions are compatible.\n\nThe version compatibility chart below maps versions of this package to versions\nof the JavaScript reference implementation and the versions of the Socket.IO and\nEngine.IO protocols.\n\nJavaScript Socket.IO version | Socket.IO protocol revision | Engine.IO protocol revision | python-socketio version\n-|-|-|-\n0.9.x | 1, 2 | 1, 2 | Not supported\n1.x and 2.x | 3, 4 | 3 | 4.x\n3.x and 4.x | 5 | 4 | 5.x\n\nResources\n---------\n\n-  [Documentation](http://python-socketio.readthedocs.io/)\n-  [PyPI](https://pypi.python.org/pypi/python-socketio)\n-  [Change Log](https://github.com/miguelgrinberg/python-socketio/blob/main/CHANGES.md)\n-  Questions? See the [questions](https://stackoverflow.com/questions/tagged/python-socketio) others have asked on Stack Overflow, or [ask](https://stackoverflow.com/questions/ask?tags=python+python-socketio) your own question.\n",
+      "description_content_type": "text/markdown",
+      "docs_url": "https://pythonhosted.org/python-socketio/",
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": [
+        "License-File"
+      ],
+      "home_page": null,
+      "keywords": null,
+      "license": "MIT",
+      "license_expression": null,
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "python-socketio",
+      "package_url": "https://pypi.org/project/python-socketio/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/python-socketio/",
+      "project_urls": {
+        "Bug Tracker": "https://github.com/miguelgrinberg/python-socketio/issues",
+        "Homepage": "https://github.com/miguelgrinberg/python-socketio"
+      },
+      "provides_extra": [
+        "client",
+        "asyncio-client",
+        "dev",
+        "docs"
+      ],
+      "release_url": "https://pypi.org/project/python-socketio/5.16.3/",
+      "requires_dist": [
+        "bidict>=0.21.0",
+        "python-engineio>=4.13.2",
+        "requests>=2.21.0; extra == \"client\"",
+        "websocket-client>=0.54.0; extra == \"client\"",
+        "aiohttp>=3.4; extra == \"asyncio-client\"",
+        "tox; extra == \"dev\"",
+        "sphinx; extra == \"docs\"",
+        "furo; extra == \"docs\""
+      ],
+      "requires_python": ">=3.8",
+      "summary": "Socket.IO server and client for Python",
+      "version": "5.16.3",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 43137965,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "miguelgrinberg"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "4a1da1dbc9432ce036cd83af4ba23effb067e21105bcc21f9f5acf4ab77227df"
+        },
+        "digests": {
+          "blake2b_256": "0a388c5e72d53ff8eb27497c4f268a7f6d9121e727a50b65248288ad79a93053",
+          "md5": "dd998c8385e7556d11979c6df056260a",
+          "sha256": "e7ad14202a5e6448824c7c2f86161d04e13dec05992257df5c709e6a2798c041"
+        },
+        "downloads": -1,
+        "filename": "python_socketio-5.16.3-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "dd998c8385e7556d11979c6df056260a",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.8",
+        "size": 82087,
+        "upload_time": "2026-06-15T22:07:02",
+        "upload_time_iso_8601": "2026-06-15T22:07:02.498145Z",
+        "url": "https://files.pythonhosted.org/packages/0a/38/8c5e72d53ff8eb27497c4f268a7f6d9121e727a50b65248288ad79a93053/python_socketio-5.16.3-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "322dffce71017c106b75099fea569df6518c63fee5d6202ce0cfe7b01e6f22c3",
+          "md5": "77668e030b5df7cbf4508631617aae34",
+          "sha256": "89b136f677ae65607a84cecda9b4d6c5377b40a97582c504c25df89af16d520e"
+        },
+        "downloads": -1,
+        "filename": "python_socketio-5.16.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "77668e030b5df7cbf4508631617aae34",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.8",
+        "size": 128095,
+        "upload_time": "2026-06-15T22:07:04",
+        "upload_time_iso_8601": "2026-06-15T22:07:04.003466Z",
+        "url": "https://files.pythonhosted.org/packages/32/2d/ffce71017c106b75099fea569df6518c63fee5d6202ce0cfe7b01e6f22c3/python_socketio-5.16.3.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "python-socketio",
+    "version": "5.16.3",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "89b136f677ae65607a84cecda9b4d6c5377b40a97582c504c25df89af16d520e",
+      "e7ad14202a5e6448824c7c2f86161d04e13dec05992257df5c709e6a2798c041"
+    ],
+    "retrieved_at": "2026-11-28T12:09:59+00:00",
+    "pypi_info": {
+      "license": "MIT",
+      "license_expression": null,
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Environment :: Web Environment",
+        "Intended Audience :: Developers",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3"
+      ],
+      "requires_python": ">=3.8",
+      "project_urls": {
+        "Bug Tracker": "https://github.com/miguelgrinberg/python-socketio/issues",
+        "Homepage": "https://github.com/miguelgrinberg/python-socketio"
+      },
+      "home_page": null,
+      "summary": "Socket.IO server and client for Python",
+      "author": "Miguel Grinberg <miguel.grinberg@gmail.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "python_socketio-5.16.3-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "python_socketio-5.16.3-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/0a/38/8c5e72d53ff8eb27497c4f268a7f6d9121e727a50b65248288ad79a93053/python_socketio-5.16.3-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 82087,
+        "sha256_pypi": "e7ad14202a5e6448824c7c2f86161d04e13dec05992257df5c709e6a2798c041",
+        "sha256_verified": "e7ad14202a5e6448824c7c2f86161d04e13dec05992257df5c709e6a2798c041",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "python_socketio-5.16.3-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/0a/38/8c5e72d53ff8eb27497c4f268a7f6d9121e727a50b65248288ad79a93053/python_socketio-5.16.3-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 82087,
+      "sha256_pypi": "e7ad14202a5e6448824c7c2f86161d04e13dec05992257df5c709e6a2798c041",
+      "sha256_verified": "e7ad14202a5e6448824c7c2f86161d04e13dec05992257df5c709e6a2798c041",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "python_socketio-5.16.3-py3-none-any.whl::python_socketio-5.16.3.dist-info/licenses/LICENSE": {
+        "saved_as": "python_socketio-5.16.3.dist-info_licenses_LICENSE",
+        "sha256": "c9e97d3dbc1fbbcdb4f7808b282cd646db887aff4f5313fe6bbe8d4c31405a9c",
+        "bytes": 1082,
+        "from_artifact": "python_socketio-5.16.3-py3-none-any.whl",
+        "artifact_sha256": "e7ad14202a5e6448824c7c2f86161d04e13dec05992257df5c709e6a2798c041"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

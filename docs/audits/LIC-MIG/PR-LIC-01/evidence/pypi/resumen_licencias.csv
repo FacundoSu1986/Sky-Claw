@@ -1,0 +1,95 @@
+paquete,licencias_en_textos,archivos,cobertura,texto_completo,copyright
+aiofiles-24.1.0,Apache-2.0=1,2,Apache-2.0:0.9993; WTFPL:0.0595,False,"""Licensor"" shall mean the copyright owner or entity authorized by; Copyright 2016 Tin Tvrtkovic"
+aiohappyeyeballs-2.6.1,PSF-2.0=1,1,PSF-2.0:1.0,True,
+aiohttp-3.14.4,Apache-2.0=1 | MIT=1,2,Apache-2.0:0.9976; MIT:0.9757,True,"""Licensor"" shall mean the copyright owner or entity authorized by; Copyright © 2018 Fedor Indutny"
+aiosignal-1.4.0,Apache-2.0=1,1,Apache-2.0:0.9971,True,"""Licensor"" shall mean the copyright owner or entity authorized by"
+aiosqlite-0.22.1,MIT=1,1,MIT:0.979,True,Copyright (c) 2022 Amethyst Reese
+annotated-doc-0.0.4,MIT=1,1,MIT:0.979,True,Copyright (c) 2025 Sebastián Ramírez
+annotated-types-0.7.0,MIT=1,1,MIT:0.9834,True,Copyright (c) 2022 the contributors
+anyio-4.14.2,MIT=1,1,MIT:0.979,True,Copyright (c) 2018 Alex Grönholm
+attrs-26.1.0,MIT=1,1,MIT:0.9867,True,Copyright (c) 2015 Hynek Schlawack and the attrs contributors
+backports-tarfile-1.2.0,MIT=1,1,MIT:0.9492,False,The above copyright notice and this permission notice shall be included in
+backports-zstd-1.5.0,PSF-2.0=1 | BSD-3-Clause=1,2,PSF-2.0:0.9558; BSD-3-Clause:0.9749,True,"Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved."
+bidict-0.23.1,MPL-2.0=1,1,MPL-2.0:0.9999,True,Copyright 2009-2024 Joshua Bronson. All rights reserved.
+brotli-1.2.1,MIT=1,1,MIT:0.9713,True,"Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors."
+certifi-2026.10.19,,1,WTFPL:0.2096,False,
+cffi-2.0.0,MIT-0=1,2,WTFPL:0.1161; MIT-0:0.9583,False,"THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+click-8.3.3,BSD-3-Clause=1,1,BSD-3-Clause:0.987,True,Copyright 2014 Pallets
+colorama-0.4.6,BSD-3-Clause=1,1,BSD-3-Clause:0.9838,True,Copyright (c) 2010 Jonathan Hartley
+comtypes-1.4.16,MIT=1,1,MIT:0.989,True,"Copyright (c) 2006-2013, Thomas Heller."
+cryptography-50.0.0,Apache-2.0=1 | BSD-3-Clause=1,3,WTFPL:0.1756; Apache-2.0:1.0; BSD-3-Clause:0.9789,False,"""Licensor"" shall mean the copyright owner or entity authorized by; Copyright (c) Individual contributors."
+defusedxml-0.7.1,PSF-2.0=1,1,PSF-2.0:0.973,True,"License Agreement and PSF's notice of copyright, i.e., ""Copyright (c)"
+docutils-0.22.4,,1,0BSD:0.4721,False,:Copyright: This document has been placed in the public domain.
+fastapi-0.136.1,MIT=1,1,MIT:0.979,True,Copyright (c) 2018 Sebastián Ramírez
+frozenlist-1.8.0,Apache-2.0=1,1,Apache-2.0:0.9971,True,"""Licensor"" shall mean the copyright owner or entity authorized by"
+googleapis-common-protos-1.75.0,Apache-2.0=1,1,Apache-2.0:1.0,True,"""Licensor"" shall mean the copyright owner or entity authorized by"
+grpcio-1.80.0,Apache-2.0=1 | MPL-2.0=1 | BSD-3-Clause=1,1,Apache-2.0:1.0,True,"""Licensor"" shall mean the copyright owner or entity authorized by"
+h11-0.16.0,MIT-0=1,1,MIT-0:0.9661,True,Copyright (c) 2016 Nathaniel J. Smith <njs@pobox.com> and other contributors
+httpcore-1.0.9,BSD-3-Clause=1,1,BSD-3-Clause:0.987,True,"Copyright © 2020, [Encode OSS Ltd](https://www.encode.io/)."
+httptools-0.7.1,MIT=1,1,MIT:0.9801,True,Copyright (c) 2015 MagicStack Inc.  http://magic.io
+httpx-0.28.1,BSD-3-Clause=1,1,BSD-3-Clause:0.987,True,"Copyright © 2019, [Encode OSS Ltd](https://www.encode.io/)."
+idna-3.15,BSD-3-Clause=1,1,BSD-3-Clause:0.9943,True,"Copyright (c) 2013-2026, Kim Davies and contributors."
+ifaddr-0.2.0,MIT=1,1,MIT:0.9801,True,Copyright (c) 2014 Stefan C. Mueller
+importlib-metadata-8.7.1,Apache-2.0=1,1,Apache-2.0:0.9993,True,"""Licensor"" shall mean the copyright owner or entity authorized by the copyright owner that is granting the License."
+inflate64-1.0.4,LGPL-2.1-only=1 | LGPL-2.1-or-later=1,1,LGPL-2.1-only:1.0,True,"Copyright (C) 1991, 1999 Free Software Foundation, Inc."
+itsdangerous-2.2.0,BSD-3-Clause=1,1,BSD-3-Clause:0.987,True,Copyright 2011 Pallets
+jaraco-classes-3.4.0,MIT=1,1,MIT:0.9492,False,The above copyright notice and this permission notice shall be included in
+jaraco-context-6.1.2,MIT=1,1,MIT:0.9934,True,Copyright (c) 2026 <copyright holders>
+jaraco-functools-4.4.0,MIT=1,1,MIT:0.9934,True,Copyright (c) 2025 <copyright holders>
+jinja2-3.1.6,BSD-3-Clause=1,1,BSD-3-Clause:0.987,True,Copyright 2007 Pallets
+keyring-25.7.0,MIT=1,1,MIT:0.9934,True,Copyright (c) 2025 <copyright holders>
+lxml-6.1.1,BSD-3-Clause=1,1,BSD-3-Clause:0.966,True,Copyright (c) 2004 Infrae. All rights reserved.
+lxml-html-clean-0.4.5,BSD-3-Clause=1,1,BSD-3-Clause:0.966,True,Copyright (c) 2004 Infrae. All rights reserved.
+markdown2-2.5.5,MIT=1,1,MIT:0.9867,True,Copyright (c) 2012 Trent Mick
+markupsafe-3.0.3,BSD-3-Clause=1,1,BSD-3-Clause:0.987,True,Copyright 2010 Pallets
+more-itertools-11.0.1,MIT=1,1,MIT:0.968,True,Copyright (c) 2012 Erik Rose
+multidict-6.9.1,Apache-2.0=1,1,Apache-2.0:0.9976,True,"""Licensor"" shall mean the copyright owner or entity authorized by"
+multivolumefile-0.2.3,LGPL-2.1-only=1 | LGPL-2.1-or-later=1,1,LGPL-2.1-only:1.0,True,"Copyright (C) 1991, 1999 Free Software Foundation, Inc."
+nicegui-3.12.0,MIT=1,1,MIT:0.9768,True,Copyright (c) 2021 Zauberzeug GmbH
+numpy-2.4.6,BSD-3-Clause=10 | MIT=3 | MIT-0=2 | Zlib=1 | 0BSD=1 | Apache-2.0=1 | CC0-1.0=1 | BSD-2-Clause=1,16,BSD-3-Clause:0.9854; Zlib:1.0; 0BSD:0.9758; Apache-2.0:1.0; BSD-3-Clause:0.9935; BSD-3-Clause:0.9749; BSD-3-Clause:0.9878; BSD-3-Clause:0.9878; BSD-2-Clause:0.9664; BSD-3-Clause:0.9976; BSD-3-Clause:0.9749; MIT:0.9856; MIT:0.9757; BSD-3-Clause:0.9724; MIT:0.979; WTFPL:0.2068,False,"Copyright (c) 2005-2025, NumPy Developers.; Copyright (C) 2010 - 2019 ridiculous_fish, <libdivide@ridiculousfish.com>; Copyright Contributors to the pythoncapi_compat project.; ""Licensor"" shall mean the copyright owner or entity authorized by; Copyright (c) 2022, Intel. All rights reserved.; Copyrig"
+opentelemetry-api-1.45.2,Apache-2.0=1,1,Apache-2.0:1.0,True,"""Licensor"" shall mean the copyright owner or entity authorized by"
+opentelemetry-exporter-otlp-common-0.66b2,Apache-2.0=1,1,Apache-2.0:1.0,True,"""Licensor"" shall mean the copyright owner or entity authorized by"
+opentelemetry-exporter-otlp-proto-common-1.45.2,Apache-2.0=1,1,Apache-2.0:1.0,True,"""Licensor"" shall mean the copyright owner or entity authorized by"
+opentelemetry-exporter-otlp-proto-grpc-1.45.2,Apache-2.0=1,1,Apache-2.0:1.0,True,"""Licensor"" shall mean the copyright owner or entity authorized by"
+opentelemetry-proto-1.45.2,Apache-2.0=1,1,Apache-2.0:1.0,True,"""Licensor"" shall mean the copyright owner or entity authorized by"
+opentelemetry-sdk-1.45.2,Apache-2.0=1,1,Apache-2.0:1.0,True,"""Licensor"" shall mean the copyright owner or entity authorized by"
+opentelemetry-semantic-conventions-0.66b2,Apache-2.0=1,1,Apache-2.0:1.0,True,"""Licensor"" shall mean the copyright owner or entity authorized by"
+orjson-3.11.9,Apache-2.0=1 | MIT-0=1,2,Apache-2.0:1.0; MIT-0:0.9375,False,"""Licensor"" shall mean the copyright owner or entity authorized by; The above copyright notice and this permission notice"
+pefile-2024.8.26,MIT=1,1,MIT:0.9801,True,Copyright (c) 2004-2024 Ero Carrera
+pillow-13.0.0,Apache-2.0=1 | Zlib=1 | BSD-3-Clause=1 | BSD-2-Clause=1 | MIT=1,1,Apache-2.0:1.0,True,Copyright © 1997-2011 by Secret Labs AB
+prometheus-client-0.25.0,Apache-2.0=1,2,Apache-2.0:1.0; WTFPL:0.1728,False,"""Licensor"" shall mean the copyright owner or entity authorized by; Copyright 2015 The Prometheus Authors"
+propcache-0.4.1,Apache-2.0=1,2,Apache-2.0:1.0; WTFPL:0.3229,False,"""Licensor"" shall mean the copyright owner or entity authorized by; Copyright 2016-2021, Andrew Svetlov and aio-libs team"
+protobuf-6.33.6,BSD-3-Clause=1,1,BSD-3-Clause:0.97,True,Copyright 2008 Google Inc.  All rights reserved.
+psutil-7.2.2,BSD-3-Clause=1,1,BSD-3-Clause:0.9789,True,"Copyright (c) 2009, Jay Loden, Dave Daeschler, Giampaolo Rodola"
+py7zr-1.1.3,LGPL-2.1-only=1 | LGPL-2.1-or-later=1,1,LGPL-2.1-only:1.0,True,"Copyright (C) 1991, 1999 Free Software Foundation, Inc."
+pybcj-1.0.7,LGPL-2.1-only=1 | LGPL-2.1-or-later=1,1,LGPL-2.1-only:1.0,True,"Copyright (C) 1991, 1999 Free Software Foundation, Inc."
+pycparser-3.0,BSD-3-Clause=1,1,BSD-3-Clause:0.9878,True,"Copyright (c) 2008-2022, Eli Bendersky"
+pycryptodomex-3.23.0,Unlicense=1 | BSD-2-Clause=1,2,0BSD:0.223; Unlicense:0.999,False,"In jurisdictions that recognize copyright laws, the author or authors"
+pydantic-2.12.5,MIT=1,1,MIT:0.9856,True,Copyright (c) 2017 to present Pydantic Services Inc. and individual contributors.
+pydantic-core-2.41.5,MIT=1,1,MIT:0.9779,True,Copyright (c) 2022 Samuel Colvin
+pygments-2.20.0,BSD-2-Clause=1,2,WTFPL:0.4391; BSD-2-Clause:0.9879,False,Copyright (c) 2006-2022 by the respective authors (see AUTHORS file).
+pyppmd-1.3.1,LGPL-2.1-only=1 | LGPL-2.1-or-later=1,1,LGPL-2.1-only:1.0,True,"Copyright (C) 1991, 1999 Free Software Foundation, Inc."
+python-dotenv-1.2.2,BSD-3-Clause=1,1,BSD-3-Clause:0.9733,True,"Copyright (c) 2014, Saurabh Kumar (python-dotenv), 2013, Ted Tieken (django-dotenv-rw), 2013, Jacob Kaplan-Moss (django-dotenv)"
+python-engineio-4.13.3,MIT=1,1,MIT:0.979,True,Copyright (c) 2015 Miguel Grinberg
+python-json-logger-3.3.0,BSD-2-Clause=1,2,BSD-2-Clause:0.9897; WTFPL:0.2125,False,"Copyright (c) 2011, Zakaria Zajac and the python-json-logger Contributors; Copyright (c) 2021, Timothée Mazzucotelli"
+python-multipart-0.0.32,Apache-2.0=1,1,Apache-2.0:1.0,True,"""Licensor"" shall mean the copyright owner or entity authorized by"
+python-socketio-5.16.3,MIT=1,1,MIT:0.979,True,Copyright (c) 2015 Miguel Grinberg
+pywin32-ctypes-0.2.3,BSD-3-Clause=1,1,BSD-3-Clause:0.9765,True,"Copyright (c) 2014, Enthought, Inc."
+pyyaml-6.0.3,MIT=1,1,MIT:0.9757,True,Copyright (c) 2017-2021 Ingy döt Net
+rarfile-4.2,0BSD=1 | ISC=1,1,0BSD:0.9851,True,Copyright (c) 2005-2024 Marko Kreen <markokr@gmail.com>
+simple-websocket-1.1.0,MIT=1,1,MIT:0.979,True,Copyright (c) 2021 Miguel Grinberg
+starlette-1.3.1,BSD-3-Clause=1,1,BSD-3-Clause:0.987,True,"Copyright © 2018, [Encode OSS Ltd](https://www.encode.io/)."
+sv-ttk-2.6.1,MIT=1,1,MIT:0.979,True,Copyright (c) rdbende <rdbende@proton.me>
+tenacity-9.1.4,Apache-2.0=1,1,Apache-2.0:1.0,True,"""Licensor"" shall mean the copyright owner or entity authorized by"
+texttable-1.7.0,MIT=1,1,MIT:0.9768,True,Copyright (c) 2020 Gerome Fournier
+tinycss2-1.5.1,BSD-3-Clause=1,1,BSD-3-Clause:0.987,True,"Copyright (c) 2013-2020, Simon Sapin and contributors."
+tomli-w-1.2.0,MIT=1,1,MIT:0.9779,True,Copyright (c) 2021 Taneli Hukkinen
+typing-extensions-4.15.0,PSF-2.0=1,1,PSF-2.0:1.0,True,
+typing-inspection-0.4.2,MIT=1,1,MIT:0.9823,True,Copyright (c) Pydantic Services Inc. 2025 to present
+uvicorn-0.46.0,BSD-3-Clause=1,1,BSD-3-Clause:0.987,True,"Copyright © 2017-present, [Encode OSS Ltd](https://www.encode.io/)."
+watchfiles-1.1.1,MIT=1,1,MIT:0.979,True,Copyright (c) 2017 to present Samuel Colvin
+webencodings-0.5.1,,0,,False,
+websockets-16.0,BSD-3-Clause=1,1,BSD-3-Clause:0.9862,True,Copyright (c) Aymeric Augustin and contributors
+wsproto-1.3.2,MIT=1,1,MIT:0.9845,True,Copyright (c) 2017 Benno Rice and contributors
+yarl-1.25.1,Apache-2.0=1,2,Apache-2.0:1.0; WTFPL:0.3229,False,"""Licensor"" shall mean the copyright owner or entity authorized by; Copyright 2016-2021, Andrew Svetlov and aio-libs team"
+zipp-3.23.1,MIT=1,1,MIT:0.9934,True,Copyright (c) 2026 <copyright holders>

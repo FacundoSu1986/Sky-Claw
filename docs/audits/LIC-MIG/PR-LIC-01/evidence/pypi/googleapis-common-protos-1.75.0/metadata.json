@@ -1,0 +1,206 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "Google LLC <googleapis-packages@google.com>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: Apache Software License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.9",
+        "Topic :: Internet"
+      ],
+      "description": "Python Client for Service Config\n================================\n\n|stable| |pypi| |versions|\n\n- `Client Library Documentation`_\n\n.. |stable| image:: https://img.shields.io/badge/support-stable-gold.svg\n   :target: https://github.com/googleapis/google-cloud-python/blob/main/README.rst#stability-levels\n.. |pypi| image:: https://img.shields.io/pypi/v/googleapis-common-protos.svg\n   :target: https://pypi.org/project/googleapis-common-protos/\n.. |versions| image:: https://img.shields.io/pypi/pyversions/googleapis-common-protos.svg\n   :target: https://pypi.org/project/googleapis-common-protos/\n.. _Client Library Documentation: https://github.com/googleapis/google-cloud-python/tree/main/packages/googleapis-common-protos/summary_overview\n\nQuick Start\n-----------\n\nIn order to use this library, you first need to go through the following steps:\n\n1. `Select or create a Cloud Platform project.`_\n2. `Enable billing for your project.`_\n3. `Set up Authentication.`_\n\n.. _Select or create a Cloud Platform project.: https://console.cloud.google.com/project\n.. _Enable billing for your project.: https://cloud.google.com/billing/docs/how-to/modify-project#enable_billing_for_a_project\n.. _Set up Authentication.: https://googleapis.dev/python/google-api-core/latest/auth.html\n\nInstallation\n~~~~~~~~~~~~\n\nInstall this library in a virtual environment using `venv`_. `venv`_ is a tool that\ncreates isolated Python environments. These isolated environments can have separate\nversions of Python packages, which allows you to isolate one project's dependencies\nfrom the dependencies of other projects.\n\nWith `venv`_, it's possible to install this library without needing system\ninstall permissions, and without clashing with the installed system\ndependencies.\n\n.. _`venv`: https://docs.python.org/3/library/venv.html\n\n\nCode samples and snippets\n~~~~~~~~~~~~~~~~~~~~~~~~~\n\nCode samples and snippets live in the `samples/`_ folder.\n\n.. _samples/: https://github.com/googleapis/google-cloud-python/tree/main/packages/googleapis-common-protos/samples\n\n\nSupported Python Versions\n^^^^^^^^^^^^^^^^^^^^^^^^^\nOur client libraries are compatible with all current `active`_ and `maintenance`_ versions of\nPython.\n\nPython >= 3.9, including 3.14\n\n.. _active: https://devguide.python.org/devcycle/#in-development-main-branch\n.. _maintenance: https://devguide.python.org/devcycle/#maintenance-branches\n\nUnsupported Python Versions\n^^^^^^^^^^^^^^^^^^^^^^^^^^^\nPython <= 3.8\n\nIf you are using an `end-of-life`_\nversion of Python, we recommend that you update as soon as possible to an actively supported version.\n\n.. _end-of-life: https://devguide.python.org/devcycle/#end-of-life-branches\n\nMac/Linux\n^^^^^^^^^\n\n.. code-block:: console\n\n    python3 -m venv <your-env>\n    source <your-env>/bin/activate\n    pip install googleapis-common-protos\n\n\nWindows\n^^^^^^^\n\n.. code-block:: console\n\n    py -m venv <your-env>\n    .\\<your-env>\\Scripts\\activate\n    pip install googleapis-common-protos\n\nNext Steps\n~~~~~~~~~~\n\n-  Read the `Client Library Documentation`_ for Service Config\n   to see other available methods on the client.\n-  View this `README`_ to see the full list of Cloud\n   APIs that we cover.\n\n.. _README: https://github.com/googleapis/google-cloud-python/blob/main/README.rst\n\nLogging\n-------\n\nThis library uses the standard Python :code:`logging` functionality to log some RPC events that could be of interest for debugging and monitoring purposes.\nNote the following:\n\n#. Logs may contain sensitive information. Take care to **restrict access to the logs** if they are saved, whether it be on local storage or on Google Cloud Logging.\n#. Google may refine the occurrence, level, and content of various log messages in this library without flagging such changes as breaking. **Do not depend on immutability of the logging events**.\n#. By default, the logging events from this library are not handled. You must **explicitly configure log handling** using one of the mechanisms below.\n\nSimple, environment-based configuration\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nTo enable logging for this library without any changes in your code, set the :code:`GOOGLE_SDK_PYTHON_LOGGING_SCOPE` environment variable to a valid Google\nlogging scope. This configures handling of logging events (at level :code:`logging.DEBUG` or higher) from this library in a default manner, emitting the logged\nmessages in a structured format. It does not currently allow customizing the logging levels captured nor the handlers, formatters, etc. used for any logging\nevent.\n\nA logging scope is a period-separated namespace that begins with :code:`google`, identifying the Python module or package to log.\n\n- Valid logging scopes: :code:`google`, :code:`google.cloud.asset.v1`, :code:`google.api`, :code:`google.auth`, etc.\n- Invalid logging scopes: :code:`foo`, :code:`123`, etc.\n\n**NOTE**: If the logging scope is invalid, the library does not set up any logging handlers.\n\nEnvironment-Based Examples\n^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n- Enabling the default handler for all Google-based loggers\n\n.. code-block:: console\n\n    export GOOGLE_SDK_PYTHON_LOGGING_SCOPE=google\n\n- Enabling the default handler for a specific Google module (for a client library called :code:`library_v1`):\n\n.. code-block:: console\n\n    export GOOGLE_SDK_PYTHON_LOGGING_SCOPE=google.cloud.library_v1\n\n\nAdvanced, code-based configuration\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\nYou can also configure a valid logging scope using Python's standard `logging` mechanism.\n\nCode-Based Examples\n^^^^^^^^^^^^^^^^^^^\n\n- Configuring a handler for all Google-based loggers\n\n.. code-block:: python\n\n    import logging\n    \n    from google.cloud import library_v1\n    \n    base_logger = logging.getLogger(\"google\")\n    base_logger.addHandler(logging.StreamHandler())\n    base_logger.setLevel(logging.DEBUG)\n\n- Configuring a handler for a specific Google module (for a client library called :code:`library_v1`):\n\n.. code-block:: python\n\n    import logging\n    \n    from google.cloud import library_v1\n    \n    base_logger = logging.getLogger(\"google.cloud.library_v1\")\n    base_logger.addHandler(logging.StreamHandler())\n    base_logger.setLevel(logging.DEBUG)\n\nLogging details\n~~~~~~~~~~~~~~~\n\n#. Regardless of which of the mechanisms above you use to configure logging for this library, by default logging events are not propagated up to the root\n   logger from the `google`-level logger. If you need the events to be propagated to the root logger, you must explicitly set\n   :code:`logging.getLogger(\"google\").propagate = True` in your code.\n#. You can mix the different logging configurations above for different Google modules. For example, you may want use a code-based logging configuration for\n   one library, but decide you need to also set up environment-based logging configuration for another library.\n\n   #. If you attempt to use both code-based and environment-based configuration for the same module, the environment-based configuration will be ineffectual\n      if the code -based configuration gets applied first.\n\n#. The Google-specific logging configurations (default handlers for environment-based configuration; not propagating logging events to the root logger) get\n   executed the first time *any* client library is instantiated in your application, and only if the affected loggers have not been previously configured.\n   (This is the reason for 2.i. above.)\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": [
+        "License-File"
+      ],
+      "home_page": null,
+      "keywords": null,
+      "license": "Apache 2.0",
+      "license_expression": null,
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "googleapis-common-protos",
+      "package_url": "https://pypi.org/project/googleapis-common-protos/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/googleapis-common-protos/",
+      "project_urls": {
+        "Repository": "https://github.com/googleapis/google-cloud-python/tree/main/packages/googleapis-common-protos"
+      },
+      "provides_extra": [
+        "grpc"
+      ],
+      "release_url": "https://pypi.org/project/googleapis-common-protos/1.75.0/",
+      "requires_dist": [
+        "protobuf<8.0.0,>=4.25.8",
+        "grpcio<2.0.0,>=1.44.0; extra == \"grpc\""
+      ],
+      "requires_python": ">=3.9",
+      "summary": "Common protobufs used in Google APIs",
+      "version": "1.75.0",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 42618060,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "gcloudpypi"
+        },
+        {
+          "role": "Owner",
+          "user": "google_opensource"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "b137b6a2d3b8a620041ae60f00e756422e6a7a0ac9b0d30c3a6367e651f88f7f"
+        },
+        "digests": {
+          "blake2b_256": "e7c8e2645aa8ed02fd4c7a2f59d68783b65b1f3cbdfe39a6308e156509d1fee8",
+          "md5": "8bb4b84bb2cb924342b4cd55afdcffe2",
+          "sha256": "961ed60399c457ceb0ee8f285a84c870aabc9c6a832b9d37bb281b5bebde43ed"
+        },
+        "downloads": -1,
+        "filename": "googleapis_common_protos-1.75.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "8bb4b84bb2cb924342b4cd55afdcffe2",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.9",
+        "size": 300631,
+        "upload_time": "2026-05-07T08:03:30",
+        "upload_time_iso_8601": "2026-05-07T08:03:30.345006Z",
+        "url": "https://files.pythonhosted.org/packages/e7/c8/e2645aa8ed02fd4c7a2f59d68783b65b1f3cbdfe39a6308e156509d1fee8/googleapis_common_protos-1.75.0-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "b5c8f439cffde755cffa462bfbb156278fa6f9d09119719af9814b858fd4f81f",
+          "md5": "2fc67bb045e52ff85341ff7158d7c9c0",
+          "sha256": "53a062ff3c32552fbd62c11fe23768b78e4ddf0494d5e5fd97d3f4689c75fbbd"
+        },
+        "downloads": -1,
+        "filename": "googleapis_common_protos-1.75.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2fc67bb045e52ff85341ff7158d7c9c0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.9",
+        "size": 151035,
+        "upload_time": "2026-05-07T08:04:49",
+        "upload_time_iso_8601": "2026-05-07T08:04:49.423152Z",
+        "url": "https://files.pythonhosted.org/packages/b5/c8/f439cffde755cffa462bfbb156278fa6f9d09119719af9814b858fd4f81f/googleapis_common_protos-1.75.0.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "googleapis-common-protos",
+    "version": "1.75.0",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "53a062ff3c32552fbd62c11fe23768b78e4ddf0494d5e5fd97d3f4689c75fbbd",
+      "961ed60399c457ceb0ee8f285a84c870aabc9c6a832b9d37bb281b5bebde43ed"
+    ],
+    "retrieved_at": "2026-11-28T12:09:55+00:00",
+    "pypi_info": {
+      "license": "Apache 2.0",
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: Apache Software License"
+      ],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: Apache Software License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.9",
+        "Topic :: Internet"
+      ],
+      "requires_python": ">=3.9",
+      "project_urls": {
+        "Repository": "https://github.com/googleapis/google-cloud-python/tree/main/packages/googleapis-common-protos"
+      },
+      "home_page": null,
+      "summary": "Common protobufs used in Google APIs",
+      "author": "Google LLC <googleapis-packages@google.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "googleapis_common_protos-1.75.0-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "googleapis_common_protos-1.75.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/e7/c8/e2645aa8ed02fd4c7a2f59d68783b65b1f3cbdfe39a6308e156509d1fee8/googleapis_common_protos-1.75.0-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 300631,
+        "sha256_pypi": "961ed60399c457ceb0ee8f285a84c870aabc9c6a832b9d37bb281b5bebde43ed",
+        "sha256_verified": "961ed60399c457ceb0ee8f285a84c870aabc9c6a832b9d37bb281b5bebde43ed",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "googleapis_common_protos-1.75.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/e7/c8/e2645aa8ed02fd4c7a2f59d68783b65b1f3cbdfe39a6308e156509d1fee8/googleapis_common_protos-1.75.0-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 300631,
+      "sha256_pypi": "961ed60399c457ceb0ee8f285a84c870aabc9c6a832b9d37bb281b5bebde43ed",
+      "sha256_verified": "961ed60399c457ceb0ee8f285a84c870aabc9c6a832b9d37bb281b5bebde43ed",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "googleapis_common_protos-1.75.0-py3-none-any.whl::googleapis_common_protos-1.75.0.dist-info/licenses/LICENSE": {
+        "saved_as": "googleapis_common_protos-1.75.0.dist-info_licenses_LICENSE",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "bytes": 11358,
+        "from_artifact": "googleapis_common_protos-1.75.0-py3-none-any.whl",
+        "artifact_sha256": "961ed60399c457ceb0ee8f285a84c870aabc9c6a832b9d37bb281b5bebde43ed"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

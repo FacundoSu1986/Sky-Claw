@@ -1,0 +1,181 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": "Marko Kreen",
+      "author_email": "markokr@gmail.com",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: ISC License (ISCL)",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Topic :: System :: Archiving :: Compression"
+      ],
+      "description": "rarfile - RAR archive reader for Python\n=======================================\n\nThis is Python module for RAR_ archive reading.\nThe interface follows the style of zipfile_.\nLicensed under ISC_ license.\n\nFeatures:\n\n* Supports both RAR3 and RAR5 format archives.\n* Supports multi volume archives.\n* Supports Unicode filenames.\n* Supports password-protected archives.\n* Supports archive and file comments.\n* Archive parsing and non-compressed files are handled in pure Python code.\n* Compressed files are extracted by executing external tool:\n  unrar_ (preferred), unar_, 7zip_ or bsdtar_.\n* Works with Python 3.6+.\n\n.. _RAR: https://en.wikipedia.org/wiki/RAR_%28file_format%29\n.. _zipfile: https://docs.python.org/3/library/zipfile.html\n.. _ISC: https://en.wikipedia.org/wiki/ISC_license\n.. _bsdtar: https://github.com/libarchive/libarchive\n.. _unrar: https://www.rarlab.com/\n.. _unar: https://theunarchiver.com/command-line\n.. _7zip: https://www.7-zip.org/\n\nBackends:\n\n+-------------+----------------------+-----------------------------------------------------+\n| Backend     | Status               | Notes                                               |\n+=============+======================+=====================================================+\n| unrar_      | Supported            | * Recommended: full format support.                 |\n|             |                      | * Non-free software, but free to use.               |\n+-------------+----------------------+-----------------------------------------------------+\n| unar_       | Supported            | * Not usable on Windows: last build is from 2013    |\n|             |                      |   (v1.8.1) that does support output to stdout.      |\n|             |                      | * Does not support RAR2 locked files.               |\n|             |                      | * Does not support RAR5 Blake2 hash checking.       |\n+-------------+----------------------+-----------------------------------------------------+\n| 7zip_       | Supported            | * RAR support not available on Debian/Ubuntu repos. |\n+-------------+----------------------+-----------------------------------------------------+\n| p7zip_      | Supported            | * Unmaintained?                                     |\n|             |                      | * Requires ``p7zip-rar`` package on Debian/Ubuntu.  |\n+-------------+----------------------+-----------------------------------------------------+\n| bsdtar_     | Supported            | * Not recommended: limited RAR format support.      |\n|             |                      | * Does not support multi-volume archives.           |\n|             |                      | * Does not support solid archives.                  |\n|             |                      | * Does not support password-protected archives.     |\n|             |                      | * Does not support RARVM-based compression filters. |\n+-------------+----------------------+-----------------------------------------------------+\n| unrar-free_ | Supported            | * Supports output to stdout (v0.2.0).               |\n|             |                      | * Based on libarchive so similar format support     |\n|             |                      |   as ``bsdtar`` but supports multi-volume (v0.3.0). |\n+-------------+----------------------+-----------------------------------------------------+\n\n.. _p7zip: https://sourceforge.net/projects/p7zip/\n.. _unrar-free: https://gitlab.com/bgermann/unrar-free\n\nLinks:\n\n- `Documentation`_\n- `Downloads`_\n- `Git`_ repo\n\n.. _Git: https://github.com/markokr/rarfile\n.. _Downloads: https://pypi.org/project/rarfile/#files\n.. _Documentation: https://rarfile.readthedocs.io/\n",
+      "description_content_type": null,
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": "https://github.com/markokr/rarfile",
+      "keywords": "rar, unrar, archive",
+      "license": "ISC",
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "rarfile",
+      "package_url": "https://pypi.org/project/rarfile/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/rarfile/",
+      "project_urls": {
+        "Homepage": "https://github.com/markokr/rarfile"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/rarfile/4.2/",
+      "requires_dist": null,
+      "requires_python": ">=3.6",
+      "summary": "RAR archive reader for Python",
+      "version": "4.2",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 39627111,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "mkz"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": "",
+        "core-metadata": {
+          "sha256": "ffcbf394983beb4c924f3371ac5a0a2fa79ed72aabee0f1e7bcafe6732eeaaf4"
+        },
+        "digests": {
+          "blake2b_256": "62fcab37559419ca36dd8dd317c3a98395ed4dcee2beeb28bf6059b972906727",
+          "md5": "abfba4b941182ebb4d32d7d793de5123",
+          "sha256": "8757e1e3757e32962e229cab2432efc1f15f210823cc96ccba0f6a39d17370c9"
+        },
+        "downloads": -1,
+        "filename": "rarfile-4.2-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "abfba4b941182ebb4d32d7d793de5123",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.6",
+        "size": 29052,
+        "upload_time": "2024-04-03T17:10:52",
+        "upload_time_iso_8601": "2024-04-03T17:10:52.632861Z",
+        "url": "https://files.pythonhosted.org/packages/62/fc/ab37559419ca36dd8dd317c3a98395ed4dcee2beeb28bf6059b972906727/rarfile-4.2-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": "",
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "263f3118a797444e7e30e784921c4bfafb6500fb288a0c84cb8c32ed15853c16",
+          "md5": "b6ee1935d0fcb29966e5ec27ba62a346",
+          "sha256": "8e1c8e72d0845ad2b32a47ab11a719bc2e41165ec101fd4d3fe9e92aa3f469ef"
+        },
+        "downloads": -1,
+        "filename": "rarfile-4.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b6ee1935d0fcb29966e5ec27ba62a346",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.6",
+        "size": 153476,
+        "upload_time": "2024-04-03T17:10:53",
+        "upload_time_iso_8601": "2024-04-03T17:10:53.798355Z",
+        "url": "https://files.pythonhosted.org/packages/26/3f/3118a797444e7e30e784921c4bfafb6500fb288a0c84cb8c32ed15853c16/rarfile-4.2.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "rarfile",
+    "version": "4.2",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "8757e1e3757e32962e229cab2432efc1f15f210823cc96ccba0f6a39d17370c9",
+      "8e1c8e72d0845ad2b32a47ab11a719bc2e41165ec101fd4d3fe9e92aa3f469ef"
+    ],
+    "retrieved_at": "2026-11-28T12:09:59+00:00",
+    "pypi_info": {
+      "license": "ISC",
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: ISC License (ISCL)"
+      ],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: ISC License (ISCL)",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Topic :: System :: Archiving :: Compression"
+      ],
+      "requires_python": ">=3.6",
+      "project_urls": {
+        "Homepage": "https://github.com/markokr/rarfile"
+      },
+      "home_page": "https://github.com/markokr/rarfile",
+      "summary": "RAR archive reader for Python",
+      "author": "markokr@gmail.com"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "rarfile-4.2-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "rarfile-4.2-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/62/fc/ab37559419ca36dd8dd317c3a98395ed4dcee2beeb28bf6059b972906727/rarfile-4.2-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 29052,
+        "sha256_pypi": "8757e1e3757e32962e229cab2432efc1f15f210823cc96ccba0f6a39d17370c9",
+        "sha256_verified": "8757e1e3757e32962e229cab2432efc1f15f210823cc96ccba0f6a39d17370c9",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "rarfile-4.2-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/62/fc/ab37559419ca36dd8dd317c3a98395ed4dcee2beeb28bf6059b972906727/rarfile-4.2-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 29052,
+      "sha256_pypi": "8757e1e3757e32962e229cab2432efc1f15f210823cc96ccba0f6a39d17370c9",
+      "sha256_verified": "8757e1e3757e32962e229cab2432efc1f15f210823cc96ccba0f6a39d17370c9",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "rarfile-4.2-py3-none-any.whl::rarfile-4.2.dist-info/LICENSE": {
+        "saved_as": "rarfile-4.2.dist-info_LICENSE",
+        "sha256": "351350167805c294c7b3e170081ce1265445c46fbeb3e999e13b616c90c64a20",
+        "bytes": 756,
+        "from_artifact": "rarfile-4.2-py3-none-any.whl",
+        "artifact_sha256": "8757e1e3757e32962e229cab2432efc1f15f210823cc96ccba0f6a39d17370c9"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

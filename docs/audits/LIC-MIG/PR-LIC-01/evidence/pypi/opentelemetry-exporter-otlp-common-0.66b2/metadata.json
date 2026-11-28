@@ -1,0 +1,196 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "OpenTelemetry Authors <cncf-opentelemetry-contributors@lists.cncf.io>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 4 - Beta",
+        "Framework :: OpenTelemetry",
+        "Framework :: OpenTelemetry :: Exporters",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14"
+      ],
+      "description": "OpenTelemetry OTLP Utilities\n===============================\n\n|pypi|\n\n.. |pypi| image:: https://badge.fury.io/py/opentelemetry-exporter-otlp-common.svg\n   :target: https://pypi.org/project/opentelemetry-exporter-otlp-common/\n\nOpenTelemetry OTLP export utilities.\n\nThis package is intended to be used by OpenTelemetry signal exporters (traces, metrics,\nlogs) that send telemetry with OTLP. Currently, all functionality in this package\nis marked as internal and is not intended for use directly by application developers.\n\nInstallation\n------------\n\n::\n\n    pip install opentelemetry-exporter-otlp-common\n\nReferences\n----------\n\n* `OpenTelemetry <https://opentelemetry.io/>`_\n* `OTLP Specification <https://opentelemetry.io/docs/specs/otlp/>`_\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": null,
+      "license": null,
+      "license_expression": "Apache-2.0",
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "opentelemetry-exporter-otlp-common",
+      "package_url": "https://pypi.org/project/opentelemetry-exporter-otlp-common/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/opentelemetry-exporter-otlp-common/",
+      "project_urls": {
+        "Homepage": "https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp-common",
+        "Repository": "https://github.com/open-telemetry/opentelemetry-python"
+      },
+      "provides_extra": [
+        "http"
+      ],
+      "release_url": "https://pypi.org/project/opentelemetry-exporter-otlp-common/0.66b2/",
+      "requires_dist": [
+        "opentelemetry-sdk~=1.45.2",
+        "opentelemetry-exporter-http-transport==0.66b2; extra == \"http\""
+      ],
+      "requires_python": ">=3.10",
+      "summary": "OpenTelemetry OTLP HTTP export utilities",
+      "version": "0.66b2",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 42928759,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "opentelemetry"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "e977b62c748863cb42a221a8c152abaa40e0a36c95d03ca6c4d274dd45580171"
+        },
+        "digests": {
+          "blake2b_256": "a847b3049e30b339c82e3c7ec1fc692185a5d5a3ba65a94c570bb39b2c0b8424",
+          "md5": "af8eae07e11c0a266f663f281a78b772",
+          "sha256": "ace86efb75489f925f1ef809856ae5f0c7db534e4afdc624530222228b1236a5"
+        },
+        "downloads": -1,
+        "filename": "opentelemetry_exporter_otlp_common-0.66b2-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "af8eae07e11c0a266f663f281a78b772",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.10",
+        "size": 12385,
+        "upload_time": "2026-10-29T17:29:13",
+        "upload_time_iso_8601": "2026-10-29T17:29:13.667265Z",
+        "url": "https://files.pythonhosted.org/packages/a8/47/b3049e30b339c82e3c7ec1fc692185a5d5a3ba65a94c570bb39b2c0b8424/opentelemetry_exporter_otlp_common-0.66b2-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "5a3c3f2cc8c42bde2620e65024d71e2eb025f7bd0821bb363b52bcc5a3260dbd",
+          "md5": "ef6926936d8f402482632e9ec9a489bb",
+          "sha256": "06f5a9b88638e310efa1f1d206cdf6b75393e112aba4e174a963416192bd1028"
+        },
+        "downloads": -1,
+        "filename": "opentelemetry_exporter_otlp_common-0.66b2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ef6926936d8f402482632e9ec9a489bb",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.10",
+        "size": 14325,
+        "upload_time": "2026-10-29T17:29:41",
+        "upload_time_iso_8601": "2026-10-29T17:29:41.701443Z",
+        "url": "https://files.pythonhosted.org/packages/5a/3c/3f2cc8c42bde2620e65024d71e2eb025f7bd0821bb363b52bcc5a3260dbd/opentelemetry_exporter_otlp_common-0.66b2.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "opentelemetry-exporter-otlp-common",
+    "version": "0.66b2",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "06f5a9b88638e310efa1f1d206cdf6b75393e112aba4e174a963416192bd1028",
+      "ace86efb75489f925f1ef809856ae5f0c7db534e4afdc624530222228b1236a5"
+    ],
+    "retrieved_at": "2026-11-28T12:09:57+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": "Apache-2.0",
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 4 - Beta",
+        "Framework :: OpenTelemetry",
+        "Framework :: OpenTelemetry :: Exporters",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14"
+      ],
+      "requires_python": ">=3.10",
+      "project_urls": {
+        "Homepage": "https://github.com/open-telemetry/opentelemetry-python/tree/main/exporter/opentelemetry-exporter-otlp-common",
+        "Repository": "https://github.com/open-telemetry/opentelemetry-python"
+      },
+      "home_page": null,
+      "summary": "OpenTelemetry OTLP HTTP export utilities",
+      "author": "OpenTelemetry Authors <cncf-opentelemetry-contributors@lists.cncf.io>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "opentelemetry_exporter_otlp_common-0.66b2-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "opentelemetry_exporter_otlp_common-0.66b2-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/a8/47/b3049e30b339c82e3c7ec1fc692185a5d5a3ba65a94c570bb39b2c0b8424/opentelemetry_exporter_otlp_common-0.66b2-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 12385,
+        "sha256_pypi": "ace86efb75489f925f1ef809856ae5f0c7db534e4afdc624530222228b1236a5",
+        "sha256_verified": "ace86efb75489f925f1ef809856ae5f0c7db534e4afdc624530222228b1236a5",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "opentelemetry_exporter_otlp_common-0.66b2-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/a8/47/b3049e30b339c82e3c7ec1fc692185a5d5a3ba65a94c570bb39b2c0b8424/opentelemetry_exporter_otlp_common-0.66b2-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 12385,
+      "sha256_pypi": "ace86efb75489f925f1ef809856ae5f0c7db534e4afdc624530222228b1236a5",
+      "sha256_verified": "ace86efb75489f925f1ef809856ae5f0c7db534e4afdc624530222228b1236a5",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "opentelemetry_exporter_otlp_common-0.66b2-py3-none-any.whl::opentelemetry_exporter_otlp_common-0.66b2.dist-info/licenses/LICENSE": {
+        "saved_as": "opentelemetry_exporter_otlp_common-0.66b2.dist-info_licenses_LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "bytes": 11357,
+        "from_artifact": "opentelemetry_exporter_otlp_common-0.66b2-py3-none-any.whl",
+        "artifact_sha256": "ace86efb75489f925f1ef809856ae5f0c7db534e4afdc624530222228b1236a5"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

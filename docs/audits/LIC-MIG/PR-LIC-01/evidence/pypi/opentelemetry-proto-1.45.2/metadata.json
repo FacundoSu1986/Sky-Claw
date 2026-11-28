@@ -1,0 +1,195 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "OpenTelemetry Authors <cncf-opentelemetry-contributors@lists.cncf.io>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Framework :: OpenTelemetry",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14"
+      ],
+      "description": "OpenTelemetry Python Proto\n==========================\n\n|pypi|\n\n.. |pypi| image:: https://badge.fury.io/py/opentelemetry-proto.svg\n   :target: https://pypi.org/project/opentelemetry-proto/\n\nThis library contains the generated code for OpenTelemetry protobuf data model. The code in the current\npackage was generated using the v1.10.0 release_ of opentelemetry-proto.\n\n.. _release: https://github.com/open-telemetry/opentelemetry-proto/releases/tag/v1.10.0\n\nInstallation\n------------\n\n::\n\n    pip install opentelemetry-proto\n\nCode Generation\n---------------\n\nThese files were generated automatically from code in opentelemetry-proto_.\nTo regenerate the code, run ``../scripts/proto_codegen.sh``.\n\nTo build against a new release or specific commit of opentelemetry-proto_,\nupdate the ``PROTO_REPO_BRANCH_OR_COMMIT`` variable in\n``../scripts/proto_codegen.sh``. Then run the script and commit the changes\nas well as any fixes needed in the OTLP exporter.\n\n.. _opentelemetry-proto: https://github.com/open-telemetry/opentelemetry-proto\n\n\nReferences\n----------\n\n* `OpenTelemetry Project <https://opentelemetry.io/>`_\n* `OpenTelemetry Proto <https://github.com/open-telemetry/opentelemetry-proto>`_\n* `proto_codegen.sh script <https://github.com/open-telemetry/opentelemetry-python/blob/main/scripts/proto_codegen.sh>`_\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": null,
+      "license": null,
+      "license_expression": "Apache-2.0",
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "opentelemetry-proto",
+      "package_url": "https://pypi.org/project/opentelemetry-proto/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/opentelemetry-proto/",
+      "project_urls": {
+        "Homepage": "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-proto",
+        "Repository": "https://github.com/open-telemetry/opentelemetry-python"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/opentelemetry-proto/1.45.2/",
+      "requires_dist": [
+        "protobuf<8.0,>=5.0"
+      ],
+      "requires_python": ">=3.10",
+      "summary": "OpenTelemetry Python Proto",
+      "version": "1.45.2",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 42928778,
+    "ownership": {
+      "organization": "opentelemetry",
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "LeightonC"
+        },
+        {
+          "role": "Owner",
+          "user": "codeboten"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "8bfa21831b88bfb307b8ccd9ce54359ab1954796cdaa9d167fb1177669c0bf97"
+        },
+        "digests": {
+          "blake2b_256": "7e0da0b8f2b9efe2ec1abdf639d3696db9b1563ebeb11d91aac08ba7341e9122",
+          "md5": "c0e69d19ac17883ecf2b452128addfe4",
+          "sha256": "03a7ca1b43f89fd5b965d5975902bb2515c0c86e2428b456836e9a6149c6235a"
+        },
+        "downloads": -1,
+        "filename": "opentelemetry_proto-1.45.2-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "c0e69d19ac17883ecf2b452128addfe4",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.10",
+        "size": 72484,
+        "upload_time": "2026-10-29T17:29:31",
+        "upload_time_iso_8601": "2026-10-29T17:29:31.403677Z",
+        "url": "https://files.pythonhosted.org/packages/7e/0d/a0b8f2b9efe2ec1abdf639d3696db9b1563ebeb11d91aac08ba7341e9122/opentelemetry_proto-1.45.2-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "249c1aa4ce60e9bc72af20dc49c92cc0566825092d92b3d6a277439fb5fb7c01",
+          "md5": "d9476149d44a903caa3d7318f0db76c0",
+          "sha256": "bd8d23cf770605b0af9b7be2071d26a464fea289d35429abfd2a66226114ad64"
+        },
+        "downloads": -1,
+        "filename": "opentelemetry_proto-1.45.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d9476149d44a903caa3d7318f0db76c0",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.10",
+        "size": 46486,
+        "upload_time": "2026-10-29T17:29:53",
+        "upload_time_iso_8601": "2026-10-29T17:29:53.007602Z",
+        "url": "https://files.pythonhosted.org/packages/24/9c/1aa4ce60e9bc72af20dc49c92cc0566825092d92b3d6a277439fb5fb7c01/opentelemetry_proto-1.45.2.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "opentelemetry-proto",
+    "version": "1.45.2",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "03a7ca1b43f89fd5b965d5975902bb2515c0c86e2428b456836e9a6149c6235a",
+      "bd8d23cf770605b0af9b7be2071d26a464fea289d35429abfd2a66226114ad64"
+    ],
+    "retrieved_at": "2026-11-28T12:09:57+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": "Apache-2.0",
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Framework :: OpenTelemetry",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14"
+      ],
+      "requires_python": ">=3.10",
+      "project_urls": {
+        "Homepage": "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-proto",
+        "Repository": "https://github.com/open-telemetry/opentelemetry-python"
+      },
+      "home_page": null,
+      "summary": "OpenTelemetry Python Proto",
+      "author": "OpenTelemetry Authors <cncf-opentelemetry-contributors@lists.cncf.io>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "opentelemetry_proto-1.45.2-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "opentelemetry_proto-1.45.2-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/7e/0d/a0b8f2b9efe2ec1abdf639d3696db9b1563ebeb11d91aac08ba7341e9122/opentelemetry_proto-1.45.2-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 72484,
+        "sha256_pypi": "03a7ca1b43f89fd5b965d5975902bb2515c0c86e2428b456836e9a6149c6235a",
+        "sha256_verified": "03a7ca1b43f89fd5b965d5975902bb2515c0c86e2428b456836e9a6149c6235a",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "opentelemetry_proto-1.45.2-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/7e/0d/a0b8f2b9efe2ec1abdf639d3696db9b1563ebeb11d91aac08ba7341e9122/opentelemetry_proto-1.45.2-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 72484,
+      "sha256_pypi": "03a7ca1b43f89fd5b965d5975902bb2515c0c86e2428b456836e9a6149c6235a",
+      "sha256_verified": "03a7ca1b43f89fd5b965d5975902bb2515c0c86e2428b456836e9a6149c6235a",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "opentelemetry_proto-1.45.2-py3-none-any.whl::opentelemetry_proto-1.45.2.dist-info/licenses/LICENSE": {
+        "saved_as": "opentelemetry_proto-1.45.2.dist-info_licenses_LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "bytes": 11357,
+        "from_artifact": "opentelemetry_proto-1.45.2-py3-none-any.whl",
+        "artifact_sha256": "03a7ca1b43f89fd5b965d5975902bb2515c0c86e2428b456836e9a6149c6235a"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

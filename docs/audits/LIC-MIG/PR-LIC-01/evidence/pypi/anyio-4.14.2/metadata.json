@@ -1,0 +1,222 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "Alex Grönholm <alex.gronholm@nextday.fi>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Framework :: AnyIO",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.15",
+        "Typing :: Typed"
+      ],
+      "description": ".. image:: https://github.com/agronholm/anyio/actions/workflows/test.yml/badge.svg\n  :target: https://github.com/agronholm/anyio/actions/workflows/test.yml\n  :alt: Build Status\n.. image:: https://coveralls.io/repos/github/agronholm/anyio/badge.svg?branch=master\n  :target: https://coveralls.io/github/agronholm/anyio?branch=master\n  :alt: Code Coverage\n.. image:: https://readthedocs.org/projects/anyio/badge/?version=latest\n  :target: https://anyio.readthedocs.io/en/latest/?badge=latest\n  :alt: Documentation\n.. image:: https://badges.gitter.im/gitterHQ/gitter.svg\n  :target: https://gitter.im/python-trio/AnyIO\n  :alt: Gitter chat\n.. image:: https://tidelift.com/badges/package/pypi/anyio\n  :target: https://tidelift.com/subscription/pkg/pypi-anyio\n  :alt: Tidelift\n\nAnyIO is an asynchronous networking and concurrency library that works on top of either asyncio_ or\nTrio_. It implements Trio-like `structured concurrency`_ (SC) on top of asyncio and works in harmony\nwith the native SC of Trio itself.\n\nApplications and libraries written against AnyIO's API will run unmodified on either asyncio_ or\nTrio_. AnyIO can also be adopted into a library or application incrementally – bit by bit, no full\nrefactoring necessary. It will blend in with the native libraries of your chosen backend.\n\nTo find out why you might want to use AnyIO's APIs instead of asyncio's, you can read about it\n`here <https://anyio.readthedocs.io/en/stable/why.html>`_.\n\nDocumentation\n-------------\n\nView full documentation at: https://anyio.readthedocs.io/\n\nFeatures\n--------\n\nAnyIO offers the following functionality:\n\n* Task groups (nurseries_ in trio terminology)\n* High-level networking (TCP, UDP and UNIX sockets)\n\n  * `Happy eyeballs`_ algorithm for TCP connections (more robust than that of asyncio on Python\n    3.8)\n  * async/await style UDP sockets (unlike asyncio where you still have to use Transports and\n    Protocols)\n\n* A versatile API for byte streams and object streams\n* Inter-task synchronization and communication (locks, conditions, events, semaphores, object\n  streams)\n* Worker threads\n* Subprocesses\n* Subinterpreter support for code parallelization (on Python 3.13 and later)\n* Asynchronous file I/O (using worker threads)\n* Signal handling\n* Asynchronous versions of the functools_ and itertools_ modules\n\nAnyIO also comes with its own pytest_ plugin which also supports asynchronous fixtures.\nIt even works with the popular Hypothesis_ library.\n\n.. _asyncio: https://docs.python.org/3/library/asyncio.html\n.. _Trio: https://github.com/python-trio/trio\n.. _structured concurrency: https://en.wikipedia.org/wiki/Structured_concurrency\n.. _nurseries: https://trio.readthedocs.io/en/stable/reference-core.html#nurseries-and-spawning\n.. _Happy eyeballs: https://en.wikipedia.org/wiki/Happy_Eyeballs\n.. _pytest: https://docs.pytest.org/en/latest/\n.. _functools: https://docs.python.org/3/library/functools.html\n.. _itertools: https://docs.python.org/3/library/itertools.html\n.. _Hypothesis: https://hypothesis.works/\n\nSecurity contact information\n----------------------------\n\nTo report a security vulnerability, please use the `Tidelift security contact`_.\nTidelift will coordinate the fix and disclosure.\n\n.. _Tidelift security contact: https://tidelift.com/security\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": [
+        "License-File"
+      ],
+      "home_page": null,
+      "keywords": null,
+      "license": null,
+      "license_expression": "MIT",
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "anyio",
+      "package_url": "https://pypi.org/project/anyio/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/anyio/",
+      "project_urls": {
+        "Changelog": "https://anyio.readthedocs.io/en/stable/versionhistory.html",
+        "Documentation": "https://anyio.readthedocs.io/en/latest/",
+        "Issue tracker": "https://github.com/agronholm/anyio/issues",
+        "Source code": "https://github.com/agronholm/anyio"
+      },
+      "provides_extra": [
+        "trio"
+      ],
+      "release_url": "https://pypi.org/project/anyio/4.14.2/",
+      "requires_dist": [
+        "exceptiongroup>=1.0.2; python_version < \"3.11\"",
+        "idna>=2.8",
+        "typing_extensions>=4.5; python_version < \"3.13\"",
+        "trio>=0.32.0; extra == \"trio\""
+      ],
+      "requires_python": ">=3.10",
+      "summary": "High-level concurrency and networking framework on top of asyncio or Trio",
+      "version": "4.14.2",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 43044833,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "Thomas.Grainger"
+        },
+        {
+          "role": "Owner",
+          "user": "Zac-HD"
+        },
+        {
+          "role": "Owner",
+          "user": "agronholm"
+        },
+        {
+          "role": "Owner",
+          "user": "njs"
+        },
+        {
+          "role": "Owner",
+          "user": "smurfix"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "c5e6fc4dfd833319913b287be7a30d9935e9208c7ef917630621855aaac4d419"
+        },
+        "digests": {
+          "blake2b_256": "da35f2287558c17e29fafc8ef3daf819bb9834061cfa43bff8014f7df7f63bdc",
+          "md5": "62b92e3f99b14b95174b301dc3e8dd57",
+          "sha256": "9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494"
+        },
+        "downloads": -1,
+        "filename": "anyio-4.14.2-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "62b92e3f99b14b95174b301dc3e8dd57",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.10",
+        "size": 125813,
+        "upload_time": "2026-07-12T20:29:05",
+        "upload_time_iso_8601": "2026-07-12T20:29:05.763870Z",
+        "url": "https://files.pythonhosted.org/packages/da/35/f2287558c17e29fafc8ef3daf819bb9834061cfa43bff8014f7df7f63bdc/anyio-4.14.2-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "61cca381afa6efea9f496eff839d4a6a1aed3bfafc7b3ab4b0d1b243a12573dd",
+          "md5": "a1c54024bb099e67972c9ca1176ed96f",
+          "sha256": "cfa139f3ed1a23ee8f88a145ddb5ac7605b8bbfd8592baacd7ce3d8bb4313c7f"
+        },
+        "downloads": -1,
+        "filename": "anyio-4.14.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a1c54024bb099e67972c9ca1176ed96f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.10",
+        "size": 260176,
+        "upload_time": "2026-07-12T20:29:07",
+        "upload_time_iso_8601": "2026-07-12T20:29:07.082484Z",
+        "url": "https://files.pythonhosted.org/packages/61/cc/a381afa6efea9f496eff839d4a6a1aed3bfafc7b3ab4b0d1b243a12573dd/anyio-4.14.2.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "anyio",
+    "version": "4.14.2",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494",
+      "cfa139f3ed1a23ee8f88a145ddb5ac7605b8bbfd8592baacd7ce3d8bb4313c7f"
+    ],
+    "retrieved_at": "2026-11-28T12:09:54+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": "MIT",
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Framework :: AnyIO",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.15",
+        "Typing :: Typed"
+      ],
+      "requires_python": ">=3.10",
+      "project_urls": {
+        "Changelog": "https://anyio.readthedocs.io/en/stable/versionhistory.html",
+        "Documentation": "https://anyio.readthedocs.io/en/latest/",
+        "Issue tracker": "https://github.com/agronholm/anyio/issues",
+        "Source code": "https://github.com/agronholm/anyio"
+      },
+      "home_page": null,
+      "summary": "High-level concurrency and networking framework on top of asyncio or Trio",
+      "author": "Alex Grönholm <alex.gronholm@nextday.fi>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "anyio-4.14.2-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "anyio-4.14.2-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/da/35/f2287558c17e29fafc8ef3daf819bb9834061cfa43bff8014f7df7f63bdc/anyio-4.14.2-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 125813,
+        "sha256_pypi": "9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494",
+        "sha256_verified": "9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "anyio-4.14.2-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/da/35/f2287558c17e29fafc8ef3daf819bb9834061cfa43bff8014f7df7f63bdc/anyio-4.14.2-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 125813,
+      "sha256_pypi": "9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494",
+      "sha256_verified": "9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "anyio-4.14.2-py3-none-any.whl::anyio-4.14.2.dist-info/licenses/LICENSE": {
+        "saved_as": "anyio-4.14.2.dist-info_licenses_LICENSE",
+        "sha256": "5361ac9dc58f2ef5fd2e9b09c68297c17f04950909bbc8023bdb82eacf22c2b0",
+        "bytes": 1081,
+        "from_artifact": "anyio-4.14.2-py3-none-any.whl",
+        "artifact_sha256": "9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

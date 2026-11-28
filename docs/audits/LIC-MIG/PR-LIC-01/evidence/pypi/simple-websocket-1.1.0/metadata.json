@@ -1,0 +1,189 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "Miguel Grinberg <miguel.grinberg@gmail.com>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Environment :: Web Environment",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3"
+      ],
+      "description": "simple-websocket\n================\n\n[![Build status](https://github.com/miguelgrinberg/simple-websocket/workflows/build/badge.svg)](https://github.com/miguelgrinberg/simple-websocket/actions) [![codecov](https://codecov.io/gh/miguelgrinberg/simple-websocket/branch/main/graph/badge.svg)](https://codecov.io/gh/miguelgrinberg/simple-websocket)\n\nSimple WebSocket server and client for Python.\n\n## Resources\n\n- [Documentation](http://simple-websocket.readthedocs.io/en/latest/)\n- [PyPI](https://pypi.python.org/pypi/simple-websocket)\n- [Change Log](https://github.com/miguelgrinberg/simple-websocket/blob/main/CHANGES.md)\n\n",
+      "description_content_type": "text/markdown",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": null,
+      "license": null,
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "simple-websocket",
+      "package_url": "https://pypi.org/project/simple-websocket/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/simple-websocket/",
+      "project_urls": {
+        "Bug Tracker": "https://github.com/miguelgrinberg/simple-websocket/issues",
+        "Homepage": "https://github.com/miguelgrinberg/simple-websocket"
+      },
+      "provides_extra": [
+        "dev",
+        "docs"
+      ],
+      "release_url": "https://pypi.org/project/simple-websocket/1.1.0/",
+      "requires_dist": [
+        "wsproto",
+        "tox; extra == \"dev\"",
+        "flake8; extra == \"dev\"",
+        "pytest; extra == \"dev\"",
+        "pytest-cov; extra == \"dev\"",
+        "sphinx; extra == \"docs\""
+      ],
+      "requires_python": ">=3.6",
+      "summary": "Simple WebSocket server and client for Python",
+      "version": "1.1.0",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 25424964,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "miguelgrinberg"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": "",
+        "core-metadata": {
+          "sha256": "8c865415109b83c01ed41370122a4095232fb8f274e7f6d7a69b659360c788d4"
+        },
+        "digests": {
+          "blake2b_256": "52590782e51887ac6b07ffd1570e0364cf901ebc36345fea669969d2084baebb",
+          "md5": "c8e78ccdc04e1c4cb253b0abbbb29a3a",
+          "sha256": "4af6069630a38ed6c561010f0e11a5bc0d4ca569b36306eb257cd9a192497c8c"
+        },
+        "downloads": -1,
+        "filename": "simple_websocket-1.1.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "c8e78ccdc04e1c4cb253b0abbbb29a3a",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.6",
+        "size": 13842,
+        "upload_time": "2024-10-10T22:39:29",
+        "upload_time_iso_8601": "2024-10-10T22:39:29.645713Z",
+        "url": "https://files.pythonhosted.org/packages/52/59/0782e51887ac6b07ffd1570e0364cf901ebc36345fea669969d2084baebb/simple_websocket-1.1.0-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": "",
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "b0d4bfa032f961103eba93de583b161f0e6a5b63cebb8f2c7d0c6e6efe1e3d2e",
+          "md5": "2c5f6f6bad380676db0eb7e2c4070454",
+          "sha256": "7939234e7aa067c534abdab3a9ed933ec9ce4691b0713c78acb195560aa52ae4"
+        },
+        "downloads": -1,
+        "filename": "simple_websocket-1.1.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "2c5f6f6bad380676db0eb7e2c4070454",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.6",
+        "size": 17300,
+        "upload_time": "2024-10-10T22:39:31",
+        "upload_time_iso_8601": "2024-10-10T22:39:31.412388Z",
+        "url": "https://files.pythonhosted.org/packages/b0/d4/bfa032f961103eba93de583b161f0e6a5b63cebb8f2c7d0c6e6efe1e3d2e/simple_websocket-1.1.0.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "simple-websocket",
+    "version": "1.1.0",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "4af6069630a38ed6c561010f0e11a5bc0d4ca569b36306eb257cd9a192497c8c",
+      "7939234e7aa067c534abdab3a9ed933ec9ce4691b0713c78acb195560aa52ae4"
+    ],
+    "retrieved_at": "2026-11-28T12:09:59+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: MIT License"
+      ],
+      "classifiers_all": [
+        "Environment :: Web Environment",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3"
+      ],
+      "requires_python": ">=3.6",
+      "project_urls": {
+        "Bug Tracker": "https://github.com/miguelgrinberg/simple-websocket/issues",
+        "Homepage": "https://github.com/miguelgrinberg/simple-websocket"
+      },
+      "home_page": null,
+      "summary": "Simple WebSocket server and client for Python",
+      "author": "Miguel Grinberg <miguel.grinberg@gmail.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "simple_websocket-1.1.0-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "simple_websocket-1.1.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/52/59/0782e51887ac6b07ffd1570e0364cf901ebc36345fea669969d2084baebb/simple_websocket-1.1.0-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 13842,
+        "sha256_pypi": "4af6069630a38ed6c561010f0e11a5bc0d4ca569b36306eb257cd9a192497c8c",
+        "sha256_verified": "4af6069630a38ed6c561010f0e11a5bc0d4ca569b36306eb257cd9a192497c8c",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "simple_websocket-1.1.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/52/59/0782e51887ac6b07ffd1570e0364cf901ebc36345fea669969d2084baebb/simple_websocket-1.1.0-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 13842,
+      "sha256_pypi": "4af6069630a38ed6c561010f0e11a5bc0d4ca569b36306eb257cd9a192497c8c",
+      "sha256_verified": "4af6069630a38ed6c561010f0e11a5bc0d4ca569b36306eb257cd9a192497c8c",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "simple_websocket-1.1.0-py3-none-any.whl::simple_websocket-1.1.0.dist-info/LICENSE": {
+        "saved_as": "simple_websocket-1.1.0.dist-info_LICENSE",
+        "sha256": "4b8abadcc5e3dd29c71905b84952945699f0a7ba41e6af99eaba46faabe95bb7",
+        "bytes": 1072,
+        "from_artifact": "simple_websocket-1.1.0-py3-none-any.whl",
+        "artifact_sha256": "4af6069630a38ed6c561010f0e11a5bc0d4ca569b36306eb257cd9a192497c8c"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

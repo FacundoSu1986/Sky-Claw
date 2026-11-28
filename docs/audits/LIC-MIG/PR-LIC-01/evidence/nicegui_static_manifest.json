@@ -1,0 +1,827 @@
+{
+  "wheel": "nicegui-3.12.0-py3-none-any.whl",
+  "wheel_sha256": "1bdc6ef423f091afddc05ea3bcf5beac1b3c3d27081b0df243aaccf03e612434",
+  "total_files": 115,
+  "files": [
+    {
+      "path": "nicegui/static/dompurify.mjs",
+      "bytes": 25317,
+      "sha256": "973dce0d632bd9ee2527536832ad21a1a36ca991eb331ae4404376a2409f1e88",
+      "banners": [
+        "@license",
+        "(c) Cure53 and other contributors | Released under the Apache l",
+        "License 2.0 | github.com/cure53/DOMPurify/blob/3.4.0/LICENSE */"
+      ]
+    },
+    {
+      "path": "nicegui/static/fonts.css",
+      "bytes": 33202,
+      "sha256": "1dc09af153dd55333d30ab1dcf0ba7258ac621ee8422b7b4ea2b85ebe12b7efa",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/headwind.css",
+      "bytes": 108,
+      "sha256": "ea6f49294279e3d00d4de31e5945198234636dcd5a408ded96b3498527cf06c5",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/immutable.es.js",
+      "bytes": 80471,
+      "sha256": "f519da367c59a0ec6cf596afb88ab2f30c9c93cd1b02b1708dc5572e9c1e6338",
+      "banners": [
+        "@license",
+        "MIT License",
+        "Copyright (c) 2014-present, Lee Byron and other contributors.",
+        "copyright notice and this permission notice shall be included in all"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/ar-TN.umd.prod.js",
+      "bytes": 6825,
+      "sha256": "ba6656bed50c89ee654b8bd37caee3683f937f010cc172538ddb874acd7ab454",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/ar.umd.prod.js",
+      "bytes": 6817,
+      "sha256": "ba3ae0547a259e571e6894098c53ca04310d18558f066718aa06ef439ba319da",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/az-Latn.umd.prod.js",
+      "bytes": 3131,
+      "sha256": "51d1c5eda89e82ff49bf658333834a6f77eab352acac1c0fa24a10187db19c58",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/bg.umd.prod.js",
+      "bytes": 7479,
+      "sha256": "122a2f2165e2e32b08aadcbe7be8775d12a45207773f946b1e0debc16a0adbff",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/bn.umd.prod.js",
+      "bytes": 7651,
+      "sha256": "88e7bb69fdec1d3e62c31b5639742065cc77351265bcd8696d8ab5a8578ba451",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/bs-BA.umd.prod.js",
+      "bytes": 2587,
+      "sha256": "8b903f89462502cc26ca2ad6a19880ddea759e4a17ff844162190275ec6b9904",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/ca.umd.prod.js",
+      "bytes": 2608,
+      "sha256": "7a1edb4c512ed0b5f3f2094f99fef204c2e3f1e0ae2fcf47263db78bead627f7",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/cs.umd.prod.js",
+      "bytes": 3235,
+      "sha256": "a86d2a233142c6036c3e58db18253b21ad3b2caeae3c55f75c85530cda265385",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/da.umd.prod.js",
+      "bytes": 2475,
+      "sha256": "8ccbdeff9187a7f0d7b3c1a499db4d49a6f8ca0bedf681ce4cb13c82107b9290",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/de-CH.umd.prod.js",
+      "bytes": 2586,
+      "sha256": "538481f231c51fa6276993d96d35b7d883c6e029cc089842092bf3eaac0c483a",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/de-DE.umd.prod.js",
+      "bytes": 2596,
+      "sha256": "203e7f3be9944732fc7260dea44962d1997581869a472be13ecd6624f70b68a5",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/de.umd.prod.js",
+      "bytes": 2586,
+      "sha256": "ed39c3b703358d17f36fa33327e08e38213f4b3cd7fef3db90f28b6bd149ed5b",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/el.umd.prod.js",
+      "bytes": 8562,
+      "sha256": "1165fda1248b76a89513332315d4dd327e36afb99214c7c5cdaba57935066642",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/en-GB.umd.prod.js",
+      "bytes": 2364,
+      "sha256": "fdf82c294c3a0c6d10b80f612f95be4dd1861de0b8c2b7072edc8fe49af3d104",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/en-US.umd.prod.js",
+      "bytes": 2364,
+      "sha256": "892bdbda49602eda2fba3244b36888d896c918bc6702a6963ee058c575f83332",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/eo.umd.prod.js",
+      "bytes": 2570,
+      "sha256": "5ae62191271ef35a36dd62cb1d76a198c5dfaa16c69c37e6c2cdde69e1c255cb",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/es.umd.prod.js",
+      "bytes": 2636,
+      "sha256": "19b73a1a7482e627a32bf974917e294d442769e43ccd69a42ebd7cf554f13734",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/et.umd.prod.js",
+      "bytes": 2530,
+      "sha256": "589ec1901d66476e306750145d3546ea21c251fd69bfb9d9d1781ec3471350fd",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/eu.umd.prod.js",
+      "bytes": 2564,
+      "sha256": "32c38d317f9e489766ed0c20560513e3216bf1f9bca37b6d70f8b1415bb71c9b",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/fa-IR.umd.prod.js",
+      "bytes": 6221,
+      "sha256": "b1e3b70edf6ad82ac4facae3702375b2e181ee0629241b1e051fb7dbe841dd33",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/fa.umd.prod.js",
+      "bytes": 6216,
+      "sha256": "5415067c3aa6c9258dffc1f279dda3831afe9cd85a414f684281bf9efb1fad09",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/fi.umd.prod.js",
+      "bytes": 2684,
+      "sha256": "d543c99d83bbbe4552ac45f241fff3198e34323426a30cff4543aa61f6ccfe47",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/fr.umd.prod.js",
+      "bytes": 2782,
+      "sha256": "01e9169695be70fe96cfe8d948e3681ca602d9874674ae1fd7c85db9d3ffaaef",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/gn.umd.prod.js",
+      "bytes": 2623,
+      "sha256": "9ca0d686f03e3b2e3ba4c4dc1782ee1c8397e20d193d72a0ab25ea3e27c5d8e1",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/he.umd.prod.js",
+      "bytes": 5954,
+      "sha256": "3e4ed9a0560e7c8b73eccc22252a1f65f51604bc691e35013435d9babfd8cbfe",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/hi.umd.prod.js",
+      "bytes": 7138,
+      "sha256": "02bcfcf868a095dca306660d37860ef2f05c6ded308dbc26948fe86a6e852405",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/hr.umd.prod.js",
+      "bytes": 2625,
+      "sha256": "c64383bd5fedae6ac4de089bbecd342d5efedcdbac569089aaa02e45793602cf",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/hu.umd.prod.js",
+      "bytes": 3009,
+      "sha256": "97e7d5c97c3ade8141ce55eb67abf781332e3e1bba57428b8ddf788951c2bdee",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/id.umd.prod.js",
+      "bytes": 2441,
+      "sha256": "7e558aa209a3d026626e56a310c1ffcc6b68c6e715e650a66977dc7b20a2530a",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/is.umd.prod.js",
+      "bytes": 2822,
+      "sha256": "effc1e8a3f6ce95d1e160872dccb731d8389a10b52076a27fd4c37758f1be30a",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/it.umd.prod.js",
+      "bytes": 2561,
+      "sha256": "03c8b7ee436972c6c4ad7f8ed9265c8b2ec0528af28e0f219262aaee801ca28f",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/ja.umd.prod.js",
+      "bytes": 3766,
+      "sha256": "1018a564216bed5d17dca7822907c0e9d29c9f973a1f66803116f2160fe361f0",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/kk.umd.prod.js",
+      "bytes": 7280,
+      "sha256": "124edd0f4ee7dabb08031f856869cdb4a3380c068cdfb8fe20c43fe5f7faeda6",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/km.umd.prod.js",
+      "bytes": 7104,
+      "sha256": "7339aef4820e93a118e667a4c21a429387bc8256b4d08eeae0bedc0f8cf81aca",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/ko-KR.umd.prod.js",
+      "bytes": 3526,
+      "sha256": "daef3569657ec3ab3bc22388d3c4f8f4986fc1b75572a3f8b9795ceab0ab44c4",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/kur-CKB.umd.prod.js",
+      "bytes": 7826,
+      "sha256": "a5c98b3505a7a43e6026eb46d3e78cd5661c4d9a576df9d3fd979ac09c8b3ffc",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/lt.umd.prod.js",
+      "bytes": 3182,
+      "sha256": "af4594a1ed90942d2799a07a5fd38a933395bb307fe8ffb31cc1d1afbfc54f44",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/lu.umd.prod.js",
+      "bytes": 2664,
+      "sha256": "62554bc3143a6951873c8dd1722f2662ab70937d9ca88df3b8f3d1970ae25331",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/lv.umd.prod.js",
+      "bytes": 3015,
+      "sha256": "a8b99004aaa8d424804002a7def6b567ce698a20ce5c3cac4a2a7c0d2d3cfa34",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/mk.umd.prod.js",
+      "bytes": 7740,
+      "sha256": "9700a0fc33e55bfe41e0dbbf9f6be6dbdbeb2ba2ff4d16fbbc63c87bd3a484c0",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/ml.umd.prod.js",
+      "bytes": 8857,
+      "sha256": "ba99351426239b3ac3b20b35ff841175ed1c2bd63e5046bbe00f89baddd345a2",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/mm.umd.prod.js",
+      "bytes": 6015,
+      "sha256": "d4ab3d57d7d6e20fd04d46113fe7e65d14b80966905ac670c95ac7ba45ff6dd6",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/ms-MY.umd.prod.js",
+      "bytes": 2550,
+      "sha256": "9132532e50cf2f6306b840c084e501b33399f91ea5983e56389ddef6e18c2cb0",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/ms.umd.prod.js",
+      "bytes": 2442,
+      "sha256": "65c46cb695a0bb8d55d702f12bd75e2688310ef2ab38952d93789e8a55b8a32b",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/my.umd.prod.js",
+      "bytes": 2594,
+      "sha256": "12080e2f2a40f2aaddb29e0506e01b7a13e3a102921fddd6204f8cb41515ff67",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/nb-NO.umd.prod.js",
+      "bytes": 2419,
+      "sha256": "e5ba6132ba6bdbe6194926ca3d7b423d6776901f72a0a098f92b4232cc3955ba",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/nl.umd.prod.js",
+      "bytes": 2440,
+      "sha256": "517bf9208c6967a49fa1ca6b95fc9962193cf303de0a16347097e19392db8bc8",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/pl.umd.prod.js",
+      "bytes": 2931,
+      "sha256": "acf0f93bd566071c967dad6eefe62bf8515e6f776ff41c29875d1b87ed7f3054",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/pt-BR.umd.prod.js",
+      "bytes": 2687,
+      "sha256": "f34c93bea4a20929662bcacbc109eeec1673f26bcb4225af5d2890056319759e",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/pt.umd.prod.js",
+      "bytes": 2670,
+      "sha256": "ac1d4bd4316a7582691cf3db7db2dc6aa8052a34d3a5017ffc7f612947652668",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/ro.umd.prod.js",
+      "bytes": 2862,
+      "sha256": "59f76a846faf6c25dd0fb1435f2b4fa24c3637704e3d0236db7ab4f72b7eec96",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/ru.umd.prod.js",
+      "bytes": 8382,
+      "sha256": "954e9af33a9a3c56d69fe5f0530f567d2f6831098fc7f49ef4e42bea62057783",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/sk.umd.prod.js",
+      "bytes": 3082,
+      "sha256": "2e5ecc951e0dbd0ef270de3d585fef82e77b6905f1ce83d920c50c5352f2f37a",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/sl.umd.prod.js",
+      "bytes": 2662,
+      "sha256": "a5451cf186df029ef3e29e484931742c73b809bf1187463c0ad5ffe7a4f34607",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/sm.umd.prod.js",
+      "bytes": 2868,
+      "sha256": "fd3ec708dbb33073a604ee8803ba4506d65fa07fa4e46403d2f6e708b5a22896",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/sq.umd.prod.js",
+      "bytes": 2622,
+      "sha256": "52bab2ef107e04c7ee27856b2c8f05ca46970942985154ea59452a6d87af2d27",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/sr-CYR.umd.prod.js",
+      "bytes": 7490,
+      "sha256": "c4538868e18846a2e788c977d6c111efba8939f523865e04ad911813ffbed5c2",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/sr.umd.prod.js",
+      "bytes": 2719,
+      "sha256": "51a05e4f9cd446d519fc37ecf390bcb594a17b077efc98dd1949cd6753b0b8a3",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/sv.umd.prod.js",
+      "bytes": 2488,
+      "sha256": "34b15112639ad8a85d5ed492ab36403238b0d4cc46632d0c9af0f79bbde825ca",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/ta.umd.prod.js",
+      "bytes": 8301,
+      "sha256": "b69eb93a324301699a163ab700f2c2b3789c915682a8c5236995e1985d4e9c7b",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/th.umd.prod.js",
+      "bytes": 6148,
+      "sha256": "40e31fec826648f9c12d23e502800d6a1a24fd51bdbf35c190af576b812f5ac3",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/tl.umd.prod.js",
+      "bytes": 2600,
+      "sha256": "28fb1936cbcd925f4284983701dce35c0f73c55a6f70c58a8a1b1b5e5b9b5055",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/tr.umd.prod.js",
+      "bytes": 2774,
+      "sha256": "a4187fb950f4002b778bda2533d7a4cbe79668919a8266840d19886746b91b0f",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/ug.umd.prod.js",
+      "bytes": 6720,
+      "sha256": "e81476bb3668e92be31283dbeda137908406f035bc93b43d4a6099cb4959aef6",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/uk.umd.prod.js",
+      "bytes": 8507,
+      "sha256": "a1c2032c35cd56af640fabc2d9e304e9387174669ade5604a73bcf1982578420",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/ur-PK.umd.prod.js",
+      "bytes": 6560,
+      "sha256": "7bcdf17d063fb3427c6b8e332a0a984c5fa29c128a6f813bbf6661ec2d4d8936",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/uz-Cyrl.umd.prod.js",
+      "bytes": 8198,
+      "sha256": "982b067d5345594cdcb857831d6d5155336848420b104f77240e933c2edd00a2",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/uz-Latn.umd.prod.js",
+      "bytes": 2669,
+      "sha256": "61ecdd0296b80066f8a040932cefcf566f4d5c698465e72c44f38a8c02c5b29c",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/vi.umd.prod.js",
+      "bytes": 3434,
+      "sha256": "f15b519c7384ebd0c1a242f8c3cbaa5b10bd90ff7739fa2d5c96170f35801e3f",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/zh-CN.umd.prod.js",
+      "bytes": 3456,
+      "sha256": "c12f33919a13e34f525144b4264255fa5a461e85bbb5680da3984e4462d42c30",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/lang/zh-TW.umd.prod.js",
+      "bytes": 3469,
+      "sha256": "0fb3c90995b39624ab8e3ecbca0ac84945ebd2303940f25a361e108027ef3236",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/nicegui.css",
+      "bytes": 7760,
+      "sha256": "5d99ec7d98d7cf9a9cdb23a0cc78a544b39adad5570a36080a70a893b14d0cb0",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/nicegui.js",
+      "bytes": 19705,
+      "sha256": "17edc5c9039c3bb6c324ea967e9537b75ceea9a0f637fe1cc1fdebd3148c3f20",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/quasar.important.css",
+      "bytes": 46091,
+      "sha256": "87f8c9dcb2b1dd350fdad1a347add22bb74517be6c1553dcc09f5603feae2cac",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/quasar.important.prod.css",
+      "bytes": 37935,
+      "sha256": "1d85d2db2a5aaed4cf3767b5ede5652e7af9ae59d086d216aa584cb80d28de72",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/quasar.umd.js",
+      "bytes": 1068648,
+      "sha256": "0941b1b3d555fe3756dd17b8eb2c37be9e4a90b7c5e8d86e86537715fb82f110",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/quasar.umd.prod.js",
+      "bytes": 502975,
+      "sha256": "ab8d0d9e69eac525a824dc796d6ce8b683efe0ecb5bef5d23b203f3e18bb3384",
+      "banners": [
+        "(c) 2015-present Razvan Stoenescu",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/quasar.unimportant.css",
+      "bytes": 250709,
+      "sha256": "5a6c623f276582ebbc7657d7190b0b2652540769bc6582962a06de6bb902f038",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/quasar.unimportant.prod.css",
+      "bytes": 212196,
+      "sha256": "8e01b5d29820a5d696da31a57a76df5d7126799a16ed1974c7bfbc924a1fb9fa",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/sass.dart.js",
+      "bytes": 3105974,
+      "sha256": "a0a83224dcc37d55a3680f3c59dbe70e76dae272ece50f50b24aea1857a4e736",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/sass.default.js",
+      "bytes": 2296,
+      "sha256": "6078bfb9871efcd8a5825125a4aa206c9e9ef489fbb7fc671447ad8ba71d2dcb",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/socket.io.min.js",
+      "bytes": 46831,
+      "sha256": "b0e735814f8dcfecd6cdb8a7ce95a297a7e1e5f2727a29e6f5901801d52fa0c5",
+      "banners": [
+        "(c) 2014-2024 Guillermo Rauch",
+        "MIT License"
+      ]
+    },
+    {
+      "path": "nicegui/static/socket.io.min.js.map",
+      "bytes": 196257,
+      "sha256": "f90fd3fdd7cf172d06875da05fb3c7f5e4616103babf4c2c168e75b504f4ed46",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/tailwindcss.min.js",
+      "bytes": 260427,
+      "sha256": "4df034809c175da313a3e44657411bd26cbd52ceb16f52f028e35e3d646bb9c8",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/unocss/core.global.js",
+      "bytes": 23113,
+      "sha256": "a3718955885d1313e02ec2f5f28b184bbbc1f6bda538a59686921ce1f1e307ba",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/unocss/preset-mini.global.js",
+      "bytes": 103662,
+      "sha256": "eb79142e39b1ef99037a673f966bc41e368c6c3d419351073483a67425f4f67c",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/unocss/preset-wind3.global.js",
+      "bytes": 156998,
+      "sha256": "d70987665180c193c2b750f87eb34a86e65552c850ab939f6fb850747b4c0970",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/unocss/preset-wind4.global.js",
+      "bytes": 178330,
+      "sha256": "2cdb254cd3c8e71c8b0c848ddb804be11c1dd9aae68a54966ca3571d168693a9",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/utils/dynamic_properties.js",
+      "bytes": 780,
+      "sha256": "d721b0a44afa535b7de80733d3d51627c7cdab13959ed56eeb5ed7e94c00611a",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/utils/json.js",
+      "bytes": 696,
+      "sha256": "e09362dbf3af571aa3319d54cee6fe9b8a30dce3ef291de2024b55599588076e",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/utils/resources.js",
+      "bytes": 904,
+      "sha256": "0a0aa80267153aba48a59a3915a1760c78ca3387407c9c9f093303065fe93e43",
+      "banners": []
+    },
+    {
+      "path": "nicegui/static/vue.esm-browser.js",
+      "bytes": 537962,
+      "sha256": "a675f77cd64d1cddac9a329ba5bf19e6845eaf604535ef2a0c4f3ef9e8f337c1",
+      "banners": [
+        "(c) 2018-present Yuxi (Evan) You and Vue contributors",
+        "@license",
+        "(c) => c.slice(1).toUpperCase());"
+      ]
+    },
+    {
+      "path": "nicegui/static/vue.esm-browser.prod.js",
+      "bytes": 164355,
+      "sha256": "f1dfbe4ca6bdc0f8eac639eea8652654a073433018be9bfd1cc55e75574b78f0",
+      "banners": [
+        "(c) 2018-present Yuxi (Evan) You and Vue contributors",
+        "@license"
+      ]
+    }
+  ]
+}

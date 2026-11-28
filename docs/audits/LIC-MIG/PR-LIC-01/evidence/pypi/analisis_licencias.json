@@ -1,0 +1,3786 @@
+[
+  {
+    "paquete": "aiofiles-24.1.0",
+    "archivos": [
+      {
+        "archivo": "aiofiles-24.1.0.dist-info_licenses_LICENSE",
+        "sha256": "cb5e8e7e5f4a3988e1063c142c60dc2df75605f4c46515e776e3aca6df976e14",
+        "bytes": 11325,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 0.9993,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 0.9993,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      },
+      {
+        "archivo": "aiofiles-24.1.0.dist-info_licenses_NOTICE",
+        "sha256": "104c58d1d450bd6474c09d8b64bc0182733a60ac3d8c253e334cde8294520ff1",
+        "bytes": 55,
+        "licencias_detectadas": [],
+        "spdx_mejor": "WTFPL",
+        "cobertura_canonica": 0.0595,
+        "texto_completo": false,
+        "top3": [
+          {
+            "spdx": "WTFPL",
+            "cobertura": 0.0595,
+            "via": "barrido"
+          },
+          {
+            "spdx": "Zlib",
+            "cobertura": 0.0454,
+            "via": "barrido"
+          },
+          {
+            "spdx": "ISC",
+            "cobertura": 0.0373,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "Copyright 2016 Tin Tvrtkovic"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "aiohappyeyeballs-2.6.1",
+    "archivos": [
+      {
+        "archivo": "aiohappyeyeballs-2.6.1.dist-info_LICENSE",
+        "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf",
+        "bytes": 13936,
+        "licencias_detectadas": [
+          "PSF-2.0"
+        ],
+        "spdx_mejor": "PSF-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "PSF-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": []
+      }
+    ],
+    "licencias_en_textos": {
+      "PSF-2.0": 1
+    }
+  },
+  {
+    "paquete": "aiohttp-3.14.4",
+    "archivos": [
+      {
+        "archivo": "aiohttp-3.14.4.dist-info_licenses_LICENSE.txt",
+        "sha256": "2e4be5fc6c4c72a466fcb665d726e049a6891981fe536c4f04b6366749461d23",
+        "bytes": 11313,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 0.9976,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 0.9976,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      },
+      {
+        "archivo": "aiohttp-3.14.4.dist-info_licenses_vendor_llhttp_LICENSE",
+        "sha256": "628168d68bb5a8a17e0bbefb3bd74e326e1edc20583d76f52f457c82c921867d",
+        "bytes": 1069,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9757,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9757,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright © 2018 Fedor Indutny",
+          "The above copyright notice and this permission notice shall be included",
+          "NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1,
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "aiosignal-1.4.0",
+    "archivos": [
+      {
+        "archivo": "aiosignal-1.4.0.dist-info_licenses_LICENSE",
+        "sha256": "6fd5243e92dd7f98ec69c7ac377728e74905709ff527a5bf98d6d0263c04f5b6",
+        "bytes": 11332,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 0.9971,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 0.9971,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "aiosqlite-0.22.1",
+    "archivos": [
+      {
+        "archivo": "aiosqlite-0.22.1.dist-info_licenses_LICENSE",
+        "sha256": "ab0c171dc3ef8bf325a84bb77d855421f2611335ddf6e08816b2922c4edc0f76",
+        "bytes": 1071,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.979,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.979,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2022 Amethyst Reese",
+          "The above copyright notice and this permission notice shall be included in all",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "annotated-doc-0.0.4",
+    "archivos": [
+      {
+        "archivo": "annotated_doc-0.0.4.dist-info_licenses_LICENSE",
+        "sha256": "fff170779a6acbf65abdb405c087f1cee1786691e4a96a4034517e4a504a0cdf",
+        "bytes": 1086,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.979,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.979,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2025 Sebastián Ramírez",
+          "The above copyright notice and this permission notice shall be included in",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "annotated-types-0.7.0",
+    "archivos": [
+      {
+        "archivo": "annotated_types-0.7.0.dist-info_licenses_LICENSE",
+        "sha256": "fe1049884b1a0d9342901e88e07f32925d24b3121d9972b6a6805fb9824b095d",
+        "bytes": 1083,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9834,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9834,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2022 the contributors",
+          "The above copyright notice and this permission notice shall be included in all",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "anyio-4.14.2",
+    "archivos": [
+      {
+        "archivo": "anyio-4.14.2.dist-info_licenses_LICENSE",
+        "sha256": "5361ac9dc58f2ef5fd2e9b09c68297c17f04950909bbc8023bdb82eacf22c2b0",
+        "bytes": 1081,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.979,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.979,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2018 Alex Grönholm",
+          "The above copyright notice and this permission notice shall be included in all",
+          "COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "attrs-26.1.0",
+    "archivos": [
+      {
+        "archivo": "attrs-26.1.0.dist-info_licenses_LICENSE",
+        "sha256": "882115c95dfc2af1eeb6714f8ec6d5cbcabf667caff8729f42420da63f714e9f",
+        "bytes": 1109,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9867,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9867,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2015 Hynek Schlawack and the attrs contributors",
+          "The above copyright notice and this permission notice shall be included in all",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "backports-tarfile-1.2.0",
+    "archivos": [
+      {
+        "archivo": "backports.tarfile-1.2.0.dist-info_LICENSE",
+        "sha256": "86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741",
+        "bytes": 1023,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9492,
+        "texto_completo": false,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9492,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "The above copyright notice and this permission notice shall be included in",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "backports-zstd-1.5.0",
+    "archivos": [
+      {
+        "archivo": "backports_zstd-1.5.0.dist-info_licenses_LICENSE.txt",
+        "sha256": "b0e25a78cffb43f4d92de8b61ccfa1f1f98ecbc22330b54b5251e7b6ba010231",
+        "bytes": 13804,
+        "licencias_detectadas": [
+          "PSF-2.0"
+        ],
+        "spdx_mejor": "PSF-2.0",
+        "cobertura_canonica": 0.9558,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "PSF-2.0",
+            "cobertura": 0.9558,
+            "via": "clausula"
+          }
+        ],
+        "copyright": []
+      },
+      {
+        "archivo": "backports_zstd-1.5.0.dist-info_licenses_LICENSE_zstd.txt",
+        "sha256": "f89ef2b03b52ad7c3342aeb2e1c961737f9de4892d41b1d083b0060c6191e1bf",
+        "bytes": 1761,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9749,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9749,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.",
+          "* Redistributions of source code must retain the above copyright notice, this",
+          "* Redistributions in binary form must reproduce the above copyright notice,",
+          "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "PSF-2.0": 1,
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "bidict-0.23.1",
+    "archivos": [
+      {
+        "archivo": "bidict-0.23.1.dist-info_LICENSE",
+        "sha256": "f3f53adcecaa48d73a66e238fa5ba906cb41876783b45d28a1346b3142eebd9a",
+        "bytes": 16784,
+        "licencias_detectadas": [
+          "MPL-2.0"
+        ],
+        "spdx_mejor": "MPL-2.0",
+        "cobertura_canonica": 0.9999,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MPL-2.0",
+            "cobertura": 0.9999,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright 2009-2024 Joshua Bronson. All rights reserved."
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MPL-2.0": 1
+    }
+  },
+  {
+    "paquete": "brotli-1.2.1",
+    "archivos": [
+      {
+        "archivo": "brotli-1.2.1.dist-info_licenses_LICENSE",
+        "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94",
+        "bytes": 1103,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9713,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9713,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.",
+          "The above copyright notice and this permission notice shall be included in",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "certifi-2026.10.19",
+    "archivos": [
+      {
+        "archivo": "certifi-2026.10.19.dist-info_licenses_LICENSE",
+        "sha256": "e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7",
+        "bytes": 989,
+        "licencias_detectadas": [],
+        "spdx_mejor": "WTFPL",
+        "cobertura_canonica": 0.2096,
+        "texto_completo": false,
+        "top3": [
+          {
+            "spdx": "WTFPL",
+            "cobertura": 0.2096,
+            "via": "barrido"
+          },
+          {
+            "spdx": "Unlicense",
+            "cobertura": 0.1653,
+            "via": "barrido"
+          },
+          {
+            "spdx": "BSD-2-Clause",
+            "cobertura": 0.1491,
+            "via": "barrido"
+          }
+        ],
+        "copyright": []
+      }
+    ],
+    "licencias_en_textos": {}
+  },
+  {
+    "paquete": "cffi-2.0.0",
+    "archivos": [
+      {
+        "archivo": "cffi-2.0.0.dist-info_licenses_AUTHORS",
+        "sha256": "2a67a60bbfb33759d67d645ff131b8e6d6bc4cafc232d751fcac3eda4d314cc8",
+        "bytes": 208,
+        "licencias_detectadas": [],
+        "spdx_mejor": "WTFPL",
+        "cobertura_canonica": 0.1161,
+        "texto_completo": false,
+        "top3": [
+          {
+            "spdx": "WTFPL",
+            "cobertura": 0.1161,
+            "via": "barrido"
+          },
+          {
+            "spdx": "Zlib",
+            "cobertura": 0.0922,
+            "via": "barrido"
+          },
+          {
+            "spdx": "JSON",
+            "cobertura": 0.0687,
+            "via": "barrido"
+          }
+        ],
+        "copyright": []
+      },
+      {
+        "archivo": "cffi-2.0.0.dist-info_licenses_LICENSE",
+        "sha256": "5ba24ddc57067f9249add644c3afc41a5d6dc37e23433ef759d95df370b0af63",
+        "bytes": 1123,
+        "licencias_detectadas": [
+          "MIT-0"
+        ],
+        "spdx_mejor": "MIT-0",
+        "cobertura_canonica": 0.9583,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT-0",
+            "cobertura": 0.9583,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT-0": 1
+    }
+  },
+  {
+    "paquete": "click-8.3.3",
+    "archivos": [
+      {
+        "archivo": "click-8.3.3.dist-info_licenses_LICENSE.txt",
+        "sha256": "9a8ad106a394e853bfe21f42f4e72d592819a22805d991b5f3275029292b658d",
+        "bytes": 1475,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.987,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.987,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright 2014 Pallets",
+          "1.  Redistributions of source code must retain the above copyright",
+          "2.  Redistributions in binary form must reproduce the above copyright",
+          "3.  Neither the name of the copyright holder nor the names of its"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "colorama-0.4.6",
+    "archivos": [
+      {
+        "archivo": "colorama-0.4.6.dist-info_licenses_LICENSE.txt",
+        "sha256": "cac35c02686e5d04a5a7140bfb3b36e73aed496656e891102e428886d7930318",
+        "bytes": 1491,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9838,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9838,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2010 Jonathan Hartley",
+          "* Redistributions of source code must retain the above copyright notice, this",
+          "* Redistributions in binary form must reproduce the above copyright notice,",
+          "* Neither the name of the copyright holders, nor those of its contributors"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "comtypes-1.4.16",
+    "archivos": [
+      {
+        "archivo": "comtypes-1.4.16.dist-info_licenses_LICENSE.txt",
+        "sha256": "b3ee7a0e4b0d5645e96a06c8ff6687c642c5bddeb55943f4a9c84f1d248304a8",
+        "bytes": 1273,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.989,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.989,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2006-2013, Thomas Heller.",
+          "Copyright (c) 2014, Comtypes Developers.",
+          "The above copyright notice and this permission notice shall be included in",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "cryptography-50.0.0",
+    "archivos": [
+      {
+        "archivo": "cryptography-50.0.0.dist-info_licenses_LICENSE",
+        "sha256": "3e0c7c091a948b82533ba98fd7cbb40432d6f1a9acbf85f5922d2f99a93ae6bb",
+        "bytes": 197,
+        "licencias_detectadas": [],
+        "spdx_mejor": "WTFPL",
+        "cobertura_canonica": 0.1756,
+        "texto_completo": false,
+        "top3": [
+          {
+            "spdx": "WTFPL",
+            "cobertura": 0.1756,
+            "via": "barrido"
+          },
+          {
+            "spdx": "0BSD",
+            "cobertura": 0.132,
+            "via": "barrido"
+          },
+          {
+            "spdx": "ISC",
+            "cobertura": 0.1151,
+            "via": "barrido"
+          }
+        ],
+        "copyright": []
+      },
+      {
+        "archivo": "cryptography-50.0.0.dist-info_licenses_LICENSE.APACHE",
+        "sha256": "aac73b3148f6d1d7111dbca32099f68d26c644c6813ae1e4f05f6579aa2663fe",
+        "bytes": 11360,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      },
+      {
+        "archivo": "cryptography-50.0.0.dist-info_licenses_LICENSE.BSD",
+        "sha256": "602c4c7482de6479dd2e9793cda275e5e63d773dacd1eca689232ab7008fb4fb",
+        "bytes": 1532,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9789,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9789,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) Individual contributors.",
+          "1. Redistributions of source code must retain the above copyright notice,",
+          "2. Redistributions in binary form must reproduce the above copyright",
+          "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1,
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "defusedxml-0.7.1",
+    "archivos": [
+      {
+        "archivo": "defusedxml-0.7.1.dist-info_LICENSE",
+        "sha256": "b80ce9da8c42a1f91079627fbbe2bf27210ae108a0ffe5f077d5b08e076c24c8",
+        "bytes": 2409,
+        "licencias_detectadas": [
+          "PSF-2.0"
+        ],
+        "spdx_mejor": "PSF-2.0",
+        "cobertura_canonica": 0.973,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "PSF-2.0",
+            "cobertura": 0.973,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "License Agreement and PSF's notice of copyright, i.e., \"Copyright (c)"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "PSF-2.0": 1
+    }
+  },
+  {
+    "paquete": "docutils-0.22.4",
+    "archivos": [
+      {
+        "archivo": "docutils-0.22.4.dist-info_licenses_COPYING.rst",
+        "sha256": "6ab4f27c76c74f96e5e692da5944a6f82968f3bddaac5660a4aa723e70eb5d8f",
+        "bytes": 6075,
+        "licencias_detectadas": [],
+        "spdx_mejor": "0BSD",
+        "cobertura_canonica": 0.4721,
+        "texto_completo": false,
+        "top3": [
+          {
+            "spdx": "0BSD",
+            "cobertura": 0.4721,
+            "via": "barrido"
+          },
+          {
+            "spdx": "MIT-0",
+            "cobertura": 0.4596,
+            "via": "barrido"
+          },
+          {
+            "spdx": "Zlib",
+            "cobertura": 0.4553,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          ":Copyright: This document has been placed in the public domain.",
+          "project) hereby dedicate the entire copyright, less the exceptions_",
+          "Copyright: This document/module/DTD/stylesheet/file/etc. has been"
+        ]
+      }
+    ],
+    "licencias_en_textos": {}
+  },
+  {
+    "paquete": "fastapi-0.136.1",
+    "archivos": [
+      {
+        "archivo": "fastapi-0.136.1.dist-info_licenses_LICENSE",
+        "sha256": "4ec89ffc81485b97fec584b2d4a961032eeffe834453894fd9c1274906cc744e",
+        "bytes": 1086,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.979,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.979,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2018 Sebastián Ramírez",
+          "The above copyright notice and this permission notice shall be included in",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "frozenlist-1.8.0",
+    "archivos": [
+      {
+        "archivo": "frozenlist-1.8.0.dist-info_licenses_LICENSE",
+        "sha256": "6fd5243e92dd7f98ec69c7ac377728e74905709ff527a5bf98d6d0263c04f5b6",
+        "bytes": 11332,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 0.9971,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 0.9971,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "googleapis-common-protos-1.75.0",
+    "archivos": [
+      {
+        "archivo": "googleapis_common_protos-1.75.0.dist-info_licenses_LICENSE",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "bytes": 11358,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "grpcio-1.80.0",
+    "archivos": [
+      {
+        "archivo": "grpcio-1.80.0.dist-info_licenses_LICENSE",
+        "sha256": "58c86a3f2b5cca0ebdf9ed3e7f4e6dc38e3b38796d8c3dc92064c62a4e39d0dd",
+        "bytes": 30814,
+        "licencias_detectadas": [
+          "Apache-2.0",
+          "MPL-2.0",
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          },
+          {
+            "spdx": "MPL-2.0",
+            "cobertura": 0.9999,
+            "via": "clausula"
+          },
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9911,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1,
+      "MPL-2.0": 1,
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "h11-0.16.0",
+    "archivos": [
+      {
+        "archivo": "h11-0.16.0.dist-info_licenses_LICENSE.txt",
+        "sha256": "37db5bb85926db28a427a25867f10b1232003aea1be69ccb851138adb8e6f361",
+        "bytes": 1124,
+        "licencias_detectadas": [
+          "MIT-0"
+        ],
+        "spdx_mejor": "MIT-0",
+        "cobertura_canonica": 0.9661,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT-0",
+            "cobertura": 0.9661,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2016 Nathaniel J. Smith <njs@pobox.com> and other contributors",
+          "The above copyright notice and this permission notice shall be",
+          "NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT-0": 1
+    }
+  },
+  {
+    "paquete": "httpcore-1.0.9",
+    "archivos": [
+      {
+        "archivo": "httpcore-1.0.9.dist-info_licenses_LICENSE.md",
+        "sha256": "fdcb59154c74cbaba16a11242f7740bea9f23d6feb5547917d8c5f94a80392a5",
+        "bytes": 1518,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.987,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.987,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright © 2020, [Encode OSS Ltd](https://www.encode.io/).",
+          "* Redistributions of source code must retain the above copyright notice, this",
+          "* Redistributions in binary form must reproduce the above copyright notice,",
+          "* Neither the name of the copyright holder nor the names of its"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "httptools-0.7.1",
+    "archivos": [
+      {
+        "archivo": "httptools-0.7.1.dist-info_licenses_LICENSE",
+        "sha256": "f4573e7cb7676745fb5b8d36fa548aa93e391cfb6872ddacd65130c45ea6a92d",
+        "bytes": 1114,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9801,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9801,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2015 MagicStack Inc.  http://magic.io",
+          "The above copyright notice and this permission notice shall be included in",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "httpx-0.28.1",
+    "archivos": [
+      {
+        "archivo": "httpx-0.28.1.dist-info_licenses_LICENSE.md",
+        "sha256": "4ec59d544f12b5f539a3a716fd321ac58ccd8030b465221f2c880200cdf28d8d",
+        "bytes": 1508,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.987,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.987,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright © 2019, [Encode OSS Ltd](https://www.encode.io/).",
+          "* Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.",
+          "* Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.",
+          "* Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission."
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "idna-3.15",
+    "archivos": [
+      {
+        "archivo": "idna-3.15.dist-info_licenses_LICENSE.md",
+        "sha256": "1a9a4f0e3d479a27240ddd59a9137a66ab4a0f9dfdc8ca6188cc0bfd85187f04",
+        "bytes": 1541,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9943,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9943,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2013-2026, Kim Davies and contributors.",
+          "1. Redistributions of source code must retain the above copyright",
+          "2. Redistributions in binary form must reproduce the above copyright",
+          "3. Neither the name of the copyright holder nor the names of its"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "ifaddr-0.2.0",
+    "archivos": [
+      {
+        "archivo": "ifaddr-0.2.0.dist-info_LICENSE.txt",
+        "sha256": "8700856576ae2bc80c63bc970250510d9213fb02fed006d5f22742c9ddde24d7",
+        "bytes": 1084,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9801,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9801,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2014 Stefan C. Mueller",
+          "The above copyright notice and this permission notice shall be included in",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "importlib-metadata-8.7.1",
+    "archivos": [
+      {
+        "archivo": "importlib_metadata-8.7.1.dist-info_licenses_LICENSE",
+        "sha256": "458502e12d97bbf64438606a20044aa85eb05fb0a8a807bb35dbec253fd1fc04",
+        "bytes": 10278,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 0.9993,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 0.9993,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by the copyright owner that is granting the License.",
+          "\"Work\" shall mean the work of authorship, whether in Source or Object form, made available under the License, as indicated by a copyright notice that is included in or attached to the work (an example is provided in the Appendix below).",
+          "(c) You must retain, in the Source form of any Derivative Works that You distribute, all copyright, patent, trademark, and attribution notices from the Source form of the Work, excluding those notices that do not pertain to any part of the Derivative Works; and"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "inflate64-1.0.4",
+    "archivos": [
+      {
+        "archivo": "inflate64-1.0.4.dist-info_licenses_COPYING",
+        "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551",
+        "bytes": 27032,
+        "licencias_detectadas": [
+          "LGPL-2.1-only",
+          "LGPL-2.1-or-later"
+        ],
+        "spdx_mejor": "LGPL-2.1-only",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "LGPL-2.1-only",
+            "cobertura": 1.0,
+            "via": "barrido"
+          },
+          {
+            "spdx": "LGPL-2.1-or-later",
+            "cobertura": 1.0,
+            "via": "barrido"
+          },
+          {
+            "spdx": "GPL-2.0-only",
+            "cobertura": 0.8154,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "Copyright (C) 1991, 1999 Free Software Foundation, Inc."
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "LGPL-2.1-only": 1,
+      "LGPL-2.1-or-later": 1
+    }
+  },
+  {
+    "paquete": "itsdangerous-2.2.0",
+    "archivos": [
+      {
+        "archivo": "itsdangerous-2.2.0.dist-info_LICENSE.txt",
+        "sha256": "63af09891b6be8ad1a4252ed43af0f4efba7fc948e228367bed7f3c5ae0b09d7",
+        "bytes": 1475,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.987,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.987,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright 2011 Pallets",
+          "1.  Redistributions of source code must retain the above copyright",
+          "2.  Redistributions in binary form must reproduce the above copyright",
+          "3.  Neither the name of the copyright holder nor the names of its"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "jaraco-classes-3.4.0",
+    "archivos": [
+      {
+        "archivo": "jaraco.classes-3.4.0.dist-info_LICENSE",
+        "sha256": "86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741",
+        "bytes": 1023,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9492,
+        "texto_completo": false,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9492,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "The above copyright notice and this permission notice shall be included in",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "jaraco-context-6.1.2",
+    "archivos": [
+      {
+        "archivo": "jaraco_context-6.1.2.dist-info_licenses_LICENSE",
+        "sha256": "9755a18519666e5f0f4cae3daad3d7012bcae48a600b31237d75e9fe134e6683",
+        "bytes": 1076,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9934,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9934,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2026 <copyright holders>",
+          "The above copyright notice and this permission notice shall be included in all copies or substantial",
+          "EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "jaraco-functools-4.4.0",
+    "archivos": [
+      {
+        "archivo": "jaraco_functools-4.4.0.dist-info_licenses_LICENSE",
+        "sha256": "5a57cb4db85e2a2dd88c290628908add57e3451449e0a9a71fdfb38776fd759d",
+        "bytes": 1076,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9934,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9934,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2025 <copyright holders>",
+          "The above copyright notice and this permission notice shall be included in all copies or substantial",
+          "EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "jinja2-3.1.6",
+    "archivos": [
+      {
+        "archivo": "jinja2-3.1.6.dist-info_licenses_LICENSE.txt",
+        "sha256": "3b49dcee4105eb37bac10faf1be260408fe85d252b8e9df2e0979fc1e094437b",
+        "bytes": 1475,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.987,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.987,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright 2007 Pallets",
+          "1.  Redistributions of source code must retain the above copyright",
+          "2.  Redistributions in binary form must reproduce the above copyright",
+          "3.  Neither the name of the copyright holder nor the names of its"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "keyring-25.7.0",
+    "archivos": [
+      {
+        "archivo": "keyring-25.7.0.dist-info_licenses_LICENSE",
+        "sha256": "5a57cb4db85e2a2dd88c290628908add57e3451449e0a9a71fdfb38776fd759d",
+        "bytes": 1076,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9934,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9934,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2025 <copyright holders>",
+          "The above copyright notice and this permission notice shall be included in all copies or substantial",
+          "EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "lxml-6.1.1",
+    "archivos": [
+      {
+        "archivo": "lxml-6.1.1.dist-info_licenses_LICENSE.txt",
+        "sha256": "8fc2b568133516e46845d2147917adeee1648e70ae9ab5ed6c5417afef4ce855",
+        "bytes": 1538,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.966,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.966,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2004 Infrae. All rights reserved.",
+          "1. Redistributions of source code must retain the above copyright",
+          "2. Redistributions in binary form must reproduce the above copyright",
+          "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "lxml-html-clean-0.4.5",
+    "archivos": [
+      {
+        "archivo": "lxml_html_clean-0.4.5.dist-info_licenses_LICENSE.txt",
+        "sha256": "69edb445c1335a8312d4c09271847e9956d84f0d9f724d125340cc3fad767b2a",
+        "bytes": 1488,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.966,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.966,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2004 Infrae. All rights reserved.",
+          "1. Redistributions of source code must retain the above copyright",
+          "2. Redistributions in binary form must reproduce the above copyright",
+          "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "markdown2-2.5.5",
+    "archivos": [
+      {
+        "archivo": "markdown2-2.5.5.dist-info_LICENSE.txt",
+        "sha256": "f8c7c4d554409cf621b8d653dbfffb719745fd36f5c49b8305258649b403ef9c",
+        "bytes": 2313,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9867,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9867,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2012 Trent Mick",
+          "Copyright (c) 2010 ActiveState Software Inc.",
+          "The above copyright notice and this permission notice shall be included",
+          "NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "markupsafe-3.0.3",
+    "archivos": [
+      {
+        "archivo": "markupsafe-3.0.3.dist-info_licenses_LICENSE.txt",
+        "sha256": "489a8e1108509ed98a37bb983e11e0f7e1d31f0bd8f99a79c8448e7ff37d07ea",
+        "bytes": 1503,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.987,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.987,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright 2010 Pallets",
+          "1.  Redistributions of source code must retain the above copyright",
+          "2.  Redistributions in binary form must reproduce the above copyright",
+          "3.  Neither the name of the copyright holder nor the names of its"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "more-itertools-11.0.1",
+    "archivos": [
+      {
+        "archivo": "more_itertools-11.0.1.dist-info_licenses_LICENSE",
+        "sha256": "09f1c8c9e941af3e584d59641ea9b87d83c0cb0fd007eb5ef391a7e2643c1a46",
+        "bytes": 1053,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.968,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.968,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2012 Erik Rose",
+          "The above copyright notice and this permission notice shall be included in all",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "multidict-6.9.1",
+    "archivos": [
+      {
+        "archivo": "multidict-6.9.1.dist-info_licenses_LICENSE",
+        "sha256": "2e4be5fc6c4c72a466fcb665d726e049a6891981fe536c4f04b6366749461d23",
+        "bytes": 11313,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 0.9976,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 0.9976,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "multivolumefile-0.2.3",
+    "archivos": [
+      {
+        "archivo": "multivolumefile-0.2.3.dist-info_LICENSE",
+        "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551",
+        "bytes": 26530,
+        "licencias_detectadas": [
+          "LGPL-2.1-only",
+          "LGPL-2.1-or-later"
+        ],
+        "spdx_mejor": "LGPL-2.1-only",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "LGPL-2.1-only",
+            "cobertura": 1.0,
+            "via": "barrido"
+          },
+          {
+            "spdx": "LGPL-2.1-or-later",
+            "cobertura": 1.0,
+            "via": "barrido"
+          },
+          {
+            "spdx": "GPL-2.0-only",
+            "cobertura": 0.8154,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "Copyright (C) 1991, 1999 Free Software Foundation, Inc."
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "LGPL-2.1-only": 1,
+      "LGPL-2.1-or-later": 1
+    }
+  },
+  {
+    "paquete": "nicegui-3.12.0",
+    "archivos": [
+      {
+        "archivo": "nicegui-3.12.0.dist-info_licenses_LICENSE",
+        "sha256": "41c065c2081141886f7d3004e3cd4000c1507cc4bf37a063f12be1d53e9db272",
+        "bytes": 1072,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9768,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9768,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2021 Zauberzeug GmbH",
+          "The above copyright notice and this permission notice shall be included in all",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "numpy-2.4.6",
+    "archivos": [
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_LICENSE.txt",
+        "sha256": "dc97d59562c75c04557f1e9a68f3eae326699eb119d569cd4ed6a4eafe5f9abb",
+        "bytes": 45831,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9854,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9854,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2005-2025, NumPy Developers.",
+          "* Redistributions of source code must retain the above copyright",
+          "copyright notice, this list of conditions and the following",
+          "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS"
+        ]
+      },
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_numpy__core_include_numpy_libdivide_LICENSE.txt",
+        "sha256": "fbc539f47d0cf83bc61378080fb873d5c14630126cacbfe754035c3926daa5ec",
+        "bytes": 1039,
+        "licencias_detectadas": [
+          "Zlib"
+        ],
+        "spdx_mejor": "Zlib",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Zlib",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (C) 2010 - 2019 ridiculous_fish, <libdivide@ridiculousfish.com>",
+          "Copyright (C) 2016 - 2019 Kim Walisch, <kim.walisch@gmail.com>"
+        ]
+      },
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_numpy__core_src_common_pythoncapi-compat_COPYING",
+        "sha256": "3f2c1ffa76383a55ae0aac01c9737cd70050dff63e1f026694fbe9d662573c98",
+        "bytes": 704,
+        "licencias_detectadas": [
+          "0BSD"
+        ],
+        "spdx_mejor": "0BSD",
+        "cobertura_canonica": 0.9758,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "0BSD",
+            "cobertura": 0.9758,
+            "via": "barrido"
+          },
+          {
+            "spdx": "ISC",
+            "cobertura": 0.8574,
+            "via": "barrido"
+          },
+          {
+            "spdx": "HPND",
+            "cobertura": 0.502,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "Copyright Contributors to the pythoncapi_compat project."
+        ]
+      },
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_numpy__core_src_highway_LICENSE",
+        "sha256": "e340270d4f64384569a91d546acb5b094d69ce47f0c015db77abb74dc6f815af",
+        "bytes": 21155,
+        "licencias_detectadas": [
+          "Apache-2.0",
+          "CC0-1.0",
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          },
+          {
+            "spdx": "CC0-1.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          },
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9943,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License."
+        ]
+      },
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_numpy__core_src_npysort_x86-simd-sort_LICENSE.md",
+        "sha256": "211e7d737d6179a08f791ebb0a99897ce7cd2457410c542876d125576edfe910",
+        "bytes": 1542,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9935,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9935,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2022, Intel. All rights reserved.",
+          "1. Redistributions of source code must retain the above copyright notice, this",
+          "2. Redistributions in binary form must reproduce the above copyright notice,",
+          "3. Neither the name of the copyright holder nor the names of its"
+        ]
+      },
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_numpy__core_src_umath_svml_LICENSE",
+        "sha256": "c17011467b4fe6e20fbfbeda4df09e58c2bca5480a063e55735a4000a379aad9",
+        "bytes": 1573,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9749,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9749,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2005-2021, NumPy Developers.",
+          "* Redistributions of source code must retain the above copyright",
+          "copyright notice, this list of conditions and the following",
+          "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS"
+        ]
+      },
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_numpy_fft_pocketfft_LICENSE.md",
+        "sha256": "a85ca13fdf90160b64a0698215868c13b74d835ad0a4e2ba44713b8c5058a056",
+        "bytes": 1523,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9878,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9878,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (C) 2010-2018 Max-Planck-Society",
+          "* Redistributions of source code must retain the above copyright notice, this",
+          "* Redistributions in binary form must reproduce the above copyright notice, this",
+          "* Neither the name of the copyright holder nor the names of its contributors may"
+        ]
+      },
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_numpy_linalg_lapack_lite_LICENSE.txt",
+        "sha256": "a14cc25e10d40a3aa705b7de2fb764a6535d8ee9b2db4e1724900585457dfd55",
+        "bytes": 2314,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9878,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9878,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 1992-2013 The University of Tennessee and The University",
+          "Copyright (c) 2000-2013 The University of California Berkeley. All",
+          "Copyright (c) 2006-2013 The University of Colorado Denver.  All rights",
+          "$COPYRIGHT$"
+        ]
+      },
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_numpy_ma_LICENSE",
+        "sha256": "05f3b88351988ecfad10abe92c0c50e5875c6452d5009a0084cc291551ffcca6",
+        "bytes": 1616,
+        "licencias_detectadas": [
+          "BSD-2-Clause",
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-2-Clause",
+        "cobertura_canonica": 0.9664,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-2-Clause",
+            "cobertura": 0.9664,
+            "via": "barrido"
+          },
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9595,
+            "via": "barrido"
+          },
+          {
+            "spdx": "BSD-3-Clause-Clear",
+            "cobertura": 0.8605,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "* Copyright (c) 2006, University of Georgia and Pierre G.F. Gerard-Marchant",
+          "*     * Redistributions of source code must retain the above copyright",
+          "*     * Redistributions in binary form must reproduce the above copyright"
+        ]
+      },
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_numpy_random_LICENSE.md",
+        "sha256": "103166b62b80443afb9eb3488e052ea06be0cff566b908f199e561fde49af19f",
+        "bytes": 3582,
+        "licencias_detectadas": [
+          "BSD-3-Clause",
+          "MIT-0"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9976,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9976,
+            "via": "clausula"
+          },
+          {
+            "spdx": "MIT-0",
+            "cobertura": 0.9714,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "**Copyright (c) 2019 Kevin Sheppard. All rights reserved.**",
+          "Redistributions of source code must retain the above copyright notice, this",
+          "Redistributions in binary form must reproduce the above copyright notice, this",
+          "CONTRIBUTORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      },
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_numpy_random_src_distributions_LICENSE.md",
+        "sha256": "469778be8f33d54e1bcaab28c281cc472916d2d273f835e55bc487d30503face",
+        "bytes": 2805,
+        "licencias_detectadas": [
+          "BSD-3-Clause",
+          "MIT-0"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9749,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT-0",
+            "cobertura": 0.9948,
+            "via": "clausula"
+          },
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9749,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2005-2017, NumPy Developers.",
+          "* Redistributions of source code must retain the above copyright",
+          "copyright notice, this list of conditions and the following",
+          "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS"
+        ]
+      },
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_numpy_random_src_mt19937_LICENSE.md",
+        "sha256": "0e111337b25494a773106695f0e799f642b8567aaacca4f116a74a8177179156",
+        "bytes": 2986,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9856,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9856,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2003-2005, Jean-Sebastien Roy (js@jeannot.org)",
+          "Copyright (C) 1997 - 2002, Makoto Matsumoto and Takuji Nishimura,",
+          "1. Redistributions of source code must retain the above copyright",
+          "2. Redistributions in binary form must reproduce the above copyright"
+        ]
+      },
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_numpy_random_src_pcg64_LICENSE.md",
+        "sha256": "e7d4f4fb20358f314210a892ae17351e04993813646f697ec387385ca2a36918",
+        "bytes": 1176,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9757,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9757,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright 2014 Melissa O'Neill <oneill@pcg-random.org>",
+          "The above copyright notice and this permission notice shall be included in",
+          "COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER"
+        ]
+      },
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_numpy_random_src_philox_LICENSE.md",
+        "sha256": "6f5828a57223d4cc7f8ea505a2623e7b978b242752c1515e355f46ba2cec1800",
+        "bytes": 1540,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9724,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9724,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright 2010-2012, D. E. Shaw Research.",
+          "* Redistributions of source code must retain the above copyright",
+          "* Redistributions in binary form must reproduce the above copyright",
+          "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS"
+        ]
+      },
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_numpy_random_src_sfc64_LICENSE.md",
+        "sha256": "9d4098846018319cd68e228ee6220361787f73bccbf00237a85e4fc9621b998f",
+        "bytes": 1253,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.979,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.979,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2018 Melissa E. O'Neill",
+          "The above copyright notice and this permission notice shall be included in",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      },
+      {
+        "archivo": "numpy-2.4.6.dist-info_licenses_numpy_random_src_splitmix64_LICENSE.md",
+        "sha256": "268b0ca06759d31ea3ca68dd35f20e877916e927b1c2a835e4592a3c4354b1f9",
+        "bytes": 340,
+        "licencias_detectadas": [],
+        "spdx_mejor": "WTFPL",
+        "cobertura_canonica": 0.2068,
+        "texto_completo": false,
+        "top3": [
+          {
+            "spdx": "WTFPL",
+            "cobertura": 0.2068,
+            "via": "barrido"
+          },
+          {
+            "spdx": "Unlicense",
+            "cobertura": 0.1515,
+            "via": "barrido"
+          },
+          {
+            "spdx": "PostgreSQL",
+            "cobertura": 0.1201,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "To the extent possible under law, the author has dedicated all copyright"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 10,
+      "MIT": 3,
+      "MIT-0": 2,
+      "Zlib": 1,
+      "0BSD": 1,
+      "Apache-2.0": 1,
+      "CC0-1.0": 1,
+      "BSD-2-Clause": 1
+    }
+  },
+  {
+    "paquete": "opentelemetry-api-1.45.2",
+    "archivos": [
+      {
+        "archivo": "opentelemetry_api-1.45.2.dist-info_licenses_LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "bytes": 11357,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "opentelemetry-exporter-otlp-common-0.66b2",
+    "archivos": [
+      {
+        "archivo": "opentelemetry_exporter_otlp_common-0.66b2.dist-info_licenses_LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "bytes": 11357,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "opentelemetry-exporter-otlp-proto-common-1.45.2",
+    "archivos": [
+      {
+        "archivo": "opentelemetry_exporter_otlp_proto_common-1.45.2.dist-info_licenses_LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "bytes": 11357,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "opentelemetry-exporter-otlp-proto-grpc-1.45.2",
+    "archivos": [
+      {
+        "archivo": "opentelemetry_exporter_otlp_proto_grpc-1.45.2.dist-info_licenses_LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "bytes": 11357,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "opentelemetry-proto-1.45.2",
+    "archivos": [
+      {
+        "archivo": "opentelemetry_proto-1.45.2.dist-info_licenses_LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "bytes": 11357,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "opentelemetry-sdk-1.45.2",
+    "archivos": [
+      {
+        "archivo": "opentelemetry_sdk-1.45.2.dist-info_licenses_LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "bytes": 11357,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "opentelemetry-semantic-conventions-0.66b2",
+    "archivos": [
+      {
+        "archivo": "opentelemetry_semantic_conventions-0.66b2.dist-info_licenses_LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "bytes": 11357,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "orjson-3.11.9",
+    "archivos": [
+      {
+        "archivo": "orjson-3.11.9.dist-info_licenses_LICENSE-APACHE",
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+        "bytes": 11048,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      },
+      {
+        "archivo": "orjson-3.11.9.dist-info_licenses_LICENSE-MIT",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+        "bytes": 1046,
+        "licencias_detectadas": [
+          "MIT-0"
+        ],
+        "spdx_mejor": "MIT-0",
+        "cobertura_canonica": 0.9375,
+        "texto_completo": false,
+        "top3": [
+          {
+            "spdx": "MIT-0",
+            "cobertura": 0.9375,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "The above copyright notice and this permission notice",
+          "SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1,
+      "MIT-0": 1
+    }
+  },
+  {
+    "paquete": "pefile-2024.8.26",
+    "archivos": [
+      {
+        "archivo": "pefile-2024.8.26.dist-info_LICENSE",
+        "sha256": "b44409c067c6da52bfb54bb6624fb11a7b52157c3a13ae1400232f8196e86ad3",
+        "bytes": 1083,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9801,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9801,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2004-2024 Ero Carrera",
+          "The above copyright notice and this permission notice shall be included in all",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "pillow-13.0.0",
+    "archivos": [
+      {
+        "archivo": "pillow-13.0.0.dist-info_licenses_LICENSE",
+        "sha256": "6644596ba12c005c174b7a03d86c2ffe5f3fa7ecdf37d9aa8f71f3516e57c7a2",
+        "bytes": 78481,
+        "licencias_detectadas": [
+          "Apache-2.0",
+          "Zlib",
+          "BSD-3-Clause",
+          "BSD-2-Clause",
+          "MIT"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          },
+          {
+            "spdx": "Zlib",
+            "cobertura": 1.0,
+            "via": "clausula"
+          },
+          {
+            "spdx": "BSD-2-Clause",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright © 1997-2011 by Secret Labs AB",
+          "Copyright © 1995-2011 by Fredrik Lundh and contributors",
+          "Copyright © 2010 by Jeffrey 'Alex' Clark and contributors",
+          "provided that the above copyright notice appears in all copies, and that"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1,
+      "Zlib": 1,
+      "BSD-3-Clause": 1,
+      "BSD-2-Clause": 1,
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "prometheus-client-0.25.0",
+    "archivos": [
+      {
+        "archivo": "prometheus_client-0.25.0.dist-info_licenses_LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "bytes": 11357,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      },
+      {
+        "archivo": "prometheus_client-0.25.0.dist-info_licenses_NOTICE",
+        "sha256": "4efa1874aeaa60f365f5797e617f1ff933e15e508eaf751e9848ed4413d7a7ae",
+        "bytes": 236,
+        "licencias_detectadas": [],
+        "spdx_mejor": "WTFPL",
+        "cobertura_canonica": 0.1728,
+        "texto_completo": false,
+        "top3": [
+          {
+            "spdx": "WTFPL",
+            "cobertura": 0.1728,
+            "via": "barrido"
+          },
+          {
+            "spdx": "Zlib",
+            "cobertura": 0.1274,
+            "via": "barrido"
+          },
+          {
+            "spdx": "0BSD",
+            "cobertura": 0.1245,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "Copyright 2015 The Prometheus Authors"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "propcache-0.4.1",
+    "archivos": [
+      {
+        "archivo": "propcache-0.4.1.dist-info_licenses_LICENSE",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "bytes": 11358,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      },
+      {
+        "archivo": "propcache-0.4.1.dist-info_licenses_NOTICE",
+        "sha256": "56d6ac6c8105c0a51304c21db060e361af9a8ea0af9a75c239c28b5d13693838",
+        "bytes": 609,
+        "licencias_detectadas": [],
+        "spdx_mejor": "WTFPL",
+        "cobertura_canonica": 0.3229,
+        "texto_completo": false,
+        "top3": [
+          {
+            "spdx": "WTFPL",
+            "cobertura": 0.3229,
+            "via": "barrido"
+          },
+          {
+            "spdx": "0BSD",
+            "cobertura": 0.2398,
+            "via": "barrido"
+          },
+          {
+            "spdx": "ISC",
+            "cobertura": 0.2058,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "Copyright 2016-2021, Andrew Svetlov and aio-libs team"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "protobuf-6.33.6",
+    "archivos": [
+      {
+        "archivo": "protobuf-6.33.6.dist-info_LICENSE",
+        "sha256": "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d",
+        "bytes": 1732,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.97,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.97,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright 2008 Google Inc.  All rights reserved.",
+          "* Redistributions of source code must retain the above copyright",
+          "copyright notice, this list of conditions and the following disclaimer",
+          "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "psutil-7.2.2",
+    "archivos": [
+      {
+        "archivo": "psutil-7.2.2.dist-info_licenses_LICENSE",
+        "sha256": "b89c063b3786e28e0c0a38f1931db61fed35e69dd2a2966fbecffee0f46c8d10",
+        "bytes": 1577,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9789,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9789,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2009, Jay Loden, Dave Daeschler, Giampaolo Rodola",
+          "* Redistributions of source code must retain the above copyright notice, this",
+          "* Redistributions in binary form must reproduce the above copyright notice,",
+          "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "py7zr-1.1.3",
+    "archivos": [
+      {
+        "archivo": "py7zr-1.1.3.dist-info_licenses_LICENSE",
+        "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551",
+        "bytes": 26530,
+        "licencias_detectadas": [
+          "LGPL-2.1-only",
+          "LGPL-2.1-or-later"
+        ],
+        "spdx_mejor": "LGPL-2.1-only",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "LGPL-2.1-only",
+            "cobertura": 1.0,
+            "via": "barrido"
+          },
+          {
+            "spdx": "LGPL-2.1-or-later",
+            "cobertura": 1.0,
+            "via": "barrido"
+          },
+          {
+            "spdx": "GPL-2.0-only",
+            "cobertura": 0.8154,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "Copyright (C) 1991, 1999 Free Software Foundation, Inc."
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "LGPL-2.1-only": 1,
+      "LGPL-2.1-or-later": 1
+    }
+  },
+  {
+    "paquete": "pybcj-1.0.7",
+    "archivos": [
+      {
+        "archivo": "pybcj-1.0.7.dist-info_licenses_LICENSE",
+        "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551",
+        "bytes": 27032,
+        "licencias_detectadas": [
+          "LGPL-2.1-only",
+          "LGPL-2.1-or-later"
+        ],
+        "spdx_mejor": "LGPL-2.1-only",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "LGPL-2.1-only",
+            "cobertura": 1.0,
+            "via": "barrido"
+          },
+          {
+            "spdx": "LGPL-2.1-or-later",
+            "cobertura": 1.0,
+            "via": "barrido"
+          },
+          {
+            "spdx": "GPL-2.0-only",
+            "cobertura": 0.8154,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "Copyright (C) 1991, 1999 Free Software Foundation, Inc."
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "LGPL-2.1-only": 1,
+      "LGPL-2.1-or-later": 1
+    }
+  },
+  {
+    "paquete": "pycparser-3.0",
+    "archivos": [
+      {
+        "archivo": "pycparser-3.0.dist-info_licenses_LICENSE",
+        "sha256": "0c846399369ea76ddd7b5c44fe6d16497415fcf015f5cbb508c24bf98b81c5b1",
+        "bytes": 1543,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9878,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9878,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2008-2022, Eli Bendersky",
+          "* Redistributions of source code must retain the above copyright notice, this",
+          "* Redistributions in binary form must reproduce the above copyright notice,",
+          "* Neither the name of the copyright holder nor the names of its contributors may"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "pycryptodomex-3.23.0",
+    "archivos": [
+      {
+        "archivo": "pycryptodomex-3.23.0.dist-info_licenses_AUTHORS.rst",
+        "sha256": "1cb670b6cc5bc3a1c38d7e12cdf944442ca790425cf2a628ffbe3012445fe1e4",
+        "bytes": 815,
+        "licencias_detectadas": [],
+        "spdx_mejor": "0BSD",
+        "cobertura_canonica": 0.223,
+        "texto_completo": false,
+        "top3": [
+          {
+            "spdx": "0BSD",
+            "cobertura": 0.223,
+            "via": "barrido"
+          },
+          {
+            "spdx": "Zlib",
+            "cobertura": 0.2123,
+            "via": "barrido"
+          },
+          {
+            "spdx": "WTFPL",
+            "cobertura": 0.1785,
+            "via": "barrido"
+          }
+        ],
+        "copyright": []
+      },
+      {
+        "archivo": "pycryptodomex-3.23.0.dist-info_licenses_LICENSE.rst",
+        "sha256": "4e04660d77c1c64e89d79537919fb8240fa21484a7e3db29f358b2c7f84ea073",
+        "bytes": 2987,
+        "licencias_detectadas": [
+          "Unlicense",
+          "BSD-2-Clause"
+        ],
+        "spdx_mejor": "Unlicense",
+        "cobertura_canonica": 0.999,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Unlicense",
+            "cobertura": 0.999,
+            "via": "barrido"
+          },
+          {
+            "spdx": "BSD-2-Clause",
+            "cobertura": 0.9953,
+            "via": "barrido"
+          },
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.8663,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "In jurisdictions that recognize copyright laws, the author or authors",
+          "of this software dedicate any and all copyright interest in the",
+          "software under copyright law.",
+          "license. The copyright of each piece belongs to the respective author."
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Unlicense": 1,
+      "BSD-2-Clause": 1
+    }
+  },
+  {
+    "paquete": "pydantic-2.12.5",
+    "archivos": [
+      {
+        "archivo": "pydantic-2.12.5.dist-info_licenses_LICENSE",
+        "sha256": "a9e186f3ca16b5eef84318e7a701721351a00cb7b8ae3a4394b67b49e3529ef3",
+        "bytes": 1129,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9856,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9856,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2017 to present Pydantic Services Inc. and individual contributors.",
+          "The above copyright notice and this permission notice shall be included in all",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "pydantic-core-2.41.5",
+    "archivos": [
+      {
+        "archivo": "pydantic_core-2.41.5.dist-info_licenses_LICENSE",
+        "sha256": "2afdd30d54b4d62b6f488a6bcc1546e84ec5061f13f4209c03d012348783795a",
+        "bytes": 1101,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9779,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9779,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2022 Samuel Colvin",
+          "The above copyright notice and this permission notice shall be included in all",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "pygments-2.20.0",
+    "archivos": [
+      {
+        "archivo": "pygments-2.20.0.dist-info_licenses_AUTHORS",
+        "sha256": "0db603a5f4499f690c4425477ff664c166da325d3acc3b5a8d4de3db072443d0",
+        "bytes": 10873,
+        "licencias_detectadas": [],
+        "spdx_mejor": "WTFPL",
+        "cobertura_canonica": 0.4391,
+        "texto_completo": false,
+        "top3": [
+          {
+            "spdx": "WTFPL",
+            "cobertura": 0.4391,
+            "via": "barrido"
+          },
+          {
+            "spdx": "ISC",
+            "cobertura": 0.4246,
+            "via": "barrido"
+          },
+          {
+            "spdx": "0BSD",
+            "cobertura": 0.4145,
+            "via": "barrido"
+          }
+        ],
+        "copyright": []
+      },
+      {
+        "archivo": "pygments-2.20.0.dist-info_licenses_LICENSE",
+        "sha256": "a9d66f1d526df02e29dce73436d34e56e8632f46c275bbdffc70569e882f9f17",
+        "bytes": 1331,
+        "licencias_detectadas": [
+          "BSD-2-Clause"
+        ],
+        "spdx_mejor": "BSD-2-Clause",
+        "cobertura_canonica": 0.9879,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-2-Clause",
+            "cobertura": 0.9879,
+            "via": "barrido"
+          },
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.8598,
+            "via": "barrido"
+          },
+          {
+            "spdx": "BSD-3-Clause-Clear",
+            "cobertura": 0.7687,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2006-2022 by the respective authors (see AUTHORS file).",
+          "* Redistributions of source code must retain the above copyright",
+          "* Redistributions in binary form must reproduce the above copyright",
+          "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-2-Clause": 1
+    }
+  },
+  {
+    "paquete": "pyppmd-1.3.1",
+    "archivos": [
+      {
+        "archivo": "pyppmd-1.3.1.dist-info_licenses_LICENSE",
+        "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551",
+        "bytes": 27032,
+        "licencias_detectadas": [
+          "LGPL-2.1-only",
+          "LGPL-2.1-or-later"
+        ],
+        "spdx_mejor": "LGPL-2.1-only",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "LGPL-2.1-only",
+            "cobertura": 1.0,
+            "via": "barrido"
+          },
+          {
+            "spdx": "LGPL-2.1-or-later",
+            "cobertura": 1.0,
+            "via": "barrido"
+          },
+          {
+            "spdx": "GPL-2.0-only",
+            "cobertura": 0.8154,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "Copyright (C) 1991, 1999 Free Software Foundation, Inc."
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "LGPL-2.1-only": 1,
+      "LGPL-2.1-or-later": 1
+    }
+  },
+  {
+    "paquete": "python-dotenv-1.2.2",
+    "archivos": [
+      {
+        "archivo": "python_dotenv-1.2.2.dist-info_licenses_LICENSE",
+        "sha256": "80619b7049f08c81683ad0e01f08f257a840652dd71ee83146d36658c7d2c2b9",
+        "bytes": 1556,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9733,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9733,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2014, Saurabh Kumar (python-dotenv), 2013, Ted Tieken (django-dotenv-rw), 2013, Jacob Kaplan-Moss (django-dotenv)",
+          "- Redistributions of source code must retain the above copyright notice,",
+          "- Redistributions in binary form must reproduce the above copyright notice,",
+          "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "python-engineio-4.13.3",
+    "archivos": [
+      {
+        "archivo": "python_engineio-4.13.3.dist-info_licenses_LICENSE",
+        "sha256": "c9e97d3dbc1fbbcdb4f7808b282cd646db887aff4f5313fe6bbe8d4c31405a9c",
+        "bytes": 1082,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.979,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.979,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2015 Miguel Grinberg",
+          "The above copyright notice and this permission notice shall be included in all",
+          "COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "python-json-logger-3.3.0",
+    "archivos": [
+      {
+        "archivo": "python_json_logger-3.3.0.dist-info_LICENSE",
+        "sha256": "18ea95179e3a5e0e24eb6ce16c40fbfbe23133c2502933a2f75f8a3e1a055b54",
+        "bytes": 1329,
+        "licencias_detectadas": [
+          "BSD-2-Clause"
+        ],
+        "spdx_mejor": "BSD-2-Clause",
+        "cobertura_canonica": 0.9897,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-2-Clause",
+            "cobertura": 0.9897,
+            "via": "barrido"
+          },
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.8614,
+            "via": "barrido"
+          },
+          {
+            "spdx": "BSD-3-Clause-Clear",
+            "cobertura": 0.7708,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2011, Zakaria Zajac and the python-json-logger Contributors",
+          "* Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.",
+          "* Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution."
+        ]
+      },
+      {
+        "archivo": "python_json_logger-3.3.0.dist-info_NOTICE",
+        "sha256": "b9142715c1990b0b88051d8020756f84a8bdc352a4888fef032ada95fc42b24e",
+        "bytes": 209,
+        "licencias_detectadas": [],
+        "spdx_mejor": "WTFPL",
+        "cobertura_canonica": 0.2125,
+        "texto_completo": false,
+        "top3": [
+          {
+            "spdx": "WTFPL",
+            "cobertura": 0.2125,
+            "via": "barrido"
+          },
+          {
+            "spdx": "MIT-0",
+            "cobertura": 0.1029,
+            "via": "barrido"
+          },
+          {
+            "spdx": "Zlib",
+            "cobertura": 0.0908,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2021, Timothée Mazzucotelli"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-2-Clause": 1
+    }
+  },
+  {
+    "paquete": "python-multipart-0.0.32",
+    "archivos": [
+      {
+        "archivo": "python_multipart-0.0.32.dist-info_licenses_LICENSE.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "bytes": 11358,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "python-socketio-5.16.3",
+    "archivos": [
+      {
+        "archivo": "python_socketio-5.16.3.dist-info_licenses_LICENSE",
+        "sha256": "c9e97d3dbc1fbbcdb4f7808b282cd646db887aff4f5313fe6bbe8d4c31405a9c",
+        "bytes": 1082,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.979,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.979,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2015 Miguel Grinberg",
+          "The above copyright notice and this permission notice shall be included in all",
+          "COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "pywin32-ctypes-0.2.3",
+    "archivos": [
+      {
+        "archivo": "pywin32_ctypes-0.2.3.dist-info_LICENSE.txt",
+        "sha256": "cc03ae891a362c85d508a4e47af954314a2e4ccbd445140cb8dca7e2baee19f7",
+        "bytes": 1644,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9765,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9765,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2014, Enthought, Inc.",
+          "* Redistributions of source code must retain the above copyright notice, this",
+          "* Redistributions in binary form must reproduce the above copyright notice,",
+          "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "pyyaml-6.0.3",
+    "archivos": [
+      {
+        "archivo": "pyyaml-6.0.3.dist-info_licenses_LICENSE",
+        "sha256": "8d3928f9dc4490fd635707cb88eb26bd764102a7282954307d3e5167a577e8a4",
+        "bytes": 1101,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9757,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9757,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2017-2021 Ingy döt Net",
+          "Copyright (c) 2006-2016 Kirill Simonov",
+          "The above copyright notice and this permission notice shall be included in all",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "rarfile-4.2",
+    "archivos": [
+      {
+        "archivo": "rarfile-4.2.dist-info_LICENSE",
+        "sha256": "351350167805c294c7b3e170081ce1265445c46fbeb3e999e13b616c90c64a20",
+        "bytes": 756,
+        "licencias_detectadas": [
+          "0BSD",
+          "ISC"
+        ],
+        "spdx_mejor": "0BSD",
+        "cobertura_canonica": 0.9851,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "0BSD",
+            "cobertura": 0.9851,
+            "via": "barrido"
+          },
+          {
+            "spdx": "ISC",
+            "cobertura": 0.9724,
+            "via": "barrido"
+          },
+          {
+            "spdx": "HPND",
+            "cobertura": 0.5635,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2005-2024 Marko Kreen <markokr@gmail.com>",
+          "copyright notice and this permission notice appear in all copies."
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "0BSD": 1,
+      "ISC": 1
+    }
+  },
+  {
+    "paquete": "simple-websocket-1.1.0",
+    "archivos": [
+      {
+        "archivo": "simple_websocket-1.1.0.dist-info_LICENSE",
+        "sha256": "4b8abadcc5e3dd29c71905b84952945699f0a7ba41e6af99eaba46faabe95bb7",
+        "bytes": 1072,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.979,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.979,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2021 Miguel Grinberg",
+          "The above copyright notice and this permission notice shall be included in all",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "starlette-1.3.1",
+    "archivos": [
+      {
+        "archivo": "starlette-1.3.1.dist-info_licenses_LICENSE.md",
+        "sha256": "dcb95677a02240243187e964f941847d19b17821cf99e5afae684fab328c19bf",
+        "bytes": 1518,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.987,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.987,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright © 2018, [Encode OSS Ltd](https://www.encode.io/).",
+          "* Redistributions of source code must retain the above copyright notice, this",
+          "* Redistributions in binary form must reproduce the above copyright notice,",
+          "* Neither the name of the copyright holder nor the names of its"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "sv-ttk-2.6.1",
+    "archivos": [
+      {
+        "archivo": "sv_ttk-2.6.1.dist-info_licenses_LICENSE",
+        "sha256": "6fc0609def4962a47186fb314cdb6a11599e3f53ed3cbd07f0d9ef84e618bccd",
+        "bytes": 1079,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.979,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.979,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) rdbende <rdbende@proton.me>",
+          "The above copyright notice and this permission notice shall be included in all",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "tenacity-9.1.4",
+    "archivos": [
+      {
+        "archivo": "tenacity-9.1.4.dist-info_licenses_LICENSE",
+        "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+        "bytes": 11357,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "texttable-1.7.0",
+    "archivos": [
+      {
+        "archivo": "texttable-1.7.0.dist-info_LICENSE",
+        "sha256": "4ba7bdab54504a3bc44eb33ecca873a26a63ab902822101a87bb46235da63594",
+        "bytes": 1083,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9768,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9768,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2020 Gerome Fournier",
+          "The above copyright notice and this permission notice shall be included in all",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "tinycss2-1.5.1",
+    "archivos": [
+      {
+        "archivo": "tinycss2-1.5.1.dist-info_licenses_LICENSE",
+        "sha256": "6b94acee20ec9f2709333134f3ba70322535fb420af0ce8c1455d9cbe297f1d5",
+        "bytes": 1534,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.987,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.987,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2013-2020, Simon Sapin and contributors.",
+          "* Redistributions of source code must retain the above copyright notice, this",
+          "* Redistributions in binary form must reproduce the above copyright notice,",
+          "* Neither the name of the copyright holder nor the names of its"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "tomli-w-1.2.0",
+    "archivos": [
+      {
+        "archivo": "tomli_w-1.2.0.dist-info_LICENSE",
+        "sha256": "b80816b0d530b8accb4c2211783790984a6e3b61922c2b5ee92f3372ab2742fe",
+        "bytes": 1072,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9779,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9779,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2021 Taneli Hukkinen",
+          "The above copyright notice and this permission notice shall be included in all",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "typing-extensions-4.15.0",
+    "archivos": [
+      {
+        "archivo": "typing_extensions-4.15.0.dist-info_licenses_LICENSE",
+        "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf",
+        "bytes": 13936,
+        "licencias_detectadas": [
+          "PSF-2.0"
+        ],
+        "spdx_mejor": "PSF-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "PSF-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": []
+      }
+    ],
+    "licencias_en_textos": {
+      "PSF-2.0": 1
+    }
+  },
+  {
+    "paquete": "typing-inspection-0.4.2",
+    "archivos": [
+      {
+        "archivo": "typing_inspection-0.4.2.dist-info_licenses_LICENSE",
+        "sha256": "804b59b25f2c31bd278f9202a19ae49a3945aa2664387e2d0a128c7cacc61ec3",
+        "bytes": 1090,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9823,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9823,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) Pydantic Services Inc. 2025 to present",
+          "The above copyright notice and this permission notice shall be included in all",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "uvicorn-0.46.0",
+    "archivos": [
+      {
+        "archivo": "uvicorn-0.46.0.dist-info_licenses_LICENSE.md",
+        "sha256": "efe1acf3e62fb99c288b0ec73e5a773b7268ef4320fe757ea994214e4b63c371",
+        "bytes": 1526,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.987,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.987,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright © 2017-present, [Encode OSS Ltd](https://www.encode.io/).",
+          "* Redistributions of source code must retain the above copyright notice, this",
+          "* Redistributions in binary form must reproduce the above copyright notice,",
+          "* Neither the name of the copyright holder nor the names of its"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "watchfiles-1.1.1",
+    "archivos": [
+      {
+        "archivo": "watchfiles-1.1.1.dist-info_licenses_LICENSE",
+        "sha256": "4fd78355b67ce2677ede9fb6f63a250f377bb7e22088136a5f4699adb4bc069f",
+        "bytes": 1112,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.979,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.979,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2017 to present Samuel Colvin",
+          "The above copyright notice and this permission notice shall be included in all",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "webencodings-0.5.1",
+    "archivos": [],
+    "licencias_en_textos": {}
+  },
+  {
+    "paquete": "websockets-16.0",
+    "archivos": [
+      {
+        "archivo": "websockets-16.0.dist-info_licenses_LICENSE",
+        "sha256": "3d6a0c050d8bec52fabad502e45fb25bd02bcadbd70dea34d447b6a0ff4e6da8",
+        "bytes": 1538,
+        "licencias_detectadas": [
+          "BSD-3-Clause"
+        ],
+        "spdx_mejor": "BSD-3-Clause",
+        "cobertura_canonica": 0.9862,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "BSD-3-Clause",
+            "cobertura": 0.9862,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) Aymeric Augustin and contributors",
+          "* Redistributions of source code must retain the above copyright notice,",
+          "* Redistributions in binary form must reproduce the above copyright notice,",
+          "* Neither the name of the copyright holder nor the names of its contributors"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "BSD-3-Clause": 1
+    }
+  },
+  {
+    "paquete": "wsproto-1.3.2",
+    "archivos": [
+      {
+        "archivo": "wsproto-1.3.2.dist-info_licenses_LICENSE",
+        "sha256": "c0329a8dbf3437b095f7f5cf4257d6bb855e07120cae8786586073ff7a699959",
+        "bytes": 1093,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9845,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9845,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2017 Benno Rice and contributors",
+          "The above copyright notice and this permission notice shall be included in",
+          "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  },
+  {
+    "paquete": "yarl-1.25.1",
+    "archivos": [
+      {
+        "archivo": "yarl-1.25.1.dist-info_licenses_LICENSE",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "bytes": 11358,
+        "licencias_detectadas": [
+          "Apache-2.0"
+        ],
+        "spdx_mejor": "Apache-2.0",
+        "cobertura_canonica": 1.0,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "Apache-2.0",
+            "cobertura": 1.0,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "\"Licensor\" shall mean the copyright owner or entity authorized by",
+          "the copyright owner that is granting the License.",
+          "copyright notice that is included in or attached to the work"
+        ]
+      },
+      {
+        "archivo": "yarl-1.25.1.dist-info_licenses_NOTICE",
+        "sha256": "56d6ac6c8105c0a51304c21db060e361af9a8ea0af9a75c239c28b5d13693838",
+        "bytes": 609,
+        "licencias_detectadas": [],
+        "spdx_mejor": "WTFPL",
+        "cobertura_canonica": 0.3229,
+        "texto_completo": false,
+        "top3": [
+          {
+            "spdx": "WTFPL",
+            "cobertura": 0.3229,
+            "via": "barrido"
+          },
+          {
+            "spdx": "0BSD",
+            "cobertura": 0.2398,
+            "via": "barrido"
+          },
+          {
+            "spdx": "ISC",
+            "cobertura": 0.2058,
+            "via": "barrido"
+          }
+        ],
+        "copyright": [
+          "Copyright 2016-2021, Andrew Svetlov and aio-libs team"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "Apache-2.0": 1
+    }
+  },
+  {
+    "paquete": "zipp-3.23.1",
+    "archivos": [
+      {
+        "archivo": "zipp-3.23.1.dist-info_licenses_LICENSE",
+        "sha256": "9755a18519666e5f0f4cae3daad3d7012bcae48a600b31237d75e9fe134e6683",
+        "bytes": 1076,
+        "licencias_detectadas": [
+          "MIT"
+        ],
+        "spdx_mejor": "MIT",
+        "cobertura_canonica": 0.9934,
+        "texto_completo": true,
+        "top3": [
+          {
+            "spdx": "MIT",
+            "cobertura": 0.9934,
+            "via": "clausula"
+          }
+        ],
+        "copyright": [
+          "Copyright (c) 2026 <copyright holders>",
+          "The above copyright notice and this permission notice shall be included in all copies or substantial",
+          "EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER"
+        ]
+      }
+    ],
+    "licencias_en_textos": {
+      "MIT": 1
+    }
+  }
+]

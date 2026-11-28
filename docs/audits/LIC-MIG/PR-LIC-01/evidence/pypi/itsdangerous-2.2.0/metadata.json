@@ -1,0 +1,182 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": null,
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: BSD License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python",
+        "Typing :: Typed"
+      ],
+      "description": "# ItsDangerous\n\n... so better sign this\n\nVarious helpers to pass data to untrusted environments and to get it\nback safe and sound. Data is cryptographically signed to ensure that a\ntoken has not been tampered with.\n\nIt's possible to customize how data is serialized. Data is compressed as\nneeded. A timestamp can be added and verified automatically while\nloading a token.\n\n\n## A Simple Example\n\nHere's how you could generate a token for transmitting a user's id and\nname between web requests.\n\n```python\nfrom itsdangerous import URLSafeSerializer\nauth_s = URLSafeSerializer(\"secret key\", \"auth\")\ntoken = auth_s.dumps({\"id\": 5, \"name\": \"itsdangerous\"})\n\nprint(token)\n# eyJpZCI6NSwibmFtZSI6Iml0c2Rhbmdlcm91cyJ9.6YP6T0BaO67XP--9UzTrmurXSmg\n\ndata = auth_s.loads(token)\nprint(data[\"name\"])\n# itsdangerous\n```\n\n\n## Donate\n\nThe Pallets organization develops and supports ItsDangerous and other\npopular packages. In order to grow the community of contributors and\nusers, and allow the maintainers to devote more time to the projects,\n[please donate today][].\n\n[please donate today]: https://palletsprojects.com/donate\n\n",
+      "description_content_type": "text/markdown",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": null,
+      "license": null,
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": null,
+      "maintainer_email": "Pallets <contact@palletsprojects.com>",
+      "name": "itsdangerous",
+      "package_url": "https://pypi.org/project/itsdangerous/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/itsdangerous/",
+      "project_urls": {
+        "Changes": "https://itsdangerous.palletsprojects.com/changes/",
+        "Chat": "https://discord.gg/pallets",
+        "Documentation": "https://itsdangerous.palletsprojects.com/",
+        "Donate": "https://palletsprojects.com/donate",
+        "Source": "https://github.com/pallets/itsdangerous/"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/itsdangerous/2.2.0/",
+      "requires_dist": null,
+      "requires_python": ">=3.8",
+      "summary": "Safely pass data to untrusted environments and back.",
+      "version": "2.2.0",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 22795405,
+    "ownership": {
+      "organization": "pallets",
+      "roles": []
+    },
+    "urls": [
+      {
+        "comment_text": "",
+        "core-metadata": {
+          "sha256": "d2b934fb56708a1b94e439f0255c0f5a8108e3258ec827b18a1dc9c991db9611"
+        },
+        "digests": {
+          "blake2b_256": "049692447566d16df59b2a776c0fb82dbc4d9e07cd95062562af01e408583fc4",
+          "md5": "22e41bfb2008481e855f1693a9df4c54",
+          "sha256": "c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef"
+        },
+        "downloads": -1,
+        "filename": "itsdangerous-2.2.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "22e41bfb2008481e855f1693a9df4c54",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.8",
+        "size": 16234,
+        "upload_time": "2024-04-16T21:28:14",
+        "upload_time_iso_8601": "2024-04-16T21:28:14.499616Z",
+        "url": "https://files.pythonhosted.org/packages/04/96/92447566d16df59b2a776c0fb82dbc4d9e07cd95062562af01e408583fc4/itsdangerous-2.2.0-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": "",
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "9ccb8ac0172223afbccb63986cc25049b154ecfb5e85932587206f42317be31d",
+          "md5": "a901babde35694c3577f7655010cd380",
+          "sha256": "e0050c0b7da1eea53ffaf149c0cfbb5c6e2e2b69c4bef22c81fa6eb73e5f6173"
+        },
+        "downloads": -1,
+        "filename": "itsdangerous-2.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a901babde35694c3577f7655010cd380",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.8",
+        "size": 54410,
+        "upload_time": "2024-04-16T21:28:15",
+        "upload_time_iso_8601": "2024-04-16T21:28:15.614771Z",
+        "url": "https://files.pythonhosted.org/packages/9c/cb/8ac0172223afbccb63986cc25049b154ecfb5e85932587206f42317be31d/itsdangerous-2.2.0.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "itsdangerous",
+    "version": "2.2.0",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef",
+      "e0050c0b7da1eea53ffaf149c0cfbb5c6e2e2b69c4bef22c81fa6eb73e5f6173"
+    ],
+    "retrieved_at": "2026-11-28T12:09:56+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: BSD License"
+      ],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: BSD License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python",
+        "Typing :: Typed"
+      ],
+      "requires_python": ">=3.8",
+      "project_urls": {
+        "Changes": "https://itsdangerous.palletsprojects.com/changes/",
+        "Chat": "https://discord.gg/pallets",
+        "Documentation": "https://itsdangerous.palletsprojects.com/",
+        "Donate": "https://palletsprojects.com/donate",
+        "Source": "https://github.com/pallets/itsdangerous/"
+      },
+      "home_page": null,
+      "summary": "Safely pass data to untrusted environments and back.",
+      "author": "Pallets <contact@palletsprojects.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "itsdangerous-2.2.0-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "itsdangerous-2.2.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/04/96/92447566d16df59b2a776c0fb82dbc4d9e07cd95062562af01e408583fc4/itsdangerous-2.2.0-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 16234,
+        "sha256_pypi": "c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef",
+        "sha256_verified": "c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "itsdangerous-2.2.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/04/96/92447566d16df59b2a776c0fb82dbc4d9e07cd95062562af01e408583fc4/itsdangerous-2.2.0-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 16234,
+      "sha256_pypi": "c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef",
+      "sha256_verified": "c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "itsdangerous-2.2.0-py3-none-any.whl::itsdangerous-2.2.0.dist-info/LICENSE.txt": {
+        "saved_as": "itsdangerous-2.2.0.dist-info_LICENSE.txt",
+        "sha256": "63af09891b6be8ad1a4252ed43af0f4efba7fc948e228367bed7f3c5ae0b09d7",
+        "bytes": 1475,
+        "from_artifact": "itsdangerous-2.2.0-py3-none-any.whl",
+        "artifact_sha256": "c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

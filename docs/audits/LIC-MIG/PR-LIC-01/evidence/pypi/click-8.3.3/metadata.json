@@ -1,0 +1,182 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": null,
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python",
+        "Typing :: Typed"
+      ],
+      "description": "<div align=\"center\"><img src=\"https://raw.githubusercontent.com/pallets/click/refs/heads/stable/docs/_static/click-name.svg\" alt=\"\" height=\"150\"></div>\n\n# Click\n\nClick is a Python package for creating beautiful command line interfaces\nin a composable way with as little code as necessary. It's the \"Command\nLine Interface Creation Kit\". It's highly configurable but comes with\nsensible defaults out of the box.\n\nIt aims to make the process of writing command line tools quick and fun\nwhile also preventing any frustration caused by the inability to\nimplement an intended CLI API.\n\nClick in three points:\n\n-   Arbitrary nesting of commands\n-   Automatic help page generation\n-   Supports lazy loading of subcommands at runtime\n\n\n## A Simple Example\n\n```python\nimport click\n\n@click.command()\n@click.option(\"--count\", default=1, help=\"Number of greetings.\")\n@click.option(\"--name\", prompt=\"Your name\", help=\"The person to greet.\")\ndef hello(count, name):\n    \"\"\"Simple program that greets NAME for a total of COUNT times.\"\"\"\n    for _ in range(count):\n        click.echo(f\"Hello, {name}!\")\n\nif __name__ == '__main__':\n    hello()\n```\n\n```\n$ python hello.py --count=3\nYour name: Click\nHello, Click!\nHello, Click!\nHello, Click!\n```\n\n\n## Donate\n\nThe Pallets organization develops and supports Click and other popular\npackages. In order to grow the community of contributors and users, and\nallow the maintainers to devote more time to the projects, [please\ndonate today][].\n\n[please donate today]: https://palletsprojects.com/donate\n\n## Contributing\n\nSee our [detailed contributing documentation][contrib] for many ways to\ncontribute, including reporting issues, requesting features, asking or answering\nquestions, and making PRs.\n\n[contrib]: https://palletsprojects.com/contributing/\n\n",
+      "description_content_type": "text/markdown",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": null,
+      "license": null,
+      "license_expression": "BSD-3-Clause",
+      "license_files": [
+        "LICENSE.txt"
+      ],
+      "maintainer": null,
+      "maintainer_email": "Pallets <contact@palletsprojects.com>",
+      "name": "click",
+      "package_url": "https://pypi.org/project/click/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/click/",
+      "project_urls": {
+        "Changes": "https://click.palletsprojects.com/page/changes/",
+        "Chat": "https://discord.gg/pallets",
+        "Documentation": "https://click.palletsprojects.com/",
+        "Donate": "https://palletsprojects.com/donate",
+        "Source": "https://github.com/pallets/click/"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/click/8.3.3/",
+      "requires_dist": [
+        "colorama; platform_system == \"Windows\""
+      ],
+      "requires_python": ">=3.10",
+      "summary": "Composable command line interface toolkit",
+      "version": "8.3.3",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 43304100,
+    "ownership": {
+      "organization": "pallets",
+      "roles": []
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "fec8e14fbfd9298932b1ea9b589b5003c780715d8278325d70dad7ffdda94826"
+        },
+        "digests": {
+          "blake2b_256": "ae44c1221527f6a71a01ec6fbad7fa78f1d50dfa02217385cf0fa3eec7087d59",
+          "md5": "4d2eb43884f6cda349ea7b374a958d0a",
+          "sha256": "a2bf429bb3033c89fa4936ffb35d5cb471e3719e1f3c8a7c3fff0b8314305613"
+        },
+        "downloads": -1,
+        "filename": "click-8.3.3-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "4d2eb43884f6cda349ea7b374a958d0a",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.10",
+        "size": 110502,
+        "upload_time": "2026-04-22T15:11:25",
+        "upload_time_iso_8601": "2026-04-22T15:11:25.044919Z",
+        "url": "https://files.pythonhosted.org/packages/ae/44/c1221527f6a71a01ec6fbad7fa78f1d50dfa02217385cf0fa3eec7087d59/click-8.3.3-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "bb63f9e1ea081ce35720d8b92acde70daaedace594dc93b693c869e0d5910718",
+          "md5": "7ac811bcb2bdd53ae85afe7e7f9224c2",
+          "sha256": "398329ad4837b2ff7cbe1dd166a4c0f8900c3ca3a218de04466f38f6497f18a2"
+        },
+        "downloads": -1,
+        "filename": "click-8.3.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "7ac811bcb2bdd53ae85afe7e7f9224c2",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.10",
+        "size": 328061,
+        "upload_time": "2026-04-22T15:11:27",
+        "upload_time_iso_8601": "2026-04-22T15:11:27.506141Z",
+        "url": "https://files.pythonhosted.org/packages/bb/63/f9e1ea081ce35720d8b92acde70daaedace594dc93b693c869e0d5910718/click-8.3.3.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "click",
+    "version": "8.3.3",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "398329ad4837b2ff7cbe1dd166a4c0f8900c3ca3a218de04466f38f6497f18a2",
+      "a2bf429bb3033c89fa4936ffb35d5cb471e3719e1f3c8a7c3fff0b8314305613"
+    ],
+    "retrieved_at": "2026-11-28T12:09:55+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": "BSD-3-Clause",
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python",
+        "Typing :: Typed"
+      ],
+      "requires_python": ">=3.10",
+      "project_urls": {
+        "Changes": "https://click.palletsprojects.com/page/changes/",
+        "Chat": "https://discord.gg/pallets",
+        "Documentation": "https://click.palletsprojects.com/",
+        "Donate": "https://palletsprojects.com/donate",
+        "Source": "https://github.com/pallets/click/"
+      },
+      "home_page": null,
+      "summary": "Composable command line interface toolkit",
+      "author": "Pallets <contact@palletsprojects.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "click-8.3.3-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "click-8.3.3-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/ae/44/c1221527f6a71a01ec6fbad7fa78f1d50dfa02217385cf0fa3eec7087d59/click-8.3.3-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 110502,
+        "sha256_pypi": "a2bf429bb3033c89fa4936ffb35d5cb471e3719e1f3c8a7c3fff0b8314305613",
+        "sha256_verified": "a2bf429bb3033c89fa4936ffb35d5cb471e3719e1f3c8a7c3fff0b8314305613",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "click-8.3.3-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/ae/44/c1221527f6a71a01ec6fbad7fa78f1d50dfa02217385cf0fa3eec7087d59/click-8.3.3-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 110502,
+      "sha256_pypi": "a2bf429bb3033c89fa4936ffb35d5cb471e3719e1f3c8a7c3fff0b8314305613",
+      "sha256_verified": "a2bf429bb3033c89fa4936ffb35d5cb471e3719e1f3c8a7c3fff0b8314305613",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "click-8.3.3-py3-none-any.whl::click-8.3.3.dist-info/licenses/LICENSE.txt": {
+        "saved_as": "click-8.3.3.dist-info_licenses_LICENSE.txt",
+        "sha256": "9a8ad106a394e853bfe21f42f4e72d592819a22805d991b5f3275029292b658d",
+        "bytes": 1475,
+        "from_artifact": "click-8.3.3-py3-none-any.whl",
+        "artifact_sha256": "a2bf429bb3033c89fa4936ffb35d5cb471e3719e1f3c8a7c3fff0b8314305613"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

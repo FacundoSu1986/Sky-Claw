@@ -1,0 +1,210 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": "rdbende",
+      "author_email": "rdbende@proton.me",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Tcl",
+        "Topic :: Software Development :: User Interfaces"
+      ],
+      "description": "<div align=\"center\">\n  \n# Sun Valley ttk theme\nMake your Tkinter application look better than ever with just two lines of code!\n\n![Screenshot of Sun Valley ttk theme](assets/screenshot.png)\n\n</div>\n\n\n## Installation [![PyPi downloads](https://static.pepy.tech/badge/sv-ttk)](https://pypi.org/project/sv-ttk)\nThe theme is easily installable as a Python package\n\n```\npip install sv-ttk\n```\n\n\n## Usage [![Documentation](https://img.shields.io/badge/-documentation-%23c368c4)](https://github.com/rdbende/Sun-Valley-ttk-theme/wiki/Usage-with-Python)\n> [!NOTE]\n> The theme will only be applied to themable (`tkinter.ttk`) widgets, and not with the regular Tkinter widgets, they only benefit from the colorscheme.\n\nFor detailed documentation, visit the [wiki page](https://github.com/rdbende/Sun-Valley-ttk-theme/wiki/Usage-with-Python).\n\n```python\nimport tkinter\nfrom tkinter import ttk\n\nimport sv_ttk\n\nroot = tkinter.Tk()\n\nbutton = ttk.Button(root, text=\"Click me!\")\nbutton.pack()\n\n# This is where the magic happens\nsv_ttk.set_theme(\"dark\")\n\nroot.mainloop()\n```\n\n\n## Tips and tricks\nOur intention is to keep the `sv-ttk` package as simple as possible, while making it easy to integrate with other libraries.\n\n### Set the theme to the system theme\nYou can use the [darkdetect](https://github.com/albertosottile/darkdetect) package to detect the system color scheme. Here's an example:\n\n```python\nimport darkdetect\n\nsv_ttk.set_theme(darkdetect.theme())\n```\n\nIt's only a matter of an extra import and passing the result of `darkdetect.theme()` to `sv_ttk.set_theme()`. It's that easy!\n\n\n### Dark mode title bar on Windows\nThe Sun Valley theme doesn't change the title bar color on Windows when the theme is set to dark. You can use [pywinstyles](https://github.com/Akascape/py-window-styles) to achieve this. Here's an example:\n  \n```python\nimport pywinstyles, sys\n\ndef apply_theme_to_titlebar(root):\n    version = sys.getwindowsversion()\n\n    if version.major == 10 and version.build >= 22000:\n        # Set the title bar color to the background color on Windows 11 for better appearance\n        pywinstyles.change_header_color(root, \"#1c1c1c\" if sv_ttk.get_theme() == \"dark\" else \"#fafafa\")\n    elif version.major == 10:\n        pywinstyles.apply_style(root, \"dark\" if sv_ttk.get_theme() == \"dark\" else \"normal\")\n\n        # A hacky way to update the title bar's color on Windows 10 (it doesn't update instantly like on Windows 11)\n        root.wm_attributes(\"-alpha\", 0.99)\n        root.wm_attributes(\"-alpha\", 1)\n\n# Example usage (replace `root` with the reference to your main/Toplevel window)\napply_theme_to_titlebar(root)\n```\n\nNote that on Windows 10, due to its limitations, you can only set the title bar's color to black for dark mode and white for light mode. On Windows 11 the title bar can be set to any color.\n\n\n> [!WARNING]\n> The `apply_theme_to_titlebar` works on Windows only, so you should check whether the platform is Windows before calling this function.\n\n\nHere's how the windows look after calling `set_title_bar_color()`:\n\n<details>\n  <summary>Screenshots</summary>\n  <p align=\"center\">\n    <b>Windows 10</b>\n    <br>\n    <img src=\"assets/win10.png\"/>\n    <br><br>\n    <b>Windows 11</b>\n    <br>\n    <img src=\"assets/win11.png\"/>\n  </p>\n</details>\n\n\n## Wanna see more?\nCheck out my other ttk themes!\n- The [Azure ttk theme](https://github.com/rdbende/Azure-ttk-theme)\n- The [Forest ttk theme](https://github.com/rdbende/Forest-ttk-theme)\n",
+      "description_content_type": "text/markdown",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": [
+        "Author",
+        "Author-Email",
+        "Classifier",
+        "Description",
+        "Description-Content-Type",
+        "Home-Page",
+        "Keywords",
+        "License",
+        "License-File",
+        "Project-Url",
+        "Requires-Python",
+        "Summary"
+      ],
+      "home_page": "https://github.com/rdbende/Sun-Valley-ttk-theme",
+      "keywords": "sv-ttk, tcl, tcl/tk, theme, tile, tk, ttk, tkinter, modern, fluent, dark-theme, sun-valley, windows-11, winui",
+      "license": "MIT",
+      "license_expression": null,
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "sv-ttk",
+      "package_url": "https://pypi.org/project/sv-ttk/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/sv-ttk/",
+      "project_urls": {
+        "Documentation": "https://github.com/rdbende/Sun-Valley-ttk-theme/wiki",
+        "Homepage": "https://github.com/rdbende/Sun-Valley-ttk-theme",
+        "Source": "https://github.com/rdbende/Sun-Valley-ttk-theme",
+        "Tracker": "https://github.com/rdbende/Sun-Valley-ttk-theme/issues"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/sv-ttk/2.6.1/",
+      "requires_dist": null,
+      "requires_python": ">=3.9",
+      "summary": "A gorgeous theme for Tkinter, based on Windows 11's UI",
+      "version": "2.6.1",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 29510254,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "rdbende"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "5c617a9a0fa65f78e94d60c9f284a231f72ce9b0d2bbe01276616a3a32dd7cf2"
+        },
+        "digests": {
+          "blake2b_256": "5b3632629d8bab9bccd54a36716a960ba1148fca4c1fd453370dba0b42d712ea",
+          "md5": "97ead98b14f47a856cf2d737f8026add",
+          "sha256": "8ca5944f95431a911986b00c54e7f44608f3f811382cd985fd14bb3e65f95d97"
+        },
+        "downloads": -1,
+        "filename": "sv_ttk-2.6.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "97ead98b14f47a856cf2d737f8026add",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.9",
+        "size": 50076,
+        "upload_time": "2025-06-08T16:14:20",
+        "upload_time_iso_8601": "2025-06-08T16:14:20.402898Z",
+        "url": "https://files.pythonhosted.org/packages/5b/36/32629d8bab9bccd54a36716a960ba1148fca4c1fd453370dba0b42d712ea/sv_ttk-2.6.1-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "4eca9625914e7a7e58ce9f0d8d6a5eb29975bab077ce58a36cf86f863d188cd3",
+          "md5": "a5be25345329b5d7daeec30880df77be",
+          "sha256": "47589d5e20398cf404e8362f24f3ed48f3830cd0ace056d83354fa25d8e4fe48"
+        },
+        "downloads": -1,
+        "filename": "sv_ttk-2.6.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a5be25345329b5d7daeec30880df77be",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.9",
+        "size": 49640,
+        "upload_time": "2025-06-08T16:14:21",
+        "upload_time_iso_8601": "2025-06-08T16:14:21.333070Z",
+        "url": "https://files.pythonhosted.org/packages/4e/ca/9625914e7a7e58ce9f0d8d6a5eb29975bab077ce58a36cf86f863d188cd3/sv_ttk-2.6.1.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "sv-ttk",
+    "version": "2.6.1",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "47589d5e20398cf404e8362f24f3ed48f3830cd0ace056d83354fa25d8e4fe48",
+      "8ca5944f95431a911986b00c54e7f44608f3f811382cd985fd14bb3e65f95d97"
+    ],
+    "retrieved_at": "2026-11-28T12:09:59+00:00",
+    "pypi_info": {
+      "license": "MIT",
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: MIT License"
+      ],
+      "classifiers_all": [
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Tcl",
+        "Topic :: Software Development :: User Interfaces"
+      ],
+      "requires_python": ">=3.9",
+      "project_urls": {
+        "Documentation": "https://github.com/rdbende/Sun-Valley-ttk-theme/wiki",
+        "Homepage": "https://github.com/rdbende/Sun-Valley-ttk-theme",
+        "Source": "https://github.com/rdbende/Sun-Valley-ttk-theme",
+        "Tracker": "https://github.com/rdbende/Sun-Valley-ttk-theme/issues"
+      },
+      "home_page": "https://github.com/rdbende/Sun-Valley-ttk-theme",
+      "summary": "A gorgeous theme for Tkinter, based on Windows 11's UI",
+      "author": "rdbende@proton.me"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "sv_ttk-2.6.1-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "sv_ttk-2.6.1-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/5b/36/32629d8bab9bccd54a36716a960ba1148fca4c1fd453370dba0b42d712ea/sv_ttk-2.6.1-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 50076,
+        "sha256_pypi": "8ca5944f95431a911986b00c54e7f44608f3f811382cd985fd14bb3e65f95d97",
+        "sha256_verified": "8ca5944f95431a911986b00c54e7f44608f3f811382cd985fd14bb3e65f95d97",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "sv_ttk-2.6.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/5b/36/32629d8bab9bccd54a36716a960ba1148fca4c1fd453370dba0b42d712ea/sv_ttk-2.6.1-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 50076,
+      "sha256_pypi": "8ca5944f95431a911986b00c54e7f44608f3f811382cd985fd14bb3e65f95d97",
+      "sha256_verified": "8ca5944f95431a911986b00c54e7f44608f3f811382cd985fd14bb3e65f95d97",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "sv_ttk-2.6.1-py3-none-any.whl::sv_ttk-2.6.1.dist-info/licenses/LICENSE": {
+        "saved_as": "sv_ttk-2.6.1.dist-info_licenses_LICENSE",
+        "sha256": "6fc0609def4962a47186fb314cdb6a11599e3f53ed3cbd07f0d9ef84e618bccd",
+        "bytes": 1079,
+        "from_artifact": "sv_ttk-2.6.1-py3-none-any.whl",
+        "artifact_sha256": "8ca5944f95431a911986b00c54e7f44608f3f811382cd985fd14bb3e65f95d97"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

@@ -1,0 +1,3194 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "Samuel Colvin <s@muelcolvin.com>, Adrian Garcia Badaracco <1755071+adriangb@users.noreply.github.com>, David Montague <david@pydantic.dev>, David Hewitt <mail@davidhewitt.dev>, Sydney Runkle <sydneymarierunkle@gmail.com>, Victorien Plot <contact@vctrn.dev>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 3 - Alpha",
+        "Framework :: Pydantic",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Information Technology",
+        "Operating System :: MacOS",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: GraalPy",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Programming Language :: Rust",
+        "Typing :: Typed"
+      ],
+      "description": "# pydantic-core\n\n[![CI](https://github.com/pydantic/pydantic-core/workflows/ci/badge.svg?event=push)](https://github.com/pydantic/pydantic-core/actions?query=event%3Apush+branch%3Amain+workflow%3Aci)\n[![Coverage](https://codecov.io/gh/pydantic/pydantic-core/branch/main/graph/badge.svg)](https://codecov.io/gh/pydantic/pydantic-core)\n[![pypi](https://img.shields.io/pypi/v/pydantic-core.svg)](https://pypi.python.org/pypi/pydantic-core)\n[![versions](https://img.shields.io/pypi/pyversions/pydantic-core.svg)](https://github.com/pydantic/pydantic-core)\n[![license](https://img.shields.io/github/license/pydantic/pydantic-core.svg)](https://github.com/pydantic/pydantic-core/blob/main/LICENSE)\n\nThis package provides the core functionality for [pydantic](https://docs.pydantic.dev) validation and serialization.\n\nPydantic-core is currently around 17x faster than pydantic V1.\nSee [`tests/benchmarks/`](./tests/benchmarks/) for details.\n\n## Example of direct usage\n\n_NOTE: You should not need to use pydantic-core directly; instead, use pydantic, which in turn uses pydantic-core._\n\n```py\nfrom pydantic_core import SchemaValidator, ValidationError\n\n\nv = SchemaValidator(\n    {\n        'type': 'typed-dict',\n        'fields': {\n            'name': {\n                'type': 'typed-dict-field',\n                'schema': {\n                    'type': 'str',\n                },\n            },\n            'age': {\n                'type': 'typed-dict-field',\n                'schema': {\n                    'type': 'int',\n                    'ge': 18,\n                },\n            },\n            'is_developer': {\n                'type': 'typed-dict-field',\n                'schema': {\n                    'type': 'default',\n                    'schema': {'type': 'bool'},\n                    'default': True,\n                },\n            },\n        },\n    }\n)\n\nr1 = v.validate_python({'name': 'Samuel', 'age': 35})\nassert r1 == {'name': 'Samuel', 'age': 35, 'is_developer': True}\n\n# pydantic-core can also validate JSON directly\nr2 = v.validate_json('{\"name\": \"Samuel\", \"age\": 35}')\nassert r1 == r2\n\ntry:\n    v.validate_python({'name': 'Samuel', 'age': 11})\nexcept ValidationError as e:\n    print(e)\n    \"\"\"\n    1 validation error for model\n    age\n      Input should be greater than or equal to 18\n      [type=greater_than_equal, context={ge: 18}, input_value=11, input_type=int]\n    \"\"\"\n```\n\n## Getting Started\n\n### Prerequisites\n\nYou'll need:\n1. **[Rust](https://rustup.rs/)** - Rust stable (or nightly for coverage)\n2. **[uv](https://docs.astral.sh/uv/getting-started/installation/)** - Fast Python package manager (will install Python 3.9+ automatically)\n3. **[git](https://git-scm.com/)** - For version control\n4. **[make](https://www.gnu.org/software/make/)** - For running development commands (or use `nmake` on Windows)\n\n### Quick Start\n\n```bash\n# Clone the repository (or from your fork)\ngit clone git@github.com:pydantic/pydantic-core.git\ncd pydantic-core\n\n# Install all dependencies using uv, setup pre-commit hooks, and build the development version\nmake install\n```\n\nVerify your installation by running:\n\n```bash\nmake\n```\n\nThis runs a full development cycle: formatting, building, linting, and testing\n\n### Development Commands\n\nRun `make help` to see all available commands, or use these common ones:\n\n```bash\nmake build-dev    # to build the package during development\nmake build-prod   # to perform an optimised build for benchmarking\nmake test         # to run the tests\nmake testcov      # to run the tests and generate a coverage report\nmake lint         # to run the linter\nmake format       # to format python and rust code\nmake all          # to run to run build-dev + format + lint + test\n```\n\n### Useful Resources\n\n* [`python/pydantic_core/_pydantic_core.pyi`](./python/pydantic_core/_pydantic_core.pyi) - Python API types\n* [`python/pydantic_core/core_schema.py`](./python/pydantic_core/core_schema.py) - Core schema definitions\n* [`tests/`](./tests) - Comprehensive usage examples\n\n## Profiling\n\nIt's possible to profile the code using the [`flamegraph` utility from `flamegraph-rs`](https://github.com/flamegraph-rs/flamegraph). (Tested on Linux.) You can install this with `cargo install flamegraph`.\n\nRun `make build-profiling` to install a release build with debugging symbols included (needed for profiling).\n\nOnce that is built, you can profile pytest benchmarks with (e.g.):\n\n```bash\nflamegraph -- pytest tests/benchmarks/test_micro_benchmarks.py -k test_list_of_ints_core_py --benchmark-enable\n```\nThe `flamegraph` command will produce an interactive SVG at `flamegraph.svg`.\n\n## Releasing\n\n1. Bump package version locally. Do not just edit `Cargo.toml` on Github, you need both `Cargo.toml` and `Cargo.lock` to be updated.\n2. Make a PR for the version bump and merge it.\n3. Go to https://github.com/pydantic/pydantic-core/releases and click \"Draft a new release\"\n4. In the \"Choose a tag\" dropdown enter the new tag `v<the.new.version>` and select \"Create new tag on publish\" when the option appears.\n5. Enter the release title in the form \"v<the.new.version> <YYYY-MM-DD>\"\n6. Click Generate release notes button\n7. Click Publish release\n8. Go to https://github.com/pydantic/pydantic-core/actions and ensure that all build for release are done successfully.\n9. Go to https://pypi.org/project/pydantic-core/ and ensure that the latest release is published.\n10. Done 🎉\n\n",
+      "description_content_type": "text/markdown; charset=UTF-8; variant=GFM",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": "https://github.com/pydantic/pydantic-core",
+      "keywords": null,
+      "license": null,
+      "license_expression": "MIT",
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "pydantic_core",
+      "package_url": "https://pypi.org/project/pydantic_core/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/pydantic_core/",
+      "project_urls": {
+        "Funding": "https://github.com/sponsors/samuelcolvin",
+        "Homepage": "https://github.com/pydantic/pydantic-core",
+        "Source": "https://github.com/pydantic/pydantic-core"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/pydantic_core/2.41.5/",
+      "requires_dist": [
+        "typing-extensions>=4.14.1"
+      ],
+      "requires_python": ">=3.9",
+      "summary": "Core functionality for Pydantic validation and serialization",
+      "version": "2.41.5",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 43882622,
+    "ownership": {
+      "organization": "pydantic",
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "dmontagu"
+        },
+        {
+          "role": "Owner",
+          "user": "samuelcolvin"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "c69032c9941e728d564b411d574d8ee0cf09b12ec978cb22b294995bae5549a5",
+          "md5": "7d252c663204d007eac6c74a9885b473",
+          "sha256": "77b63866ca88d804225eaa4af3e664c5faf3568cea95360d21f4725ab6e07146"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp310-cp310-macosx_10_12_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "7d252c663204d007eac6c74a9885b473",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 2107298,
+        "upload_time": "2025-11-04T13:39:04",
+        "upload_time_iso_8601": "2025-11-04T13:39:04.116135Z",
+        "url": "https://files.pythonhosted.org/packages/c6/90/32c9941e728d564b411d574d8ee0cf09b12ec978cb22b294995bae5549a5/pydantic_core-2.41.5-cp310-cp310-macosx_10_12_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "fba861c96a77fe28993d9a6fb0f4127e05430a267b235a124545d79fea46dd65",
+          "md5": "256328db57c0dc81365df7bd95aeef63",
+          "sha256": "dfa8a0c812ac681395907e71e1274819dec685fec28273a28905df579ef137e2"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp310-cp310-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "256328db57c0dc81365df7bd95aeef63",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 1901475,
+        "upload_time": "2025-11-04T13:39:06",
+        "upload_time_iso_8601": "2025-11-04T13:39:06.055282Z",
+        "url": "https://files.pythonhosted.org/packages/fb/a8/61c96a77fe28993d9a6fb0f4127e05430a267b235a124545d79fea46dd65/pydantic_core-2.41.5-cp310-cp310-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "5db6338abf60225acc18cdc08b4faef592d0310923d19a87fba1faf05af5346e",
+          "md5": "de38d8f301d1bd8b169b97e975dbd562",
+          "sha256": "5921a4d3ca3aee735d9fd163808f5e8dd6c6972101e4adbda9a4667908849b97"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "de38d8f301d1bd8b169b97e975dbd562",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 1918815,
+        "upload_time": "2025-11-04T13:39:10",
+        "upload_time_iso_8601": "2025-11-04T13:39:10.410639Z",
+        "url": "https://files.pythonhosted.org/packages/5d/b6/338abf60225acc18cdc08b4faef592d0310923d19a87fba1faf05af5346e/pydantic_core-2.41.5-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "d11c2ed0433e682983d8e8cba9c8d8ef274d4791ec6a6f24c58935b90e780e0a",
+          "md5": "b06433cce40fae14efa132cb55b2322f",
+          "sha256": "e25c479382d26a2a41b7ebea1043564a937db462816ea07afa8a44c0866d52f9"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp310-cp310-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "b06433cce40fae14efa132cb55b2322f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 2065567,
+        "upload_time": "2025-11-04T13:39:12",
+        "upload_time_iso_8601": "2025-11-04T13:39:12.244547Z",
+        "url": "https://files.pythonhosted.org/packages/d1/1c/2ed0433e682983d8e8cba9c8d8ef274d4791ec6a6f24c58935b90e780e0a/pydantic_core-2.41.5-cp310-cp310-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "b324cf84974ee7d6eae06b9e63289b7b8f6549d416b5c199ca2d7ce13bbcf619",
+          "md5": "5aa4296afc23bb6d1f627f80a39b26b9",
+          "sha256": "f547144f2966e1e16ae626d8ce72b4cfa0caedc7fa28052001c94fb2fcaa1c52"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp310-cp310-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "5aa4296afc23bb6d1f627f80a39b26b9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 2230442,
+        "upload_time": "2025-11-04T13:39:13",
+        "upload_time_iso_8601": "2025-11-04T13:39:13.962196Z",
+        "url": "https://files.pythonhosted.org/packages/b3/24/cf84974ee7d6eae06b9e63289b7b8f6549d416b5c199ca2d7ce13bbcf619/pydantic_core-2.41.5-cp310-cp310-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "fd214e287865504b3edc0136c89c9c09431be326168b1eb7841911cbc877a995",
+          "md5": "605045d12822086f0819136f866b1cf2",
+          "sha256": "6f52298fbd394f9ed112d56f3d11aabd0d5bd27beb3084cc3d8ad069483b8941"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp310-cp310-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "605045d12822086f0819136f866b1cf2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 2350956,
+        "upload_time": "2025-11-04T13:39:15",
+        "upload_time_iso_8601": "2025-11-04T13:39:15.889630Z",
+        "url": "https://files.pythonhosted.org/packages/fd/21/4e287865504b3edc0136c89c9c09431be326168b1eb7841911cbc877a995/pydantic_core-2.41.5-cp310-cp310-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "a8767727ef2ffa4b62fcab916686a68a0426b9b790139720e1934e8ba797e238",
+          "md5": "ea7480a5491f871094c6c17bd3dddb43",
+          "sha256": "100baa204bb412b74fe285fb0f3a385256dad1d1879f0a5cb1499ed2e83d132a"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "ea7480a5491f871094c6c17bd3dddb43",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 2068253,
+        "upload_time": "2025-11-04T13:39:17",
+        "upload_time_iso_8601": "2025-11-04T13:39:17.403630Z",
+        "url": "https://files.pythonhosted.org/packages/a8/76/7727ef2ffa4b62fcab916686a68a0426b9b790139720e1934e8ba797e238/pydantic_core-2.41.5-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "d58ca4abfc79604bcb4c748e18975c44f94f756f08fb04218d5cb87eb0d3a63e",
+          "md5": "9b745da825b20025190b0162b666b7ea",
+          "sha256": "05a2c8852530ad2812cb7914dc61a1125dc4e06252ee98e5638a12da6cc6fb6c"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp310-cp310-manylinux_2_5_i686.manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "9b745da825b20025190b0162b666b7ea",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 2177050,
+        "upload_time": "2025-11-04T13:39:19",
+        "upload_time_iso_8601": "2025-11-04T13:39:19.351075Z",
+        "url": "https://files.pythonhosted.org/packages/d5/8c/a4abfc79604bcb4c748e18975c44f94f756f08fb04218d5cb87eb0d3a63e/pydantic_core-2.41.5-cp310-cp310-manylinux_2_5_i686.manylinux1_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "67b1de2e9a9a79b480f9cb0b6e8b6ba4c50b18d4e89852426364c66aa82bb7b3",
+          "md5": "8209e86eefaafb2acd1491e627a5d363",
+          "sha256": "29452c56df2ed968d18d7e21f4ab0ac55e71dc59524872f6fc57dcf4a3249ed2"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp310-cp310-musllinux_1_1_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "8209e86eefaafb2acd1491e627a5d363",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 2147178,
+        "upload_time": "2025-11-04T13:39:21",
+        "upload_time_iso_8601": "2025-11-04T13:39:21.000502Z",
+        "url": "https://files.pythonhosted.org/packages/67/b1/de2e9a9a79b480f9cb0b6e8b6ba4c50b18d4e89852426364c66aa82bb7b3/pydantic_core-2.41.5-cp310-cp310-musllinux_1_1_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "16c1dfb33f837a47b20417500efaa0378adc6635b3c79e8369ff7a03c494b4ac",
+          "md5": "899a17567a278d0102d8c4323487f691",
+          "sha256": "d5160812ea7a8a2ffbe233d8da666880cad0cbaf5d4de74ae15c313213d62556"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp310-cp310-musllinux_1_1_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "899a17567a278d0102d8c4323487f691",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 2341833,
+        "upload_time": "2025-11-04T13:39:22",
+        "upload_time_iso_8601": "2025-11-04T13:39:22.606002Z",
+        "url": "https://files.pythonhosted.org/packages/16/c1/dfb33f837a47b20417500efaa0378adc6635b3c79e8369ff7a03c494b4ac/pydantic_core-2.41.5-cp310-cp310-musllinux_1_1_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "473600f398642a0f4b815a9a558c4f1dca1b4020a7d49562807d7bc9ff279a6c",
+          "md5": "5735db7fb167bffb19b8686c3d2ea43c",
+          "sha256": "df3959765b553b9440adfd3c795617c352154e497a4eaf3752555cfb5da8fc49"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp310-cp310-musllinux_1_1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "5735db7fb167bffb19b8686c3d2ea43c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 2321156,
+        "upload_time": "2025-11-04T13:39:25",
+        "upload_time_iso_8601": "2025-11-04T13:39:25.843400Z",
+        "url": "https://files.pythonhosted.org/packages/47/36/00f398642a0f4b815a9a558c4f1dca1b4020a7d49562807d7bc9ff279a6c/pydantic_core-2.41.5-cp310-cp310-musllinux_1_1_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "7e70cad3acd89fde2010807354d978725ae111ddf6d0ea46d1ea1775b5c1bd0c",
+          "md5": "a0aac91163aedc38bbff2c19d73911b5",
+          "sha256": "1f8d33a7f4d5a7889e60dc39856d76d09333d8a6ed0f5f1190635cbec70ec4ba"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp310-cp310-win32.whl",
+        "has_sig": false,
+        "md5_digest": "a0aac91163aedc38bbff2c19d73911b5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 1989378,
+        "upload_time": "2025-11-04T13:39:27",
+        "upload_time_iso_8601": "2025-11-04T13:39:27.920549Z",
+        "url": "https://files.pythonhosted.org/packages/7e/70/cad3acd89fde2010807354d978725ae111ddf6d0ea46d1ea1775b5c1bd0c/pydantic_core-2.41.5-cp310-cp310-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "7692d338652464c6c367e5608e4488201702cd1cbb0f33f7b6a85a60fe5f3720",
+          "md5": "1ea9bf01a2d511b9eb28ba0fe52011d3",
+          "sha256": "62de39db01b8d593e45871af2af9e497295db8d73b085f6bfd0b18c83c70a8f9"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp310-cp310-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "1ea9bf01a2d511b9eb28ba0fe52011d3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 2013622,
+        "upload_time": "2025-11-04T13:39:29",
+        "upload_time_iso_8601": "2025-11-04T13:39:29.848848Z",
+        "url": "https://files.pythonhosted.org/packages/76/92/d338652464c6c367e5608e4488201702cd1cbb0f33f7b6a85a60fe5f3720/pydantic_core-2.41.5-cp310-cp310-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "e87274a989dd9f2084b3d9530b0915fdda64ac48831c30dbf7c72a41a5232db8",
+          "md5": "b362e77e35f8c4317fef604435df7cc1",
+          "sha256": "a3a52f6156e73e7ccb0f8cced536adccb7042be67cb45f9562e12b319c119da6"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp311-cp311-macosx_10_12_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "b362e77e35f8c4317fef604435df7cc1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 2105873,
+        "upload_time": "2025-11-04T13:39:31",
+        "upload_time_iso_8601": "2025-11-04T13:39:31.373744Z",
+        "url": "https://files.pythonhosted.org/packages/e8/72/74a989dd9f2084b3d9530b0915fdda64ac48831c30dbf7c72a41a5232db8/pydantic_core-2.41.5-cp311-cp311-macosx_10_12_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "124437e403fd9455708b3b942949e1d7febc02167662bf1a7da5b78ee1ea2842",
+          "md5": "6fcbf414618eaa34754a365066504edb",
+          "sha256": "7f3bf998340c6d4b0c9a2f02d6a400e51f123b59565d74dc60d252ce888c260b"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp311-cp311-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "6fcbf414618eaa34754a365066504edb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 1899826,
+        "upload_time": "2025-11-04T13:39:32",
+        "upload_time_iso_8601": "2025-11-04T13:39:32.897919Z",
+        "url": "https://files.pythonhosted.org/packages/12/44/37e403fd9455708b3b942949e1d7febc02167662bf1a7da5b78ee1ea2842/pydantic_core-2.41.5-cp311-cp311-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "337f1d5cab3ccf44c1935a359d51a8a2a9e1a654b744b5e7f80d41b88d501eec",
+          "md5": "7e1203581c91667543bd486c519cc627",
+          "sha256": "378bec5c66998815d224c9ca994f1e14c0c21cb95d2f52b6021cc0b2a58f2a5a"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "7e1203581c91667543bd486c519cc627",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 1917869,
+        "upload_time": "2025-11-04T13:39:34",
+        "upload_time_iso_8601": "2025-11-04T13:39:34.469021Z",
+        "url": "https://files.pythonhosted.org/packages/33/7f/1d5cab3ccf44c1935a359d51a8a2a9e1a654b744b5e7f80d41b88d501eec/pydantic_core-2.41.5-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "6e6a30d94a9674a7fe4f4744052ed6c5e083424510be1e93da5bc47569d11810",
+          "md5": "a71b6f5953c2de7299ed817865c0149c",
+          "sha256": "e7b576130c69225432866fe2f4a469a85a54ade141d96fd396dffcf607b558f8"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp311-cp311-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "a71b6f5953c2de7299ed817865c0149c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 2063890,
+        "upload_time": "2025-11-04T13:39:36",
+        "upload_time_iso_8601": "2025-11-04T13:39:36.053253Z",
+        "url": "https://files.pythonhosted.org/packages/6e/6a/30d94a9674a7fe4f4744052ed6c5e083424510be1e93da5bc47569d11810/pydantic_core-2.41.5-cp311-cp311-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "50be76e5d46203fcb2750e542f32e6c371ffa9b8ad17364cf94bb0818dbfb50c",
+          "md5": "abb644c9905ebf3204adccc15b5094b6",
+          "sha256": "6cb58b9c66f7e4179a2d5e0f849c48eff5c1fca560994d6eb6543abf955a149e"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp311-cp311-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "abb644c9905ebf3204adccc15b5094b6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 2229740,
+        "upload_time": "2025-11-04T13:39:37",
+        "upload_time_iso_8601": "2025-11-04T13:39:37.753766Z",
+        "url": "https://files.pythonhosted.org/packages/50/be/76e5d46203fcb2750e542f32e6c371ffa9b8ad17364cf94bb0818dbfb50c/pydantic_core-2.41.5-cp311-cp311-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "d3eefed784df0144793489f87db310a6bbf8118d7b630ed07aa180d6067e653a",
+          "md5": "fb87f7cfd7678ab8b114306162aff57d",
+          "sha256": "88942d3a3dff3afc8288c21e565e476fc278902ae4d6d134f1eeda118cc830b1"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp311-cp311-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "fb87f7cfd7678ab8b114306162aff57d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 2350021,
+        "upload_time": "2025-11-04T13:39:40",
+        "upload_time_iso_8601": "2025-11-04T13:39:40.940640Z",
+        "url": "https://files.pythonhosted.org/packages/d3/ee/fed784df0144793489f87db310a6bbf8118d7b630ed07aa180d6067e653a/pydantic_core-2.41.5-cp311-cp311-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "c8be8fed28dd0a180dca19e72c233cbf58efa36df055e5b9d90d64fd1740b828",
+          "md5": "3e45e185bf27f4e184fcf0cf6e133e41",
+          "sha256": "f31d95a179f8d64d90f6831d71fa93290893a33148d890ba15de25642c5d075b"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3e45e185bf27f4e184fcf0cf6e133e41",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 2066378,
+        "upload_time": "2025-11-04T13:39:42",
+        "upload_time_iso_8601": "2025-11-04T13:39:42.523874Z",
+        "url": "https://files.pythonhosted.org/packages/c8/be/8fed28dd0a180dca19e72c233cbf58efa36df055e5b9d90d64fd1740b828/pydantic_core-2.41.5-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "b03b698cf8ae1d536a010e05121b4958b1257f0b5522085e335360e53a6b1c8b",
+          "md5": "b90df73a14e1f5a279ac4e976559a8b9",
+          "sha256": "c1df3d34aced70add6f867a8cf413e299177e0c22660cc767218373d0779487b"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp311-cp311-manylinux_2_5_i686.manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "b90df73a14e1f5a279ac4e976559a8b9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 2175761,
+        "upload_time": "2025-11-04T13:39:44",
+        "upload_time_iso_8601": "2025-11-04T13:39:44.553288Z",
+        "url": "https://files.pythonhosted.org/packages/b0/3b/698cf8ae1d536a010e05121b4958b1257f0b5522085e335360e53a6b1c8b/pydantic_core-2.41.5-cp311-cp311-manylinux_2_5_i686.manylinux1_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "b8ba15d537423939553116dea94ce02f9c31be0fa9d0b806d427e0308ec17145",
+          "md5": "1ed9b0689f738abfab101fa18472f430",
+          "sha256": "4009935984bd36bd2c774e13f9a09563ce8de4abaa7226f5108262fa3e637284"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp311-cp311-musllinux_1_1_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "1ed9b0689f738abfab101fa18472f430",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 2146303,
+        "upload_time": "2025-11-04T13:39:46",
+        "upload_time_iso_8601": "2025-11-04T13:39:46.238434Z",
+        "url": "https://files.pythonhosted.org/packages/b8/ba/15d537423939553116dea94ce02f9c31be0fa9d0b806d427e0308ec17145/pydantic_core-2.41.5-cp311-cp311-musllinux_1_1_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "587f0de669bf37d206723795f9c90c82966726a2ab06c336deba4735b55af431",
+          "md5": "0410747b8767d9831f91911cfc0125e9",
+          "sha256": "34a64bc3441dc1213096a20fe27e8e128bd3ff89921706e83c0b1ac971276594"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp311-cp311-musllinux_1_1_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "0410747b8767d9831f91911cfc0125e9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 2340355,
+        "upload_time": "2025-11-04T13:39:48",
+        "upload_time_iso_8601": "2025-11-04T13:39:48.002484Z",
+        "url": "https://files.pythonhosted.org/packages/58/7f/0de669bf37d206723795f9c90c82966726a2ab06c336deba4735b55af431/pydantic_core-2.41.5-cp311-cp311-musllinux_1_1_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "e5dee7482c435b83d7e3c3ee5ee4451f6e8973cff0eb6007d2872ce6383f6398",
+          "md5": "d98924a5afb2b77e4a218fbdb3c58e4f",
+          "sha256": "c9e19dd6e28fdcaa5a1de679aec4141f691023916427ef9bae8584f9c2fb3b0e"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp311-cp311-musllinux_1_1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "d98924a5afb2b77e4a218fbdb3c58e4f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 2319875,
+        "upload_time": "2025-11-04T13:39:49",
+        "upload_time_iso_8601": "2025-11-04T13:39:49.705012Z",
+        "url": "https://files.pythonhosted.org/packages/e5/de/e7482c435b83d7e3c3ee5ee4451f6e8973cff0eb6007d2872ce6383f6398/pydantic_core-2.41.5-cp311-cp311-musllinux_1_1_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "fee68c9e81bb6dd7560e33b9053351c29f30c8194b72f2d6932888581f503482",
+          "md5": "f26482bea56e20a7c59657a8e71bf9c4",
+          "sha256": "2c010c6ded393148374c0f6f0bf89d206bf3217f201faa0635dcd56bd1520f6b"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp311-cp311-win32.whl",
+        "has_sig": false,
+        "md5_digest": "f26482bea56e20a7c59657a8e71bf9c4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 1987549,
+        "upload_time": "2025-11-04T13:39:51",
+        "upload_time_iso_8601": "2025-11-04T13:39:51.842644Z",
+        "url": "https://files.pythonhosted.org/packages/fe/e6/8c9e81bb6dd7560e33b9053351c29f30c8194b72f2d6932888581f503482/pydantic_core-2.41.5-cp311-cp311-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "1166f14d1d978ea94d1bc21fc98fcf570f9542fe55bfcc40269d4e1a21c19bf7",
+          "md5": "52abb66e476bea93c341e34b0f97fc1a",
+          "sha256": "76ee27c6e9c7f16f47db7a94157112a2f3a00e958bc626e2f4ee8bec5c328fbe"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp311-cp311-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "52abb66e476bea93c341e34b0f97fc1a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 2011305,
+        "upload_time": "2025-11-04T13:39:53",
+        "upload_time_iso_8601": "2025-11-04T13:39:53.485369Z",
+        "url": "https://files.pythonhosted.org/packages/11/66/f14d1d978ea94d1bc21fc98fcf570f9542fe55bfcc40269d4e1a21c19bf7/pydantic_core-2.41.5-cp311-cp311-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "56d80e271434e8efd03186c5386671328154ee349ff0354d83c74f5caaf096ed",
+          "md5": "eda1fd3904fd32556ee48ed26fa36715",
+          "sha256": "4bc36bbc0b7584de96561184ad7f012478987882ebf9f9c389b23f432ea3d90f"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp311-cp311-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "eda1fd3904fd32556ee48ed26fa36715",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 1972902,
+        "upload_time": "2025-11-04T13:39:56",
+        "upload_time_iso_8601": "2025-11-04T13:39:56.488747Z",
+        "url": "https://files.pythonhosted.org/packages/56/d8/0e271434e8efd03186c5386671328154ee349ff0354d83c74f5caaf096ed/pydantic_core-2.41.5-cp311-cp311-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "5f5d5f6c63eebb5afee93bcaae4ce9a898f3373ca23df3ccaef086d0233a35a7",
+          "md5": "45e88292d787413fd6fc555b0c4eb10d",
+          "sha256": "f41a7489d32336dbf2199c8c0a215390a751c5b014c2c1c5366e817202e9cdf7"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp312-cp312-macosx_10_12_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "45e88292d787413fd6fc555b0c4eb10d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 2110990,
+        "upload_time": "2025-11-04T13:39:58",
+        "upload_time_iso_8601": "2025-11-04T13:39:58.079813Z",
+        "url": "https://files.pythonhosted.org/packages/5f/5d/5f6c63eebb5afee93bcaae4ce9a898f3373ca23df3ccaef086d0233a35a7/pydantic_core-2.41.5-cp312-cp312-macosx_10_12_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "aa329c2e8ccb57c01111e0fd091f236c7b371c1bccea0fa85247ac55b1e2b6b6",
+          "md5": "b8d7a0f13375e9a75c2d44e5916bdd8c",
+          "sha256": "070259a8818988b9a84a449a2a7337c7f430a22acc0859c6b110aa7212a6d9c0"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp312-cp312-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "b8d7a0f13375e9a75c2d44e5916bdd8c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 1896003,
+        "upload_time": "2025-11-04T13:39:59",
+        "upload_time_iso_8601": "2025-11-04T13:39:59.956414Z",
+        "url": "https://files.pythonhosted.org/packages/aa/32/9c2e8ccb57c01111e0fd091f236c7b371c1bccea0fa85247ac55b1e2b6b6/pydantic_core-2.41.5-cp312-cp312-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "68b8a01b53cb0e59139fbc9e4fda3e9724ede8de279097179be4ff31f1abb65a",
+          "md5": "f6fb5dda052dbad0264c3a74016400bc",
+          "sha256": "e96cea19e34778f8d59fe40775a7a574d95816eb150850a85a7a4c8f4b94ac69"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "f6fb5dda052dbad0264c3a74016400bc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 1919200,
+        "upload_time": "2025-11-04T13:40:02",
+        "upload_time_iso_8601": "2025-11-04T13:40:02.241209Z",
+        "url": "https://files.pythonhosted.org/packages/68/b8/a01b53cb0e59139fbc9e4fda3e9724ede8de279097179be4ff31f1abb65a/pydantic_core-2.41.5-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "38de8c36b5198a29bdaade07b5985e80a233a5ac27137846f3bc2d3b40a47360",
+          "md5": "05a2a4b0a386bbeeb852c5a2e9afea18",
+          "sha256": "ed2e99c456e3fadd05c991f8f437ef902e00eedf34320ba2b0842bd1c3ca3a75"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp312-cp312-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "05a2a4b0a386bbeeb852c5a2e9afea18",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 2052578,
+        "upload_time": "2025-11-04T13:40:04",
+        "upload_time_iso_8601": "2025-11-04T13:40:04.401965Z",
+        "url": "https://files.pythonhosted.org/packages/38/de/8c36b5198a29bdaade07b5985e80a233a5ac27137846f3bc2d3b40a47360/pydantic_core-2.41.5-cp312-cp312-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "00b50e8e4b5b081eac6cb3dbb7e60a65907549a1ce035a724368c330112adfdd",
+          "md5": "86be03e2aa408ad925f4d9607705cf31",
+          "sha256": "65840751b72fbfd82c3c640cff9284545342a4f1eb1586ad0636955b261b0b05"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp312-cp312-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "86be03e2aa408ad925f4d9607705cf31",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 2208504,
+        "upload_time": "2025-11-04T13:40:06",
+        "upload_time_iso_8601": "2025-11-04T13:40:06.072637Z",
+        "url": "https://files.pythonhosted.org/packages/00/b5/0e8e4b5b081eac6cb3dbb7e60a65907549a1ce035a724368c330112adfdd/pydantic_core-2.41.5-cp312-cp312-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "775687a61aad59c7c5b9dc8caad5a41a5545cba3810c3e828708b3d7404f6cef",
+          "md5": "0fa22f3fca98ea0df9416238411ceecb",
+          "sha256": "e536c98a7626a98feb2d3eaf75944ef6f3dbee447e1f841eae16f2f0a72d8ddc"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp312-cp312-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "0fa22f3fca98ea0df9416238411ceecb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 2335816,
+        "upload_time": "2025-11-04T13:40:07",
+        "upload_time_iso_8601": "2025-11-04T13:40:07.835569Z",
+        "url": "https://files.pythonhosted.org/packages/77/56/87a61aad59c7c5b9dc8caad5a41a5545cba3810c3e828708b3d7404f6cef/pydantic_core-2.41.5-cp312-cp312-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "0d76941cc9f73529988688a665a5c0ecff1112b3d95ab48f81db5f7606f522d3",
+          "md5": "198329b690cbdbf52e32a9bb9c648574",
+          "sha256": "eceb81a8d74f9267ef4081e246ffd6d129da5d87e37a77c9bde550cb04870c1c"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "198329b690cbdbf52e32a9bb9c648574",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 2075366,
+        "upload_time": "2025-11-04T13:40:09",
+        "upload_time_iso_8601": "2025-11-04T13:40:09.804241Z",
+        "url": "https://files.pythonhosted.org/packages/0d/76/941cc9f73529988688a665a5c0ecff1112b3d95ab48f81db5f7606f522d3/pydantic_core-2.41.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "d343ebef01f69baa07a482844faaa0a591bad1ef129253ffd0cdaa9d8a7f72d3",
+          "md5": "1c7049fbcd2b38cde2ff9ac6c380d0b0",
+          "sha256": "d38548150c39b74aeeb0ce8ee1d8e82696f4a4e16ddc6de7b1d8823f7de4b9b5"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp312-cp312-manylinux_2_5_i686.manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "1c7049fbcd2b38cde2ff9ac6c380d0b0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 2171698,
+        "upload_time": "2025-11-04T13:40:12",
+        "upload_time_iso_8601": "2025-11-04T13:40:12.004771Z",
+        "url": "https://files.pythonhosted.org/packages/d3/43/ebef01f69baa07a482844faaa0a591bad1ef129253ffd0cdaa9d8a7f72d3/pydantic_core-2.41.5-cp312-cp312-manylinux_2_5_i686.manylinux1_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "b18741f3202e4193e3bacfc2c065fab7706ebe81af46a83d3e27605029c1f5a6",
+          "md5": "2912a4ff16dcdaa87383c350b10825a1",
+          "sha256": "c23e27686783f60290e36827f9c626e63154b82b116d7fe9adba1fda36da706c"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp312-cp312-musllinux_1_1_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "2912a4ff16dcdaa87383c350b10825a1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 2132603,
+        "upload_time": "2025-11-04T13:40:13",
+        "upload_time_iso_8601": "2025-11-04T13:40:13.868573Z",
+        "url": "https://files.pythonhosted.org/packages/b1/87/41f3202e4193e3bacfc2c065fab7706ebe81af46a83d3e27605029c1f5a6/pydantic_core-2.41.5-cp312-cp312-musllinux_1_1_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "497d4c00df99cb12070b6bccdef4a195255e6020a550d572768d92cc54dba91a",
+          "md5": "ab0d7f767f6e6b2346f1587bc1c45b69",
+          "sha256": "482c982f814460eabe1d3bb0adfdc583387bd4691ef00b90575ca0d2b6fe2294"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp312-cp312-musllinux_1_1_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "ab0d7f767f6e6b2346f1587bc1c45b69",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 2329591,
+        "upload_time": "2025-11-04T13:40:15",
+        "upload_time_iso_8601": "2025-11-04T13:40:15.672270Z",
+        "url": "https://files.pythonhosted.org/packages/49/7d/4c00df99cb12070b6bccdef4a195255e6020a550d572768d92cc54dba91a/pydantic_core-2.41.5-cp312-cp312-musllinux_1_1_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "cc6aebf4b1d65d458f3cda6a7335d141305dfa19bdc61140a884d165a8a1bbc7",
+          "md5": "ffa69fc9829e06e6cc4b15b7014e38be",
+          "sha256": "bfea2a5f0b4d8d43adf9d7b8bf019fb46fdd10a2e5cde477fbcb9d1fa08c68e1"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp312-cp312-musllinux_1_1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "ffa69fc9829e06e6cc4b15b7014e38be",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 2319068,
+        "upload_time": "2025-11-04T13:40:17",
+        "upload_time_iso_8601": "2025-11-04T13:40:17.532441Z",
+        "url": "https://files.pythonhosted.org/packages/cc/6a/ebf4b1d65d458f3cda6a7335d141305dfa19bdc61140a884d165a8a1bbc7/pydantic_core-2.41.5-cp312-cp312-musllinux_1_1_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "493b774f2b5cd4192d5ab75870ce4381fd89cf218af999515baf07e7206753f0",
+          "md5": "01616d9e2c23882a8848dc8dc375512c",
+          "sha256": "b74557b16e390ec12dca509bce9264c3bbd128f8a2c376eaa68003d7f327276d"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp312-cp312-win32.whl",
+        "has_sig": false,
+        "md5_digest": "01616d9e2c23882a8848dc8dc375512c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 1985908,
+        "upload_time": "2025-11-04T13:40:19",
+        "upload_time_iso_8601": "2025-11-04T13:40:19.309892Z",
+        "url": "https://files.pythonhosted.org/packages/49/3b/774f2b5cd4192d5ab75870ce4381fd89cf218af999515baf07e7206753f0/pydantic_core-2.41.5-cp312-cp312-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "864500173a033c801cacf67c190fef088789394feaf88a98a7035b0e40d53dc9",
+          "md5": "2775e24422ae24f83ae167fc9259bdec",
+          "sha256": "1962293292865bca8e54702b08a4f26da73adc83dd1fcf26fbc875b35d81c815"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp312-cp312-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "2775e24422ae24f83ae167fc9259bdec",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 2020145,
+        "upload_time": "2025-11-04T13:40:21",
+        "upload_time_iso_8601": "2025-11-04T13:40:21.548390Z",
+        "url": "https://files.pythonhosted.org/packages/86/45/00173a033c801cacf67c190fef088789394feaf88a98a7035b0e40d53dc9/pydantic_core-2.41.5-cp312-cp312-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "f92291fbc821fa6d261b376a3f73809f907cec5ca6025642c463d3488aad22fb",
+          "md5": "be65f9bed2fc18eace475d370a51fb3a",
+          "sha256": "1746d4a3d9a794cacae06a5eaaccb4b8643a131d45fbc9af23e353dc0a5ba5c3"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp312-cp312-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "be65f9bed2fc18eace475d370a51fb3a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 1976179,
+        "upload_time": "2025-11-04T13:40:23",
+        "upload_time_iso_8601": "2025-11-04T13:40:23.393631Z",
+        "url": "https://files.pythonhosted.org/packages/f9/22/91fbc821fa6d261b376a3f73809f907cec5ca6025642c463d3488aad22fb/pydantic_core-2.41.5-cp312-cp312-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "87068806241ff1f70d9939f9af039c6c35f2360cf16e93c2ca76f184e76b1564",
+          "md5": "c052f6895174bb2b193831c3bcec21b8",
+          "sha256": "941103c9be18ac8daf7b7adca8228f8ed6bb7a1849020f643b3a14d15b1924d9"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp313-cp313-macosx_10_12_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "c052f6895174bb2b193831c3bcec21b8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 2120403,
+        "upload_time": "2025-11-04T13:40:25",
+        "upload_time_iso_8601": "2025-11-04T13:40:25.248522Z",
+        "url": "https://files.pythonhosted.org/packages/87/06/8806241ff1f70d9939f9af039c6c35f2360cf16e93c2ca76f184e76b1564/pydantic_core-2.41.5-cp313-cp313-macosx_10_12_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "9402abfa0e0bda67faa65fef1c84971c7e45928e108fe24333c81f3bfe35d5f5",
+          "md5": "330a7ca4f634c2e7fe014721f1edcda3",
+          "sha256": "112e305c3314f40c93998e567879e887a3160bb8689ef3d2c04b6cc62c33ac34"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp313-cp313-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "330a7ca4f634c2e7fe014721f1edcda3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 1896206,
+        "upload_time": "2025-11-04T13:40:27",
+        "upload_time_iso_8601": "2025-11-04T13:40:27.099243Z",
+        "url": "https://files.pythonhosted.org/packages/94/02/abfa0e0bda67faa65fef1c84971c7e45928e108fe24333c81f3bfe35d5f5/pydantic_core-2.41.5-cp313-cp313-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "15dfa4c740c0943e93e6500f9eb23f4ca7ec9bf71b19e608ae5b579678c8d02f",
+          "md5": "18cb62a0ce07658e5191c6a4a0a930a7",
+          "sha256": "0cbaad15cb0c90aa221d43c00e77bb33c93e8d36e0bf74760cd00e732d10a6a0"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "18cb62a0ce07658e5191c6a4a0a930a7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 1919307,
+        "upload_time": "2025-11-04T13:40:29",
+        "upload_time_iso_8601": "2025-11-04T13:40:29.806542Z",
+        "url": "https://files.pythonhosted.org/packages/15/df/a4c740c0943e93e6500f9eb23f4ca7ec9bf71b19e608ae5b579678c8d02f/pydantic_core-2.41.5-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "9ae36324802931ae1d123528988e0e86587c2072ac2e5394b4bc2bc34b61ff6e",
+          "md5": "e7e44e7ded0d8e2490e569d2410eadf7",
+          "sha256": "03ca43e12fab6023fc79d28ca6b39b05f794ad08ec2feccc59a339b02f2b3d33"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp313-cp313-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "e7e44e7ded0d8e2490e569d2410eadf7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 2063258,
+        "upload_time": "2025-11-04T13:40:33",
+        "upload_time_iso_8601": "2025-11-04T13:40:33.544567Z",
+        "url": "https://files.pythonhosted.org/packages/9a/e3/6324802931ae1d123528988e0e86587c2072ac2e5394b4bc2bc34b61ff6e/pydantic_core-2.41.5-cp313-cp313-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "c9d42230d7151d4957dd79c3044ea26346c148c98fbf0ee6ebd41056f2d62ab5",
+          "md5": "4c964e52fcb560e36e167f58e67307e7",
+          "sha256": "dc799088c08fa04e43144b164feb0c13f9a0bc40503f8df3e9fde58a3c0c101e"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp313-cp313-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "4c964e52fcb560e36e167f58e67307e7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 2214917,
+        "upload_time": "2025-11-04T13:40:35",
+        "upload_time_iso_8601": "2025-11-04T13:40:35.479761Z",
+        "url": "https://files.pythonhosted.org/packages/c9/d4/2230d7151d4957dd79c3044ea26346c148c98fbf0ee6ebd41056f2d62ab5/pydantic_core-2.41.5-cp313-cp313-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "e69feaac5df17a3672fef0081b6c1bb0b82b33ee89aa5cec0d7b05f52fd4a1fa",
+          "md5": "e65592b1d93afc989ce14b7f42c07ac3",
+          "sha256": "97aeba56665b4c3235a0e52b2c2f5ae9cd071b8a8310ad27bddb3f7fb30e9aa2"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp313-cp313-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "e65592b1d93afc989ce14b7f42c07ac3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 2332186,
+        "upload_time": "2025-11-04T13:40:37",
+        "upload_time_iso_8601": "2025-11-04T13:40:37.436849Z",
+        "url": "https://files.pythonhosted.org/packages/e6/9f/eaac5df17a3672fef0081b6c1bb0b82b33ee89aa5cec0d7b05f52fd4a1fa/pydantic_core-2.41.5-cp313-cp313-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "cf4e35a80cae583a37cf15604b44240e45c05e04e86f9cfd766623149297e971",
+          "md5": "c20761ca1eacc16acd7f5f6fe38d75d6",
+          "sha256": "406bf18d345822d6c21366031003612b9c77b3e29ffdb0f612367352aab7d586"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "c20761ca1eacc16acd7f5f6fe38d75d6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 2073164,
+        "upload_time": "2025-11-04T13:40:40",
+        "upload_time_iso_8601": "2025-11-04T13:40:40.289822Z",
+        "url": "https://files.pythonhosted.org/packages/cf/4e/35a80cae583a37cf15604b44240e45c05e04e86f9cfd766623149297e971/pydantic_core-2.41.5-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "bfe3f6e262673c6140dd3305d144d032f7bd5f7497d3871c1428521f19f9efa2",
+          "md5": "59b4e78af3f96a9a0075ab0be921c64f",
+          "sha256": "b93590ae81f7010dbe380cdeab6f515902ebcbefe0b9327cc4804d74e93ae69d"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp313-cp313-manylinux_2_5_i686.manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "59b4e78af3f96a9a0075ab0be921c64f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 2179146,
+        "upload_time": "2025-11-04T13:40:42",
+        "upload_time_iso_8601": "2025-11-04T13:40:42.809967Z",
+        "url": "https://files.pythonhosted.org/packages/bf/e3/f6e262673c6140dd3305d144d032f7bd5f7497d3871c1428521f19f9efa2/pydantic_core-2.41.5-cp313-cp313-manylinux_2_5_i686.manylinux1_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "75c720bd7fc05f0c6ea2056a4565c6f36f8968c0924f19b7d97bbfea55780e73",
+          "md5": "94ea292d293ec82e3493e677d7e947a1",
+          "sha256": "01a3d0ab748ee531f4ea6c3e48ad9dac84ddba4b0d82291f87248f2f9de8d740"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp313-cp313-musllinux_1_1_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "94ea292d293ec82e3493e677d7e947a1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 2137788,
+        "upload_time": "2025-11-04T13:40:44",
+        "upload_time_iso_8601": "2025-11-04T13:40:44.752936Z",
+        "url": "https://files.pythonhosted.org/packages/75/c7/20bd7fc05f0c6ea2056a4565c6f36f8968c0924f19b7d97bbfea55780e73/pydantic_core-2.41.5-cp313-cp313-musllinux_1_1_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "3a8d34318ef985c45196e004bc46c6eab2eda437e744c124ef0dbe1ff2c9d06b",
+          "md5": "bc2bad7d46d9621db3c1369786831346",
+          "sha256": "6561e94ba9dacc9c61bce40e2d6bdc3bfaa0259d3ff36ace3b1e6901936d2e3e"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp313-cp313-musllinux_1_1_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "bc2bad7d46d9621db3c1369786831346",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 2340133,
+        "upload_time": "2025-11-04T13:40:46",
+        "upload_time_iso_8601": "2025-11-04T13:40:46.660988Z",
+        "url": "https://files.pythonhosted.org/packages/3a/8d/34318ef985c45196e004bc46c6eab2eda437e744c124ef0dbe1ff2c9d06b/pydantic_core-2.41.5-cp313-cp313-musllinux_1_1_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "9c59013626bf8c78a5a5d9350d12e7697d3d4de951a75565496abd40ccd46bee",
+          "md5": "8232a3a0b016c9f292463ca0f8b9e136",
+          "sha256": "915c3d10f81bec3a74fbd4faebe8391013ba61e5a1a8d48c4455b923bdda7858"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp313-cp313-musllinux_1_1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "8232a3a0b016c9f292463ca0f8b9e136",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 2324852,
+        "upload_time": "2025-11-04T13:40:48",
+        "upload_time_iso_8601": "2025-11-04T13:40:48.575201Z",
+        "url": "https://files.pythonhosted.org/packages/9c/59/013626bf8c78a5a5d9350d12e7697d3d4de951a75565496abd40ccd46bee/pydantic_core-2.41.5-cp313-cp313-musllinux_1_1_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "1ad9c248c103856f807ef70c18a4f986693a46a8ffe1602e5d361485da502d20",
+          "md5": "57fc6cf31cc325d59ceac9353d1d5f84",
+          "sha256": "650ae77860b45cfa6e2cdafc42618ceafab3a2d9a3811fcfbd3bbf8ac3c40d36"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp313-cp313-win32.whl",
+        "has_sig": false,
+        "md5_digest": "57fc6cf31cc325d59ceac9353d1d5f84",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 1994679,
+        "upload_time": "2025-11-04T13:40:50",
+        "upload_time_iso_8601": "2025-11-04T13:40:50.619899Z",
+        "url": "https://files.pythonhosted.org/packages/1a/d9/c248c103856f807ef70c18a4f986693a46a8ffe1602e5d361485da502d20/pydantic_core-2.41.5-cp313-cp313-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "9e8b341991b158ddab181cff136acd2552c9f35bd30380422a639c0671e99a91",
+          "md5": "ceb3f349d9e7dd0f42f27b6f0c318dbd",
+          "sha256": "79ec52ec461e99e13791ec6508c722742ad745571f234ea6255bed38c6480f11"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp313-cp313-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "ceb3f349d9e7dd0f42f27b6f0c318dbd",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 2019766,
+        "upload_time": "2025-11-04T13:40:52",
+        "upload_time_iso_8601": "2025-11-04T13:40:52.631568Z",
+        "url": "https://files.pythonhosted.org/packages/9e/8b/341991b158ddab181cff136acd2552c9f35bd30380422a639c0671e99a91/pydantic_core-2.41.5-cp313-cp313-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "737df2f9db34af103bea3e09735bb40b021788a5e834c81eedb541991badf8f5",
+          "md5": "c4bc0f6f00cc6b256c34776e7b2acae1",
+          "sha256": "3f84d5c1b4ab906093bdc1ff10484838aca54ef08de4afa9de0f5f14d69639cd"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp313-cp313-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "c4bc0f6f00cc6b256c34776e7b2acae1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 1981005,
+        "upload_time": "2025-11-04T13:40:54",
+        "upload_time_iso_8601": "2025-11-04T13:40:54.734864Z",
+        "url": "https://files.pythonhosted.org/packages/73/7d/f2f9db34af103bea3e09735bb40b021788a5e834c81eedb541991badf8f5/pydantic_core-2.41.5-cp313-cp313-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "ea2846b7c5c9635ae96ea0fbb779e271a38129df2550f763937659ee6c5dbc65",
+          "md5": "5117bb06d1f7512d6ba8ad75152f1f17",
+          "sha256": "3f37a19d7ebcdd20b96485056ba9e8b304e27d9904d233d7b1015db320e51f0a"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314-macosx_10_12_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "5117bb06d1f7512d6ba8ad75152f1f17",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2119622,
+        "upload_time": "2025-11-04T13:40:56",
+        "upload_time_iso_8601": "2025-11-04T13:40:56.680160Z",
+        "url": "https://files.pythonhosted.org/packages/ea/28/46b7c5c9635ae96ea0fbb779e271a38129df2550f763937659ee6c5dbc65/pydantic_core-2.41.5-cp314-cp314-macosx_10_12_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "741a145646e5687e8d9a1e8d09acb278c8535ebe9e972e1f162ed338a622f193",
+          "md5": "c3d2df9f35df969234acbc6a80c3187a",
+          "sha256": "1d1d9764366c73f996edd17abb6d9d7649a7eb690006ab6adbda117717099b14"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "c3d2df9f35df969234acbc6a80c3187a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 1891725,
+        "upload_time": "2025-11-04T13:40:58",
+        "upload_time_iso_8601": "2025-11-04T13:40:58.807748Z",
+        "url": "https://files.pythonhosted.org/packages/74/1a/145646e5687e8d9a1e8d09acb278c8535ebe9e972e1f162ed338a622f193/pydantic_core-2.41.5-cp314-cp314-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "2304e89c29e267b8060b40dca97bfc64a19b2a3cf99018167ea1677d96368273",
+          "md5": "8eee02a1ef306efc2cc90e64967aa3f2",
+          "sha256": "25e1c2af0fce638d5f1988b686f3b3ea8cd7de5f244ca147c777769e798a9cd1"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "8eee02a1ef306efc2cc90e64967aa3f2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 1915040,
+        "upload_time": "2025-11-04T13:41:00",
+        "upload_time_iso_8601": "2025-11-04T13:41:00.853638Z",
+        "url": "https://files.pythonhosted.org/packages/23/04/e89c29e267b8060b40dca97bfc64a19b2a3cf99018167ea1677d96368273/pydantic_core-2.41.5-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "84a315a82ac7bd97992a82257f777b3583d3e84bdb06ba6858f745daa2ec8a85",
+          "md5": "ab990f8ec5f3e222c87a69a73a964753",
+          "sha256": "506d766a8727beef16b7adaeb8ee6217c64fc813646b424d0804d67c16eddb66"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "ab990f8ec5f3e222c87a69a73a964753",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2063691,
+        "upload_time": "2025-11-04T13:41:03",
+        "upload_time_iso_8601": "2025-11-04T13:41:03.504381Z",
+        "url": "https://files.pythonhosted.org/packages/84/a3/15a82ac7bd97992a82257f777b3583d3e84bdb06ba6858f745daa2ec8a85/pydantic_core-2.41.5-cp314-cp314-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "749b0046701313c6ef08c0c1cf0e028c67c770a4e1275ca73131563c5f2a310a",
+          "md5": "71b4a05956ddade00796a82d60e80b50",
+          "sha256": "4819fa52133c9aa3c387b3328f25c1facc356491e6135b459f1de698ff64d869"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "71b4a05956ddade00796a82d60e80b50",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2213897,
+        "upload_time": "2025-11-04T13:41:05",
+        "upload_time_iso_8601": "2025-11-04T13:41:05.804382Z",
+        "url": "https://files.pythonhosted.org/packages/74/9b/0046701313c6ef08c0c1cf0e028c67c770a4e1275ca73131563c5f2a310a/pydantic_core-2.41.5-cp314-cp314-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "8acd6bac76ecd1b27e75a95ca3a9a559c643b3afcd2dd62086d4b7a32a18b169",
+          "md5": "05b103fdde32998381948ed1f40a33b0",
+          "sha256": "2b761d210c9ea91feda40d25b4efe82a1707da2ef62901466a42492c028553a2"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "05b103fdde32998381948ed1f40a33b0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2333302,
+        "upload_time": "2025-11-04T13:41:07",
+        "upload_time_iso_8601": "2025-11-04T13:41:07.809705Z",
+        "url": "https://files.pythonhosted.org/packages/8a/cd/6bac76ecd1b27e75a95ca3a9a559c643b3afcd2dd62086d4b7a32a18b169/pydantic_core-2.41.5-cp314-cp314-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "4cd2ef2074dc020dd6e109611a8be4449b98cd25e1b9b8a303c2f0fca2f2bcf7",
+          "md5": "9e8d902abedd9503da79bf737269ca73",
+          "sha256": "22f0fb8c1c583a3b6f24df2470833b40207e907b90c928cc8d3594b76f874375"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9e8d902abedd9503da79bf737269ca73",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2064877,
+        "upload_time": "2025-11-04T13:41:09",
+        "upload_time_iso_8601": "2025-11-04T13:41:09.827239Z",
+        "url": "https://files.pythonhosted.org/packages/4c/d2/ef2074dc020dd6e109611a8be4449b98cd25e1b9b8a303c2f0fca2f2bcf7/pydantic_core-2.41.5-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "1866e9db17a9a763d72f03de903883c057b2592c09509ccfe468187f2a2eef29",
+          "md5": "d7e622001aa9a7db01e2e6d0159eb0c5",
+          "sha256": "2782c870e99878c634505236d81e5443092fba820f0373997ff75f90f68cd553"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314-manylinux_2_5_i686.manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "d7e622001aa9a7db01e2e6d0159eb0c5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2180680,
+        "upload_time": "2025-11-04T13:41:12",
+        "upload_time_iso_8601": "2025-11-04T13:41:12.379232Z",
+        "url": "https://files.pythonhosted.org/packages/18/66/e9db17a9a763d72f03de903883c057b2592c09509ccfe468187f2a2eef29/pydantic_core-2.41.5-cp314-cp314-manylinux_2_5_i686.manylinux1_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "d39e3ce66cebb929f3ced22be85d4c2399b8e85b622db77dad36b73c5387f8f8",
+          "md5": "a9e888fd53c9556deef8a6c027361953",
+          "sha256": "0177272f88ab8312479336e1d777f6b124537d47f2123f89cb37e0accea97f90"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314-musllinux_1_1_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "a9e888fd53c9556deef8a6c027361953",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2138960,
+        "upload_time": "2025-11-04T13:41:14",
+        "upload_time_iso_8601": "2025-11-04T13:41:14.627706Z",
+        "url": "https://files.pythonhosted.org/packages/d3/9e/3ce66cebb929f3ced22be85d4c2399b8e85b622db77dad36b73c5387f8f8/pydantic_core-2.41.5-cp314-cp314-musllinux_1_1_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "a662205a998f4327d2079326b01abee48e502ea739d174f0a89295c481a2272e",
+          "md5": "be467ea6e81ced00872b04314518bdc8",
+          "sha256": "63510af5e38f8955b8ee5687740d6ebf7c2a0886d15a6d65c32814613681bc07"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314-musllinux_1_1_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "be467ea6e81ced00872b04314518bdc8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2339102,
+        "upload_time": "2025-11-04T13:41:16",
+        "upload_time_iso_8601": "2025-11-04T13:41:16.868448Z",
+        "url": "https://files.pythonhosted.org/packages/a6/62/205a998f4327d2079326b01abee48e502ea739d174f0a89295c481a2272e/pydantic_core-2.41.5-cp314-cp314-musllinux_1_1_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "3c0df05e79471e889d74d3d88f5bd20d0ed189ad94c2423d81ff8d0000aab4ff",
+          "md5": "840e7f37b78b55788c0a345bf204744a",
+          "sha256": "e56ba91f47764cc14f1daacd723e3e82d1a89d783f0f5afe9c364b8bb491ccdb"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314-musllinux_1_1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "840e7f37b78b55788c0a345bf204744a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2326039,
+        "upload_time": "2025-11-04T13:41:18",
+        "upload_time_iso_8601": "2025-11-04T13:41:18.934808Z",
+        "url": "https://files.pythonhosted.org/packages/3c/0d/f05e79471e889d74d3d88f5bd20d0ed189ad94c2423d81ff8d0000aab4ff/pydantic_core-2.41.5-cp314-cp314-musllinux_1_1_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "92ed77542d0c51538e32e15afe7899d79efce4b81eee631d99850edc2f5e9349",
+          "md5": "c933938145ab400e9d7ebbb41bde5383",
+          "sha256": "8566def80554c3faa0e65ac30ab0932b9e3a5cd7f8323764303d468e5c37595a"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314t-macosx_10_12_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "c933938145ab400e9d7ebbb41bde5383",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2120255,
+        "upload_time": "2025-11-04T13:41:28",
+        "upload_time_iso_8601": "2025-11-04T13:41:28.569099Z",
+        "url": "https://files.pythonhosted.org/packages/92/ed/77542d0c51538e32e15afe7899d79efce4b81eee631d99850edc2f5e9349/pydantic_core-2.41.5-cp314-cp314t-macosx_10_12_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "bb3d6913dde84d5be21e284439676168b28d8bbba5600d838b9dca99de0fad71",
+          "md5": "d807083f87eff98521ce174c4d4223dc",
+          "sha256": "b80aa5095cd3109962a298ce14110ae16b8c1aece8b72f9dafe81cf597ad80b3"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314t-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "d807083f87eff98521ce174c4d4223dc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 1863760,
+        "upload_time": "2025-11-04T13:41:31",
+        "upload_time_iso_8601": "2025-11-04T13:41:31.055626Z",
+        "url": "https://files.pythonhosted.org/packages/bb/3d/6913dde84d5be21e284439676168b28d8bbba5600d838b9dca99de0fad71/pydantic_core-2.41.5-cp314-cp314t-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "5af0e5e6b99d4191da102f2b0eb9687aaa7f5bea5d9964071a84effc3e40f997",
+          "md5": "d11a3f864da60e74765770007c92859c",
+          "sha256": "3006c3dd9ba34b0c094c544c6006cc79e87d8612999f1a5d43b769b89181f23c"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "d11a3f864da60e74765770007c92859c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 1878092,
+        "upload_time": "2025-11-04T13:41:33",
+        "upload_time_iso_8601": "2025-11-04T13:41:33.210108Z",
+        "url": "https://files.pythonhosted.org/packages/5a/f0/e5e6b99d4191da102f2b0eb9687aaa7f5bea5d9964071a84effc3e40f997/pydantic_core-2.41.5-cp314-cp314t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "714836fb760642d568925953bcc8116455513d6e34c4beaa37544118c36aba6d",
+          "md5": "74bd2955d251fbfcf1dd9ecffddeaec0",
+          "sha256": "72f6c8b11857a856bcfa48c86f5368439f74453563f951e473514579d44aa612"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314t-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "74bd2955d251fbfcf1dd9ecffddeaec0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2053385,
+        "upload_time": "2025-11-04T13:41:35",
+        "upload_time_iso_8601": "2025-11-04T13:41:35.508785Z",
+        "url": "https://files.pythonhosted.org/packages/71/48/36fb760642d568925953bcc8116455513d6e34c4beaa37544118c36aba6d/pydantic_core-2.41.5-cp314-cp314t-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "202592dc684dd8eb75a234bc1c764b4210cf2646479d54b47bf46061657292a8",
+          "md5": "1950102c50dac0cbf8aba3eff4a3e23e",
+          "sha256": "5cb1b2f9742240e4bb26b652a5aeb840aa4b417c7748b6f8387927bc6e45e40d"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314t-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "1950102c50dac0cbf8aba3eff4a3e23e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2218832,
+        "upload_time": "2025-11-04T13:41:37",
+        "upload_time_iso_8601": "2025-11-04T13:41:37.732223Z",
+        "url": "https://files.pythonhosted.org/packages/20/25/92dc684dd8eb75a234bc1c764b4210cf2646479d54b47bf46061657292a8/pydantic_core-2.41.5-cp314-cp314t-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "e209f53e0b05023d3e30357d82eb35835d0f6340ca344720a4599cd663dca599",
+          "md5": "748c1b2a8b5a7519ef72f5737c8504a6",
+          "sha256": "bd3d54f38609ff308209bd43acea66061494157703364ae40c951f83ba99a1a9"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314t-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "748c1b2a8b5a7519ef72f5737c8504a6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2327585,
+        "upload_time": "2025-11-04T13:41:40",
+        "upload_time_iso_8601": "2025-11-04T13:41:40.000599Z",
+        "url": "https://files.pythonhosted.org/packages/e2/09/f53e0b05023d3e30357d82eb35835d0f6340ca344720a4599cd663dca599/pydantic_core-2.41.5-cp314-cp314t-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "aa4e2ae1aa85d6af35a39b236b1b1641de73f5a6ac4d5a7509f77b814885760c",
+          "md5": "15130d785d9d60a06f55b0a75e2cddf3",
+          "sha256": "2ff4321e56e879ee8d2a879501c8e469414d948f4aba74a2d4593184eb326660"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "15130d785d9d60a06f55b0a75e2cddf3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2041078,
+        "upload_time": "2025-11-04T13:41:42",
+        "upload_time_iso_8601": "2025-11-04T13:41:42.323268Z",
+        "url": "https://files.pythonhosted.org/packages/aa/4e/2ae1aa85d6af35a39b236b1b1641de73f5a6ac4d5a7509f77b814885760c/pydantic_core-2.41.5-cp314-cp314t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "cd132e215f17f0ef326fc72afe94776edb77525142c693767fc347ed6288728d",
+          "md5": "a8e2d66e46985f2119fd41d5b776d98c",
+          "sha256": "d0d2568a8c11bf8225044aa94409e21da0cb09dcdafe9ecd10250b2baad531a9"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314t-manylinux_2_5_i686.manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "a8e2d66e46985f2119fd41d5b776d98c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2173914,
+        "upload_time": "2025-11-04T13:41:45",
+        "upload_time_iso_8601": "2025-11-04T13:41:45.221427Z",
+        "url": "https://files.pythonhosted.org/packages/cd/13/2e215f17f0ef326fc72afe94776edb77525142c693767fc347ed6288728d/pydantic_core-2.41.5-cp314-cp314t-manylinux_2_5_i686.manylinux1_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "027af999a6dcbcd0e5660bc348a3991c8915ce6599f4f2c6ac22f01d7a10816c",
+          "md5": "d46345e949b541b1f89d31b11e671c78",
+          "sha256": "a39455728aabd58ceabb03c90e12f71fd30fa69615760a075b9fec596456ccc3"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314t-musllinux_1_1_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "d46345e949b541b1f89d31b11e671c78",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2129560,
+        "upload_time": "2025-11-04T13:41:47",
+        "upload_time_iso_8601": "2025-11-04T13:41:47.474622Z",
+        "url": "https://files.pythonhosted.org/packages/02/7a/f999a6dcbcd0e5660bc348a3991c8915ce6599f4f2c6ac22f01d7a10816c/pydantic_core-2.41.5-cp314-cp314t-musllinux_1_1_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "3ab16c990ac65e3b4c079a4fb9f5b05f5b013afa0f4ed6780a3dd236d2cbdc64",
+          "md5": "152fef9704a5ba5e48f255edd2cee4f0",
+          "sha256": "239edca560d05757817c13dc17c50766136d21f7cd0fac50295499ae24f90fdf"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314t-musllinux_1_1_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "152fef9704a5ba5e48f255edd2cee4f0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2329244,
+        "upload_time": "2025-11-04T13:41:49",
+        "upload_time_iso_8601": "2025-11-04T13:41:49.992339Z",
+        "url": "https://files.pythonhosted.org/packages/3a/b1/6c990ac65e3b4c079a4fb9f5b05f5b013afa0f4ed6780a3dd236d2cbdc64/pydantic_core-2.41.5-cp314-cp314t-musllinux_1_1_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "d9023c562f3a51afd4d88fff8dffb1771b30cfdfd79befd9883ee094f5b6c0d8",
+          "md5": "f9e655a2add7c5ee31c493edd53d45cf",
+          "sha256": "2a5e06546e19f24c6a96a129142a75cee553cc018ffee48a460059b1185f4470"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314t-musllinux_1_1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "f9e655a2add7c5ee31c493edd53d45cf",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2331955,
+        "upload_time": "2025-11-04T13:41:54",
+        "upload_time_iso_8601": "2025-11-04T13:41:54.079740Z",
+        "url": "https://files.pythonhosted.org/packages/d9/02/3c562f3a51afd4d88fff8dffb1771b30cfdfd79befd9883ee094f5b6c0d8/pydantic_core-2.41.5-cp314-cp314t-musllinux_1_1_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "5c965fb7d8c3c17bc8c62fdb031c47d77a1af698f1d7a406b0f79aaa1338f9ad",
+          "md5": "a58d7d54df1c5971e04af4d765f38f96",
+          "sha256": "b4ececa40ac28afa90871c2cc2b9ffd2ff0bf749380fbdf57d165fd23da353aa"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314t-win32.whl",
+        "has_sig": false,
+        "md5_digest": "a58d7d54df1c5971e04af4d765f38f96",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 1988906,
+        "upload_time": "2025-11-04T13:41:56",
+        "upload_time_iso_8601": "2025-11-04T13:41:56.606177Z",
+        "url": "https://files.pythonhosted.org/packages/5c/96/5fb7d8c3c17bc8c62fdb031c47d77a1af698f1d7a406b0f79aaa1338f9ad/pydantic_core-2.41.5-cp314-cp314t-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "22ed182129d83032702912c2e2d8bbe33c036f342cc735737064668585dac28f",
+          "md5": "d774a1a554adc3b00b067e247296fee7",
+          "sha256": "80aa89cad80b32a912a65332f64a4450ed00966111b6615ca6816153d3585a8c"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314t-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "d774a1a554adc3b00b067e247296fee7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 1981607,
+        "upload_time": "2025-11-04T13:41:58",
+        "upload_time_iso_8601": "2025-11-04T13:41:58.889460Z",
+        "url": "https://files.pythonhosted.org/packages/22/ed/182129d83032702912c2e2d8bbe33c036f342cc735737064668585dac28f/pydantic_core-2.41.5-cp314-cp314t-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "9fed068e41660b832bb0b1aa5b58011dea2a3fe0ba7861ff38c4d4904c1c1a99",
+          "md5": "a54a962a05e371d601467dcd5ec87d8a",
+          "sha256": "35b44f37a3199f771c3eaa53051bc8a70cd7b54f333531c59e29fd4db5d15008"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314t-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "a54a962a05e371d601467dcd5ec87d8a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 1974769,
+        "upload_time": "2025-11-04T13:42:01",
+        "upload_time_iso_8601": "2025-11-04T13:42:01.186993Z",
+        "url": "https://files.pythonhosted.org/packages/9f/ed/068e41660b832bb0b1aa5b58011dea2a3fe0ba7861ff38c4d4904c1c1a99/pydantic_core-2.41.5-cp314-cp314t-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "ece1e08a6208bb100da7e0c4b288eed624a703f4d129bde2da475721a80cab32",
+          "md5": "db36c4a704edb05f0bda29e00a07748c",
+          "sha256": "aec5cf2fd867b4ff45b9959f8b20ea3993fc93e63c7363fe6851424c8a7e7c23"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314-win32.whl",
+        "has_sig": false,
+        "md5_digest": "db36c4a704edb05f0bda29e00a07748c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 1995126,
+        "upload_time": "2025-11-04T13:41:21",
+        "upload_time_iso_8601": "2025-11-04T13:41:21.418207Z",
+        "url": "https://files.pythonhosted.org/packages/ec/e1/e08a6208bb100da7e0c4b288eed624a703f4d129bde2da475721a80cab32/pydantic_core-2.41.5-cp314-cp314-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "485d56ba7b24e9557f99c9237e29f5c09913c81eeb2f3217e40e922353668092",
+          "md5": "7a863c500493294f32e95bffaa55f914",
+          "sha256": "8e7c86f27c585ef37c35e56a96363ab8de4e549a95512445b85c96d3e2f7c1bf"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "7a863c500493294f32e95bffaa55f914",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 2015489,
+        "upload_time": "2025-11-04T13:41:24",
+        "upload_time_iso_8601": "2025-11-04T13:41:24.076832Z",
+        "url": "https://files.pythonhosted.org/packages/48/5d/56ba7b24e9557f99c9237e29f5c09913c81eeb2f3217e40e922353668092/pydantic_core-2.41.5-cp314-cp314-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "4ebbf7a190991ec9e3e0ba22e4993d8755bbc4a32925c0b5b42775c03e8148f9",
+          "md5": "5fd2bbac7d15ecf8848c7d2e0699134f",
+          "sha256": "e672ba74fbc2dc8eea59fb6d4aed6845e6905fc2a8afe93175d94a83ba2a01a0"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp314-cp314-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "5fd2bbac7d15ecf8848c7d2e0699134f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 1977288,
+        "upload_time": "2025-11-04T13:41:26",
+        "upload_time_iso_8601": "2025-11-04T13:41:26.330979Z",
+        "url": "https://files.pythonhosted.org/packages/4e/bb/f7a190991ec9e3e0ba22e4993d8755bbc4a32925c0b5b42775c03e8148f9/pydantic_core-2.41.5-cp314-cp314-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "54db160dffb57ed9a3705c4cbcbff0ac03bdae45f1ca7d58ab74645550df3fbd",
+          "md5": "e91522d18abb2834e992da7d3d813edc",
+          "sha256": "8bfeaf8735be79f225f3fefab7f941c712aaca36f1128c9d7e2352ee1aa87bdf"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp39-cp39-macosx_10_12_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "e91522d18abb2834e992da7d3d813edc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 2107999,
+        "upload_time": "2025-11-04T13:42:03",
+        "upload_time_iso_8601": "2025-11-04T13:42:03.885466Z",
+        "url": "https://files.pythonhosted.org/packages/54/db/160dffb57ed9a3705c4cbcbff0ac03bdae45f1ca7d58ab74645550df3fbd/pydantic_core-2.41.5-cp39-cp39-macosx_10_12_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "a37d88e7de946f60d9263cc84819f32513520b85c0f8322f9b8f6e4afc938383",
+          "md5": "48ef3ca97cb57e1c876dd443e49db7ed",
+          "sha256": "346285d28e4c8017da95144c7f3acd42740d637ff41946af5ce6e5e420502dd5"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp39-cp39-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "48ef3ca97cb57e1c876dd443e49db7ed",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 1929745,
+        "upload_time": "2025-11-04T13:42:06",
+        "upload_time_iso_8601": "2025-11-04T13:42:06.075892Z",
+        "url": "https://files.pythonhosted.org/packages/a3/7d/88e7de946f60d9263cc84819f32513520b85c0f8322f9b8f6e4afc938383/pydantic_core-2.41.5-cp39-cp39-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "d5c2aef51e5b283780e85e99ff19db0f05842d2d4a8a8cd15e63b0280029b08f",
+          "md5": "0a89f23d8a53f6bb4dfae5f972605202",
+          "sha256": "a75dafbf87d6276ddc5b2bf6fae5254e3d0876b626eb24969a574fff9149ee5d"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "0a89f23d8a53f6bb4dfae5f972605202",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 1920220,
+        "upload_time": "2025-11-04T13:42:08",
+        "upload_time_iso_8601": "2025-11-04T13:42:08.457170Z",
+        "url": "https://files.pythonhosted.org/packages/d5/c2/aef51e5b283780e85e99ff19db0f05842d2d4a8a8cd15e63b0280029b08f/pydantic_core-2.41.5-cp39-cp39-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "c797492ab10f9ac8695cd76b2fdb24e9e61f394051df71594e9bcc891c9f586e",
+          "md5": "643ab4552b5f1535e360a8c9641bd354",
+          "sha256": "7b93a4d08587e2b7e7882de461e82b6ed76d9026ce91ca7915e740ecc7855f60"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp39-cp39-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "643ab4552b5f1535e360a8c9641bd354",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 2067296,
+        "upload_time": "2025-11-04T13:42:10",
+        "upload_time_iso_8601": "2025-11-04T13:42:10.817031Z",
+        "url": "https://files.pythonhosted.org/packages/c7/97/492ab10f9ac8695cd76b2fdb24e9e61f394051df71594e9bcc891c9f586e/pydantic_core-2.41.5-cp39-cp39-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "ec23984149650e5269c59a2a4c41d234a9570adc68ab29981825cfaf4cfad8f4",
+          "md5": "da71facd1adc1b2a77fa585b91e17c30",
+          "sha256": "e8465ab91a4bd96d36dde3263f06caa6a8a6019e4113f24dc753d79a8b3a3f82"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp39-cp39-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "da71facd1adc1b2a77fa585b91e17c30",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 2231548,
+        "upload_time": "2025-11-04T13:42:13",
+        "upload_time_iso_8601": "2025-11-04T13:42:13.843134Z",
+        "url": "https://files.pythonhosted.org/packages/ec/23/984149650e5269c59a2a4c41d234a9570adc68ab29981825cfaf4cfad8f4/pydantic_core-2.41.5-cp39-cp39-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "710c85bcbb885b9732c28bec67a222dbed5ed2d77baee1f8bba2002e8cd00c5c",
+          "md5": "a685c780d22aad285fb1fb27c1cbb4d7",
+          "sha256": "299e0a22e7ae2b85c1a57f104538b2656e8ab1873511fd718a1c1c6f149b77b5"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp39-cp39-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "a685c780d22aad285fb1fb27c1cbb4d7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 2362571,
+        "upload_time": "2025-11-04T13:42:16",
+        "upload_time_iso_8601": "2025-11-04T13:42:16.208650Z",
+        "url": "https://files.pythonhosted.org/packages/71/0c/85bcbb885b9732c28bec67a222dbed5ed2d77baee1f8bba2002e8cd00c5c/pydantic_core-2.41.5-cp39-cp39-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "c04a412d2048be12c334003e9b823a3fa3d038e46cc2d64dd8aab50b31b65499",
+          "md5": "00ad0518fc9d48b39e6033c065258038",
+          "sha256": "707625ef0983fcfb461acfaf14de2067c5942c6bb0f3b4c99158bed6fedd3cf3"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "00ad0518fc9d48b39e6033c065258038",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 2068175,
+        "upload_time": "2025-11-04T13:42:18",
+        "upload_time_iso_8601": "2025-11-04T13:42:18.911949Z",
+        "url": "https://files.pythonhosted.org/packages/c0/4a/412d2048be12c334003e9b823a3fa3d038e46cc2d64dd8aab50b31b65499/pydantic_core-2.41.5-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "73f4c58b6a776b502d0a5540ad02e232514285513572060f0d78f7832ca3c98b",
+          "md5": "5b728862e1f80ee42afd20402dfe8e19",
+          "sha256": "f41eb9797986d6ebac5e8edff36d5cef9de40def462311b3eb3eeded1431e425"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp39-cp39-manylinux_2_5_i686.manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "5b728862e1f80ee42afd20402dfe8e19",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 2177203,
+        "upload_time": "2025-11-04T13:42:22",
+        "upload_time_iso_8601": "2025-11-04T13:42:22.578105Z",
+        "url": "https://files.pythonhosted.org/packages/73/f4/c58b6a776b502d0a5540ad02e232514285513572060f0d78f7832ca3c98b/pydantic_core-2.41.5-cp39-cp39-manylinux_2_5_i686.manylinux1_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "edaef06ea4c7e7a9eead3d165e7623cd2ea0cb788e277e4f935af63fc98fa4e6",
+          "md5": "f39ffc982fb4526c148c35609ceb229c",
+          "sha256": "0384e2e1021894b1ff5a786dbf94771e2986ebe2869533874d7e43bc79c6f504"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp39-cp39-musllinux_1_1_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "f39ffc982fb4526c148c35609ceb229c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 2148191,
+        "upload_time": "2025-11-04T13:42:24",
+        "upload_time_iso_8601": "2025-11-04T13:42:24.890512Z",
+        "url": "https://files.pythonhosted.org/packages/ed/ae/f06ea4c7e7a9eead3d165e7623cd2ea0cb788e277e4f935af63fc98fa4e6/pydantic_core-2.41.5-cp39-cp39-musllinux_1_1_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "c15725a11dcdc656bf5f8b05902c3c2934ac3ea296257cc4a3f79a6319e61856",
+          "md5": "0f652580ea8d925ab41ec3305c3bd747",
+          "sha256": "f0cd744688278965817fd0839c4a4116add48d23890d468bc436f78beb28abf5"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp39-cp39-musllinux_1_1_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "0f652580ea8d925ab41ec3305c3bd747",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 2343907,
+        "upload_time": "2025-11-04T13:42:27",
+        "upload_time_iso_8601": "2025-11-04T13:42:27.683929Z",
+        "url": "https://files.pythonhosted.org/packages/c1/57/25a11dcdc656bf5f8b05902c3c2934ac3ea296257cc4a3f79a6319e61856/pydantic_core-2.41.5-cp39-cp39-musllinux_1_1_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "9682e33d5f4933d7a03327c0c43c65d575e5919d4974ffc026bc917a5f7b9f61",
+          "md5": "47b0ef4314e23ac8e11453074294b551",
+          "sha256": "753e230374206729bf0a807954bcc6c150d3743928a73faffee51ac6557a03c3"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp39-cp39-musllinux_1_1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "47b0ef4314e23ac8e11453074294b551",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 2322174,
+        "upload_time": "2025-11-04T13:42:30",
+        "upload_time_iso_8601": "2025-11-04T13:42:30.776719Z",
+        "url": "https://files.pythonhosted.org/packages/96/82/e33d5f4933d7a03327c0c43c65d575e5919d4974ffc026bc917a5f7b9f61/pydantic_core-2.41.5-cp39-cp39-musllinux_1_1_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "81454091be67ce9f469e81656f880f3506f6a5624121ec5eb3eab37d7581897d",
+          "md5": "30c0407931881bec53f541e3299fc0d2",
+          "sha256": "873e0d5b4fb9b89ef7c2d2a963ea7d02879d9da0da8d9d4933dee8ee86a8b460"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp39-cp39-win32.whl",
+        "has_sig": false,
+        "md5_digest": "30c0407931881bec53f541e3299fc0d2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 1990353,
+        "upload_time": "2025-11-04T13:42:33",
+        "upload_time_iso_8601": "2025-11-04T13:42:33.111951Z",
+        "url": "https://files.pythonhosted.org/packages/81/45/4091be67ce9f469e81656f880f3506f6a5624121ec5eb3eab37d7581897d/pydantic_core-2.41.5-cp39-cp39-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "448aa98aede18db6e9cd5d66bcacd8a409fcf8134204cdede2e7de35c5a2c5ef",
+          "md5": "38a5508b26f2846f2f8d020db974b838",
+          "sha256": "e4f4a984405e91527a0d62649ee21138f8e3d0ef103be488c1dc11a80d7f184b"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-cp39-cp39-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "38a5508b26f2846f2f8d020db974b838",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 2015698,
+        "upload_time": "2025-11-04T13:42:35",
+        "upload_time_iso_8601": "2025-11-04T13:42:35.484656Z",
+        "url": "https://files.pythonhosted.org/packages/44/8a/a98aede18db6e9cd5d66bcacd8a409fcf8134204cdede2e7de35c5a2c5ef/pydantic_core-2.41.5-cp39-cp39-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "117290fda5ee3b97e51c494938a4a44c3a35a9c96c19bba12372fb9c634d6f57",
+          "md5": "73eba5764df01e69b4856d94ca709b74",
+          "sha256": "b96d5f26b05d03cc60f11a7761a5ded1741da411e7fe0909e27a5e6a0cb7b034"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-graalpy311-graalpy242_311_native-macosx_10_12_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "73eba5764df01e69b4856d94ca709b74",
+        "packagetype": "bdist_wheel",
+        "python_version": "graalpy311",
+        "requires_python": ">=3.9",
+        "size": 2115441,
+        "upload_time": "2025-11-04T13:42:39",
+        "upload_time_iso_8601": "2025-11-04T13:42:39.557379Z",
+        "url": "https://files.pythonhosted.org/packages/11/72/90fda5ee3b97e51c494938a4a44c3a35a9c96c19bba12372fb9c634d6f57/pydantic_core-2.41.5-graalpy311-graalpy242_311_native-macosx_10_12_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "1f538942f884fa33f50794f119012dc6a1a02ac43a56407adaac20463df8e98f",
+          "md5": "c5a1e9bb984826ddba86e32d35706174",
+          "sha256": "634e8609e89ceecea15e2d61bc9ac3718caaaa71963717bf3c8f38bfde64242c"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-graalpy311-graalpy242_311_native-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "c5a1e9bb984826ddba86e32d35706174",
+        "packagetype": "bdist_wheel",
+        "python_version": "graalpy311",
+        "requires_python": ">=3.9",
+        "size": 1930291,
+        "upload_time": "2025-11-04T13:42:42",
+        "upload_time_iso_8601": "2025-11-04T13:42:42.169342Z",
+        "url": "https://files.pythonhosted.org/packages/1f/53/8942f884fa33f50794f119012dc6a1a02ac43a56407adaac20463df8e98f/pydantic_core-2.41.5-graalpy311-graalpy242_311_native-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "79c8ecb9ed9cd942bce09fc888ee960b52654fbdbede4ba6c2d6e0d3b1d8b49c",
+          "md5": "b0119a481d73aaf6278d9ddc4d5bf68d",
+          "sha256": "93e8740d7503eb008aa2df04d3b9735f845d43ae845e6dcd2be0b55a2da43cd2"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-graalpy311-graalpy242_311_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "b0119a481d73aaf6278d9ddc4d5bf68d",
+        "packagetype": "bdist_wheel",
+        "python_version": "graalpy311",
+        "requires_python": ">=3.9",
+        "size": 1948632,
+        "upload_time": "2025-11-04T13:42:44",
+        "upload_time_iso_8601": "2025-11-04T13:42:44.564412Z",
+        "url": "https://files.pythonhosted.org/packages/79/c8/ecb9ed9cd942bce09fc888ee960b52654fbdbede4ba6c2d6e0d3b1d8b49c/pydantic_core-2.41.5-graalpy311-graalpy242_311_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "2e1b687711069de7efa6af934e74f601e2a4307365e8fdc404703afc453eab26",
+          "md5": "281785887144ee942ef7944a1aaf6cfa",
+          "sha256": "f15489ba13d61f670dcc96772e733aad1a6f9c429cc27574c6cdaed82d0146ad"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-graalpy311-graalpy242_311_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "281785887144ee942ef7944a1aaf6cfa",
+        "packagetype": "bdist_wheel",
+        "python_version": "graalpy311",
+        "requires_python": ">=3.9",
+        "size": 2138905,
+        "upload_time": "2025-11-04T13:42:47",
+        "upload_time_iso_8601": "2025-11-04T13:42:47.156558Z",
+        "url": "https://files.pythonhosted.org/packages/2e/1b/687711069de7efa6af934e74f601e2a4307365e8fdc404703afc453eab26/pydantic_core-2.41.5-graalpy311-graalpy242_311_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "093259b0c7e63e277fa7911c2fc70ccfb45ce4b98991e7ef37110663437005af",
+          "md5": "aa763f73f1d4d343c355de0a2700df24",
+          "sha256": "7da7087d756b19037bc2c06edc6c170eeef3c3bafcb8f532ff17d64dc427adfd"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-graalpy312-graalpy250_312_native-macosx_10_12_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "aa763f73f1d4d343c355de0a2700df24",
+        "packagetype": "bdist_wheel",
+        "python_version": "graalpy312",
+        "requires_python": ">=3.9",
+        "size": 2110495,
+        "upload_time": "2025-11-04T13:42:49",
+        "upload_time_iso_8601": "2025-11-04T13:42:49.689495Z",
+        "url": "https://files.pythonhosted.org/packages/09/32/59b0c7e63e277fa7911c2fc70ccfb45ce4b98991e7ef37110663437005af/pydantic_core-2.41.5-graalpy312-graalpy250_312_native-macosx_10_12_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "aa8105e400037eaf55ad400bcd318c05bb345b57e708887f07ddb2d20e3f0e98",
+          "md5": "51ab8795a812359ab96cc653f4ffb70d",
+          "sha256": "aabf5777b5c8ca26f7824cb4a120a740c9588ed58df9b2d196ce92fba42ff8dc"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-graalpy312-graalpy250_312_native-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "51ab8795a812359ab96cc653f4ffb70d",
+        "packagetype": "bdist_wheel",
+        "python_version": "graalpy312",
+        "requires_python": ">=3.9",
+        "size": 1915388,
+        "upload_time": "2025-11-04T13:42:52",
+        "upload_time_iso_8601": "2025-11-04T13:42:52.215259Z",
+        "url": "https://files.pythonhosted.org/packages/aa/81/05e400037eaf55ad400bcd318c05bb345b57e708887f07ddb2d20e3f0e98/pydantic_core-2.41.5-graalpy312-graalpy250_312_native-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "6e0de3549b2399f71d56476b77dbf3cf8937cec5cd70536bdc0e374a421d0599",
+          "md5": "878be54d31497a2e7f351d54fb470e86",
+          "sha256": "c007fe8a43d43b3969e8469004e9845944f1a80e6acd47c150856bb87f230c56"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-graalpy312-graalpy250_312_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "878be54d31497a2e7f351d54fb470e86",
+        "packagetype": "bdist_wheel",
+        "python_version": "graalpy312",
+        "requires_python": ">=3.9",
+        "size": 1942879,
+        "upload_time": "2025-11-04T13:42:56",
+        "upload_time_iso_8601": "2025-11-04T13:42:56.483735Z",
+        "url": "https://files.pythonhosted.org/packages/6e/0d/e3549b2399f71d56476b77dbf3cf8937cec5cd70536bdc0e374a421d0599/pydantic_core-2.41.5-graalpy312-graalpy250_312_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "f70734573da085946b6a313d7c42f82f16e8920bfd730665de2d11c0c37a74b5",
+          "md5": "25dbb26afbff477791c320571c463fb7",
+          "sha256": "76d0819de158cd855d1cbb8fcafdf6f5cf1eb8e470abe056d5d161106e38062b"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-graalpy312-graalpy250_312_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "25dbb26afbff477791c320571c463fb7",
+        "packagetype": "bdist_wheel",
+        "python_version": "graalpy312",
+        "requires_python": ">=3.9",
+        "size": 2139017,
+        "upload_time": "2025-11-04T13:42:59",
+        "upload_time_iso_8601": "2025-11-04T13:42:59.471245Z",
+        "url": "https://files.pythonhosted.org/packages/f7/07/34573da085946b6a313d7c42f82f16e8920bfd730665de2d11c0c37a74b5/pydantic_core-2.41.5-graalpy312-graalpy250_312_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "e6b01a2aa41e3b5a4ba11420aba2d091b2d17959c8d1519ece3627c371951e73",
+          "md5": "e78f5eb7a3d41594c9daa576841e3a50",
+          "sha256": "b5819cd790dbf0c5eb9f82c73c16b39a65dd6dd4d1439dcdea7816ec9adddab8"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp310-pypy310_pp73-macosx_10_12_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "e78f5eb7a3d41594c9daa576841e3a50",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp310",
+        "requires_python": ">=3.9",
+        "size": 2103351,
+        "upload_time": "2025-11-04T13:43:02",
+        "upload_time_iso_8601": "2025-11-04T13:43:02.058487Z",
+        "url": "https://files.pythonhosted.org/packages/e6/b0/1a2aa41e3b5a4ba11420aba2d091b2d17959c8d1519ece3627c371951e73/pydantic_core-2.41.5-pp310-pypy310_pp73-macosx_10_12_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "a4ee31b1f0020baaf6d091c87900ae05c6aeae101fa4e188e1613c80e4f1ea31",
+          "md5": "eff6732eac26f3a1166a6f53fb06f36b",
+          "sha256": "5a4e67afbc95fa5c34cf27d9089bca7fcab4e51e57278d710320a70b956d1b9a"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp310-pypy310_pp73-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "eff6732eac26f3a1166a6f53fb06f36b",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp310",
+        "requires_python": ">=3.9",
+        "size": 1925363,
+        "upload_time": "2025-11-04T13:43:05",
+        "upload_time_iso_8601": "2025-11-04T13:43:05.159776Z",
+        "url": "https://files.pythonhosted.org/packages/a4/ee/31b1f0020baaf6d091c87900ae05c6aeae101fa4e188e1613c80e4f1ea31/pydantic_core-2.41.5-pp310-pypy310_pp73-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "e189ab8e86208467e467a80deaca4e434adac37b10a9d134cd2f99b28a01e483",
+          "md5": "492d0bed44c72dcb1e2da2f87aed4f54",
+          "sha256": "ece5c59f0ce7d001e017643d8d24da587ea1f74f6993467d85ae8a5ef9d4f42b"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp310-pypy310_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "492d0bed44c72dcb1e2da2f87aed4f54",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp310",
+        "requires_python": ">=3.9",
+        "size": 2135615,
+        "upload_time": "2025-11-04T13:43:08",
+        "upload_time_iso_8601": "2025-11-04T13:43:08.116075Z",
+        "url": "https://files.pythonhosted.org/packages/e1/89/ab8e86208467e467a80deaca4e434adac37b10a9d134cd2f99b28a01e483/pydantic_core-2.41.5-pp310-pypy310_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "990a99a53d06dd0348b2008f2f30884b34719c323f16c3be4e6cc1203b74a91d",
+          "md5": "7d748a9cd54d34b8271818cdc783b829",
+          "sha256": "16f80f7abe3351f8ea6858914ddc8c77e02578544a0ebc15b4c2e1a0e813b0b2"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp310-pypy310_pp73-manylinux_2_5_i686.manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "7d748a9cd54d34b8271818cdc783b829",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp310",
+        "requires_python": ">=3.9",
+        "size": 2175369,
+        "upload_time": "2025-11-04T13:43:12",
+        "upload_time_iso_8601": "2025-11-04T13:43:12.490159Z",
+        "url": "https://files.pythonhosted.org/packages/99/0a/99a53d06dd0348b2008f2f30884b34719c323f16c3be4e6cc1203b74a91d/pydantic_core-2.41.5-pp310-pypy310_pp73-manylinux_2_5_i686.manylinux1_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "6d9430ca3b73c6d485b9bb0bc66e611cff4a7138ff9736b7e66bcf0852151636",
+          "md5": "d79adbb215558e64d504797872d0b943",
+          "sha256": "33cb885e759a705b426baada1fe68cbb0a2e68e34c5d0d0289a364cf01709093"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp310-pypy310_pp73-musllinux_1_1_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "d79adbb215558e64d504797872d0b943",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp310",
+        "requires_python": ">=3.9",
+        "size": 2144218,
+        "upload_time": "2025-11-04T13:43:15",
+        "upload_time_iso_8601": "2025-11-04T13:43:15.431313Z",
+        "url": "https://files.pythonhosted.org/packages/6d/94/30ca3b73c6d485b9bb0bc66e611cff4a7138ff9736b7e66bcf0852151636/pydantic_core-2.41.5-pp310-pypy310_pp73-musllinux_1_1_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "875731b4f8e12680b739a91f472b5671294236b82586889ef764b5fbc6669238",
+          "md5": "535b17d7ebdb1c56daab31c8cf39a6bf",
+          "sha256": "c8d8b4eb992936023be7dee581270af5c6e0697a8559895f527f5b7105ecd36a"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp310-pypy310_pp73-musllinux_1_1_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "535b17d7ebdb1c56daab31c8cf39a6bf",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp310",
+        "requires_python": ">=3.9",
+        "size": 2329951,
+        "upload_time": "2025-11-04T13:43:18",
+        "upload_time_iso_8601": "2025-11-04T13:43:18.062129Z",
+        "url": "https://files.pythonhosted.org/packages/87/57/31b4f8e12680b739a91f472b5671294236b82586889ef764b5fbc6669238/pydantic_core-2.41.5-pp310-pypy310_pp73-musllinux_1_1_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "7d733c2c8edef77b8f7310e6fb012dbc4b8551386ed575b9eb6fb2506e28a7eb",
+          "md5": "4e66426485dfe3bd0ee175f9218e023c",
+          "sha256": "242a206cd0318f95cd21bdacff3fcc3aab23e79bba5cac3db5a841c9ef9c6963"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp310-pypy310_pp73-musllinux_1_1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "4e66426485dfe3bd0ee175f9218e023c",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp310",
+        "requires_python": ">=3.9",
+        "size": 2318428,
+        "upload_time": "2025-11-04T13:43:20",
+        "upload_time_iso_8601": "2025-11-04T13:43:20.679167Z",
+        "url": "https://files.pythonhosted.org/packages/7d/73/3c2c8edef77b8f7310e6fb012dbc4b8551386ed575b9eb6fb2506e28a7eb/pydantic_core-2.41.5-pp310-pypy310_pp73-musllinux_1_1_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "2f028559b1f26ee0d502c74f9cca5c0d2fd97e967e083e006bbbb4e97f3a043a",
+          "md5": "e11524a111f98f43db8ca9325884024b",
+          "sha256": "d3a978c4f57a597908b7e697229d996d77a6d3c94901e9edee593adada95ce1a"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp310-pypy310_pp73-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "e11524a111f98f43db8ca9325884024b",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp310",
+        "requires_python": ">=3.9",
+        "size": 2147009,
+        "upload_time": "2025-11-04T13:43:23",
+        "upload_time_iso_8601": "2025-11-04T13:43:23.286141Z",
+        "url": "https://files.pythonhosted.org/packages/2f/02/8559b1f26ee0d502c74f9cca5c0d2fd97e967e083e006bbbb4e97f3a043a/pydantic_core-2.41.5-pp310-pypy310_pp73-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "5f9b1b3f0e9f9305839d7e84912f9e8bfbd191ed1b1ef48083609f0dabde978c",
+          "md5": "6210dd868cc295ec7d3ccdbd42bc22bf",
+          "sha256": "b2379fa7ed44ddecb5bfe4e48577d752db9fc10be00a6b7446e9663ba143de26"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp311-pypy311_pp73-macosx_10_12_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "6210dd868cc295ec7d3ccdbd42bc22bf",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.9",
+        "size": 2101980,
+        "upload_time": "2025-11-04T13:43:25",
+        "upload_time_iso_8601": "2025-11-04T13:43:25.970718Z",
+        "url": "https://files.pythonhosted.org/packages/5f/9b/1b3f0e9f9305839d7e84912f9e8bfbd191ed1b1ef48083609f0dabde978c/pydantic_core-2.41.5-pp311-pypy311_pp73-macosx_10_12_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "a4edd71fefcb4263df0da6a85b5d8a7508360f2f2e9b3bf5814be9c8bccdccc1",
+          "md5": "fd3fb92c3f12cf623d69ee5e2971ce7c",
+          "sha256": "266fb4cbf5e3cbd0b53669a6d1b039c45e3ce651fd5442eff4d07c2cc8d66808"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp311-pypy311_pp73-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "fd3fb92c3f12cf623d69ee5e2971ce7c",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.9",
+        "size": 1923865,
+        "upload_time": "2025-11-04T13:43:28",
+        "upload_time_iso_8601": "2025-11-04T13:43:28.763431Z",
+        "url": "https://files.pythonhosted.org/packages/a4/ed/d71fefcb4263df0da6a85b5d8a7508360f2f2e9b3bf5814be9c8bccdccc1/pydantic_core-2.41.5-pp311-pypy311_pp73-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "ce3a626b38db460d675f873e4444b4bb030453bbe7b4ba55df821d026a0493c4",
+          "md5": "ab29d6d245e14f8f1fe872fb4bdc48b8",
+          "sha256": "58133647260ea01e4d0500089a8c4f07bd7aa6ce109682b1426394988d8aaacc"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "ab29d6d245e14f8f1fe872fb4bdc48b8",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.9",
+        "size": 2134256,
+        "upload_time": "2025-11-04T13:43:31",
+        "upload_time_iso_8601": "2025-11-04T13:43:31.710544Z",
+        "url": "https://files.pythonhosted.org/packages/ce/3a/626b38db460d675f873e4444b4bb030453bbe7b4ba55df821d026a0493c4/pydantic_core-2.41.5-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "83d98412d7f06f616bbc053d30cb4e5f76786af3221462ad5eee1f202021eb4e",
+          "md5": "e5c24c6f35729f38ab3f4f96b63a53c4",
+          "sha256": "287dad91cfb551c363dc62899a80e9e14da1f0e2b6ebde82c806612ca2a13ef1"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp311-pypy311_pp73-manylinux_2_5_i686.manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "e5c24c6f35729f38ab3f4f96b63a53c4",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.9",
+        "size": 2174762,
+        "upload_time": "2025-11-04T13:43:34",
+        "upload_time_iso_8601": "2025-11-04T13:43:34.744595Z",
+        "url": "https://files.pythonhosted.org/packages/83/d9/8412d7f06f616bbc053d30cb4e5f76786af3221462ad5eee1f202021eb4e/pydantic_core-2.41.5-pp311-pypy311_pp73-manylinux_2_5_i686.manylinux1_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "554c162d906b8e3ba3a99354e20faa1b49a85206c47de97a639510a0e673f5da",
+          "md5": "16658aa55177b04b735bfc1bb67b0697",
+          "sha256": "03b77d184b9eb40240ae9fd676ca364ce1085f203e1b1256f8ab9984dca80a84"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp311-pypy311_pp73-musllinux_1_1_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "16658aa55177b04b735bfc1bb67b0697",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.9",
+        "size": 2143141,
+        "upload_time": "2025-11-04T13:43:37",
+        "upload_time_iso_8601": "2025-11-04T13:43:37.701498Z",
+        "url": "https://files.pythonhosted.org/packages/55/4c/162d906b8e3ba3a99354e20faa1b49a85206c47de97a639510a0e673f5da/pydantic_core-2.41.5-pp311-pypy311_pp73-musllinux_1_1_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "1ff2f11dd73284122713f5f89fc940f370d035fa8e1e078d446b3313955157fe",
+          "md5": "025c47b8565ebd6cc255c1bd7bebca7a",
+          "sha256": "a668ce24de96165bb239160b3d854943128f4334822900534f2fe947930e5770"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp311-pypy311_pp73-musllinux_1_1_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "025c47b8565ebd6cc255c1bd7bebca7a",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.9",
+        "size": 2330317,
+        "upload_time": "2025-11-04T13:43:40",
+        "upload_time_iso_8601": "2025-11-04T13:43:40.406535Z",
+        "url": "https://files.pythonhosted.org/packages/1f/f2/f11dd73284122713f5f89fc940f370d035fa8e1e078d446b3313955157fe/pydantic_core-2.41.5-pp311-pypy311_pp73-musllinux_1_1_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "09f83baa3202ec3da98a284a56afdf1ba69976e4af7172488887e5b2b20591a9"
+        },
+        "digests": {
+          "blake2b_256": "889db06ca6acfe4abb296110fb1273a4d848a0bfb2ff65f3ee92127b3244e16b",
+          "md5": "64242987b0c20a58e995328a0e717926",
+          "sha256": "f14f8f046c14563f8eb3f45f499cc658ab8d10072961e07225e507adb700e93f"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp311-pypy311_pp73-musllinux_1_1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "64242987b0c20a58e995328a0e717926",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.9",
+        "size": 2316992,
+        "upload_time": "2025-11-04T13:43:43",
+        "upload_time_iso_8601": "2025-11-04T13:43:43.602444Z",
+        "url": "https://files.pythonhosted.org/packages/88/9d/b06ca6acfe4abb296110fb1273a4d848a0bfb2ff65f3ee92127b3244e16b/pydantic_core-2.41.5-pp311-pypy311_pp73-musllinux_1_1_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "131f371cd30e6de6f405ed616d59f1e427b0cef22ad92d7c39e527ed4c0184a9"
+        },
+        "digests": {
+          "blake2b_256": "36c7cfc8e811f061c841d7990b0201912c3556bfeb99cdcb7ed24adc8d6f8704",
+          "md5": "7e8dd50aa0f6d3dc39f7410500eb52fa",
+          "sha256": "56121965f7a4dc965bff783d70b907ddf3d57f6eba29b6d2e5dabfaf07799c51"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5-pp311-pypy311_pp73-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "7e8dd50aa0f6d3dc39f7410500eb52fa",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.9",
+        "size": 2145302,
+        "upload_time": "2025-11-04T13:43:46",
+        "upload_time_iso_8601": "2025-11-04T13:43:46.640880Z",
+        "url": "https://files.pythonhosted.org/packages/36/c7/cfc8e811f061c841d7990b0201912c3556bfeb99cdcb7ed24adc8d6f8704/pydantic_core-2.41.5-pp311-pypy311_pp73-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "717023b021c950c2addd24ec408e9ab05d59b035b39d97cdc1130e1bce647bb6",
+          "md5": "54a367c4549ec48a8b3a63d38e821506",
+          "sha256": "08daa51ea16ad373ffd5e7606252cc32f07bc72b28284b6bc9c6df804816476e"
+        },
+        "downloads": -1,
+        "filename": "pydantic_core-2.41.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "54a367c4549ec48a8b3a63d38e821506",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.9",
+        "size": 460952,
+        "upload_time": "2025-11-04T13:43:49",
+        "upload_time_iso_8601": "2025-11-04T13:43:49.098415Z",
+        "url": "https://files.pythonhosted.org/packages/71/70/23b021c950c2addd24ec408e9ab05d59b035b39d97cdc1130e1bce647bb6/pydantic_core-2.41.5.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "pydantic-core",
+    "version": "2.41.5",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "0177272f88ab8312479336e1d777f6b124537d47f2123f89cb37e0accea97f90",
+      "01a3d0ab748ee531f4ea6c3e48ad9dac84ddba4b0d82291f87248f2f9de8d740",
+      "0384e2e1021894b1ff5a786dbf94771e2986ebe2869533874d7e43bc79c6f504",
+      "03b77d184b9eb40240ae9fd676ca364ce1085f203e1b1256f8ab9984dca80a84",
+      "03ca43e12fab6023fc79d28ca6b39b05f794ad08ec2feccc59a339b02f2b3d33",
+      "05a2c8852530ad2812cb7914dc61a1125dc4e06252ee98e5638a12da6cc6fb6c",
+      "070259a8818988b9a84a449a2a7337c7f430a22acc0859c6b110aa7212a6d9c0",
+      "08daa51ea16ad373ffd5e7606252cc32f07bc72b28284b6bc9c6df804816476e",
+      "0cbaad15cb0c90aa221d43c00e77bb33c93e8d36e0bf74760cd00e732d10a6a0",
+      "100baa204bb412b74fe285fb0f3a385256dad1d1879f0a5cb1499ed2e83d132a",
+      "112e305c3314f40c93998e567879e887a3160bb8689ef3d2c04b6cc62c33ac34",
+      "16f80f7abe3351f8ea6858914ddc8c77e02578544a0ebc15b4c2e1a0e813b0b2",
+      "1746d4a3d9a794cacae06a5eaaccb4b8643a131d45fbc9af23e353dc0a5ba5c3",
+      "1962293292865bca8e54702b08a4f26da73adc83dd1fcf26fbc875b35d81c815",
+      "1d1d9764366c73f996edd17abb6d9d7649a7eb690006ab6adbda117717099b14",
+      "1f8d33a7f4d5a7889e60dc39856d76d09333d8a6ed0f5f1190635cbec70ec4ba",
+      "22f0fb8c1c583a3b6f24df2470833b40207e907b90c928cc8d3594b76f874375",
+      "239edca560d05757817c13dc17c50766136d21f7cd0fac50295499ae24f90fdf",
+      "242a206cd0318f95cd21bdacff3fcc3aab23e79bba5cac3db5a841c9ef9c6963",
+      "25e1c2af0fce638d5f1988b686f3b3ea8cd7de5f244ca147c777769e798a9cd1",
+      "266fb4cbf5e3cbd0b53669a6d1b039c45e3ce651fd5442eff4d07c2cc8d66808",
+      "2782c870e99878c634505236d81e5443092fba820f0373997ff75f90f68cd553",
+      "287dad91cfb551c363dc62899a80e9e14da1f0e2b6ebde82c806612ca2a13ef1",
+      "29452c56df2ed968d18d7e21f4ab0ac55e71dc59524872f6fc57dcf4a3249ed2",
+      "299e0a22e7ae2b85c1a57f104538b2656e8ab1873511fd718a1c1c6f149b77b5",
+      "2a5e06546e19f24c6a96a129142a75cee553cc018ffee48a460059b1185f4470",
+      "2b761d210c9ea91feda40d25b4efe82a1707da2ef62901466a42492c028553a2",
+      "2c010c6ded393148374c0f6f0bf89d206bf3217f201faa0635dcd56bd1520f6b",
+      "2ff4321e56e879ee8d2a879501c8e469414d948f4aba74a2d4593184eb326660",
+      "3006c3dd9ba34b0c094c544c6006cc79e87d8612999f1a5d43b769b89181f23c",
+      "33cb885e759a705b426baada1fe68cbb0a2e68e34c5d0d0289a364cf01709093",
+      "346285d28e4c8017da95144c7f3acd42740d637ff41946af5ce6e5e420502dd5",
+      "34a64bc3441dc1213096a20fe27e8e128bd3ff89921706e83c0b1ac971276594",
+      "35b44f37a3199f771c3eaa53051bc8a70cd7b54f333531c59e29fd4db5d15008",
+      "378bec5c66998815d224c9ca994f1e14c0c21cb95d2f52b6021cc0b2a58f2a5a",
+      "3f37a19d7ebcdd20b96485056ba9e8b304e27d9904d233d7b1015db320e51f0a",
+      "3f84d5c1b4ab906093bdc1ff10484838aca54ef08de4afa9de0f5f14d69639cd",
+      "4009935984bd36bd2c774e13f9a09563ce8de4abaa7226f5108262fa3e637284",
+      "406bf18d345822d6c21366031003612b9c77b3e29ffdb0f612367352aab7d586",
+      "4819fa52133c9aa3c387b3328f25c1facc356491e6135b459f1de698ff64d869",
+      "482c982f814460eabe1d3bb0adfdc583387bd4691ef00b90575ca0d2b6fe2294",
+      "4bc36bbc0b7584de96561184ad7f012478987882ebf9f9c389b23f432ea3d90f",
+      "506d766a8727beef16b7adaeb8ee6217c64fc813646b424d0804d67c16eddb66",
+      "56121965f7a4dc965bff783d70b907ddf3d57f6eba29b6d2e5dabfaf07799c51",
+      "58133647260ea01e4d0500089a8c4f07bd7aa6ce109682b1426394988d8aaacc",
+      "5921a4d3ca3aee735d9fd163808f5e8dd6c6972101e4adbda9a4667908849b97",
+      "5a4e67afbc95fa5c34cf27d9089bca7fcab4e51e57278d710320a70b956d1b9a",
+      "5cb1b2f9742240e4bb26b652a5aeb840aa4b417c7748b6f8387927bc6e45e40d",
+      "62de39db01b8d593e45871af2af9e497295db8d73b085f6bfd0b18c83c70a8f9",
+      "634e8609e89ceecea15e2d61bc9ac3718caaaa71963717bf3c8f38bfde64242c",
+      "63510af5e38f8955b8ee5687740d6ebf7c2a0886d15a6d65c32814613681bc07",
+      "650ae77860b45cfa6e2cdafc42618ceafab3a2d9a3811fcfbd3bbf8ac3c40d36",
+      "6561e94ba9dacc9c61bce40e2d6bdc3bfaa0259d3ff36ace3b1e6901936d2e3e",
+      "65840751b72fbfd82c3c640cff9284545342a4f1eb1586ad0636955b261b0b05",
+      "6cb58b9c66f7e4179a2d5e0f849c48eff5c1fca560994d6eb6543abf955a149e",
+      "6f52298fbd394f9ed112d56f3d11aabd0d5bd27beb3084cc3d8ad069483b8941",
+      "707625ef0983fcfb461acfaf14de2067c5942c6bb0f3b4c99158bed6fedd3cf3",
+      "72f6c8b11857a856bcfa48c86f5368439f74453563f951e473514579d44aa612",
+      "753e230374206729bf0a807954bcc6c150d3743928a73faffee51ac6557a03c3",
+      "76d0819de158cd855d1cbb8fcafdf6f5cf1eb8e470abe056d5d161106e38062b",
+      "76ee27c6e9c7f16f47db7a94157112a2f3a00e958bc626e2f4ee8bec5c328fbe",
+      "77b63866ca88d804225eaa4af3e664c5faf3568cea95360d21f4725ab6e07146",
+      "79ec52ec461e99e13791ec6508c722742ad745571f234ea6255bed38c6480f11",
+      "7b93a4d08587e2b7e7882de461e82b6ed76d9026ce91ca7915e740ecc7855f60",
+      "7da7087d756b19037bc2c06edc6c170eeef3c3bafcb8f532ff17d64dc427adfd",
+      "7f3bf998340c6d4b0c9a2f02d6a400e51f123b59565d74dc60d252ce888c260b",
+      "80aa89cad80b32a912a65332f64a4450ed00966111b6615ca6816153d3585a8c",
+      "8566def80554c3faa0e65ac30ab0932b9e3a5cd7f8323764303d468e5c37595a",
+      "873e0d5b4fb9b89ef7c2d2a963ea7d02879d9da0da8d9d4933dee8ee86a8b460",
+      "88942d3a3dff3afc8288c21e565e476fc278902ae4d6d134f1eeda118cc830b1",
+      "8bfeaf8735be79f225f3fefab7f941c712aaca36f1128c9d7e2352ee1aa87bdf",
+      "8e7c86f27c585ef37c35e56a96363ab8de4e549a95512445b85c96d3e2f7c1bf",
+      "915c3d10f81bec3a74fbd4faebe8391013ba61e5a1a8d48c4455b923bdda7858",
+      "93e8740d7503eb008aa2df04d3b9735f845d43ae845e6dcd2be0b55a2da43cd2",
+      "941103c9be18ac8daf7b7adca8228f8ed6bb7a1849020f643b3a14d15b1924d9",
+      "97aeba56665b4c3235a0e52b2c2f5ae9cd071b8a8310ad27bddb3f7fb30e9aa2",
+      "a39455728aabd58ceabb03c90e12f71fd30fa69615760a075b9fec596456ccc3",
+      "a3a52f6156e73e7ccb0f8cced536adccb7042be67cb45f9562e12b319c119da6",
+      "a668ce24de96165bb239160b3d854943128f4334822900534f2fe947930e5770",
+      "a75dafbf87d6276ddc5b2bf6fae5254e3d0876b626eb24969a574fff9149ee5d",
+      "aabf5777b5c8ca26f7824cb4a120a740c9588ed58df9b2d196ce92fba42ff8dc",
+      "aec5cf2fd867b4ff45b9959f8b20ea3993fc93e63c7363fe6851424c8a7e7c23",
+      "b2379fa7ed44ddecb5bfe4e48577d752db9fc10be00a6b7446e9663ba143de26",
+      "b4ececa40ac28afa90871c2cc2b9ffd2ff0bf749380fbdf57d165fd23da353aa",
+      "b5819cd790dbf0c5eb9f82c73c16b39a65dd6dd4d1439dcdea7816ec9adddab8",
+      "b74557b16e390ec12dca509bce9264c3bbd128f8a2c376eaa68003d7f327276d",
+      "b80aa5095cd3109962a298ce14110ae16b8c1aece8b72f9dafe81cf597ad80b3",
+      "b93590ae81f7010dbe380cdeab6f515902ebcbefe0b9327cc4804d74e93ae69d",
+      "b96d5f26b05d03cc60f11a7761a5ded1741da411e7fe0909e27a5e6a0cb7b034",
+      "bd3d54f38609ff308209bd43acea66061494157703364ae40c951f83ba99a1a9",
+      "bfea2a5f0b4d8d43adf9d7b8bf019fb46fdd10a2e5cde477fbcb9d1fa08c68e1",
+      "c007fe8a43d43b3969e8469004e9845944f1a80e6acd47c150856bb87f230c56",
+      "c1df3d34aced70add6f867a8cf413e299177e0c22660cc767218373d0779487b",
+      "c23e27686783f60290e36827f9c626e63154b82b116d7fe9adba1fda36da706c",
+      "c8d8b4eb992936023be7dee581270af5c6e0697a8559895f527f5b7105ecd36a",
+      "c9e19dd6e28fdcaa5a1de679aec4141f691023916427ef9bae8584f9c2fb3b0e",
+      "d0d2568a8c11bf8225044aa94409e21da0cb09dcdafe9ecd10250b2baad531a9",
+      "d38548150c39b74aeeb0ce8ee1d8e82696f4a4e16ddc6de7b1d8823f7de4b9b5",
+      "d3a978c4f57a597908b7e697229d996d77a6d3c94901e9edee593adada95ce1a",
+      "d5160812ea7a8a2ffbe233d8da666880cad0cbaf5d4de74ae15c313213d62556",
+      "dc799088c08fa04e43144b164feb0c13f9a0bc40503f8df3e9fde58a3c0c101e",
+      "df3959765b553b9440adfd3c795617c352154e497a4eaf3752555cfb5da8fc49",
+      "dfa8a0c812ac681395907e71e1274819dec685fec28273a28905df579ef137e2",
+      "e25c479382d26a2a41b7ebea1043564a937db462816ea07afa8a44c0866d52f9",
+      "e4f4a984405e91527a0d62649ee21138f8e3d0ef103be488c1dc11a80d7f184b",
+      "e536c98a7626a98feb2d3eaf75944ef6f3dbee447e1f841eae16f2f0a72d8ddc",
+      "e56ba91f47764cc14f1daacd723e3e82d1a89d783f0f5afe9c364b8bb491ccdb",
+      "e672ba74fbc2dc8eea59fb6d4aed6845e6905fc2a8afe93175d94a83ba2a01a0",
+      "e7b576130c69225432866fe2f4a469a85a54ade141d96fd396dffcf607b558f8",
+      "e8465ab91a4bd96d36dde3263f06caa6a8a6019e4113f24dc753d79a8b3a3f82",
+      "e96cea19e34778f8d59fe40775a7a574d95816eb150850a85a7a4c8f4b94ac69",
+      "ece5c59f0ce7d001e017643d8d24da587ea1f74f6993467d85ae8a5ef9d4f42b",
+      "eceb81a8d74f9267ef4081e246ffd6d129da5d87e37a77c9bde550cb04870c1c",
+      "ed2e99c456e3fadd05c991f8f437ef902e00eedf34320ba2b0842bd1c3ca3a75",
+      "f0cd744688278965817fd0839c4a4116add48d23890d468bc436f78beb28abf5",
+      "f14f8f046c14563f8eb3f45f499cc658ab8d10072961e07225e507adb700e93f",
+      "f15489ba13d61f670dcc96772e733aad1a6f9c429cc27574c6cdaed82d0146ad",
+      "f31d95a179f8d64d90f6831d71fa93290893a33148d890ba15de25642c5d075b",
+      "f41a7489d32336dbf2199c8c0a215390a751c5b014c2c1c5366e817202e9cdf7",
+      "f41eb9797986d6ebac5e8edff36d5cef9de40def462311b3eb3eeded1431e425",
+      "f547144f2966e1e16ae626d8ce72b4cfa0caedc7fa28052001c94fb2fcaa1c52"
+    ],
+    "retrieved_at": "2026-11-28T12:09:58+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": "MIT",
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 3 - Alpha",
+        "Framework :: Pydantic",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Information Technology",
+        "Operating System :: MacOS",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: GraalPy",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Programming Language :: Rust",
+        "Typing :: Typed"
+      ],
+      "requires_python": ">=3.9",
+      "project_urls": {
+        "Funding": "https://github.com/sponsors/samuelcolvin",
+        "Homepage": "https://github.com/pydantic/pydantic-core",
+        "Source": "https://github.com/pydantic/pydantic-core"
+      },
+      "home_page": "https://github.com/pydantic/pydantic-core",
+      "summary": "Core functionality for Pydantic validation and serialization",
+      "author": "Samuel Colvin <s@muelcolvin.com>, Adrian Garcia Badaracco <1755071+adriangb@users.noreply.github.com>, David Montague <david@pydantic.dev>, David Hewitt <mail@davidhewitt.dev>, Sydney Runkle <sydneymarierunkle@gmail.com>, Victorien Plot <contact@vctrn.dev>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "pydantic_core-2.41.5-cp311-cp311-win_amd64.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "pydantic_core-2.41.5-cp311-cp311-win_amd64.whl",
+        "url": "https://files.pythonhosted.org/packages/11/66/f14d1d978ea94d1bc21fc98fcf570f9542fe55bfcc40269d4e1a21c19bf7/pydantic_core-2.41.5-cp311-cp311-win_amd64.whl",
+        "packagetype": "bdist_wheel",
+        "size": 2011305,
+        "sha256_pypi": "76ee27c6e9c7f16f47db7a94157112a2f3a00e958bc626e2f4ee8bec5c328fbe",
+        "sha256_verified": "76ee27c6e9c7f16f47db7a94157112a2f3a00e958bc626e2f4ee8bec5c328fbe",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "pydantic_core-2.41.5-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/11/66/f14d1d978ea94d1bc21fc98fcf570f9542fe55bfcc40269d4e1a21c19bf7/pydantic_core-2.41.5-cp311-cp311-win_amd64.whl",
+      "packagetype": "bdist_wheel",
+      "size": 2011305,
+      "sha256_pypi": "76ee27c6e9c7f16f47db7a94157112a2f3a00e958bc626e2f4ee8bec5c328fbe",
+      "sha256_verified": "76ee27c6e9c7f16f47db7a94157112a2f3a00e958bc626e2f4ee8bec5c328fbe",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "pydantic_core-2.41.5-cp311-cp311-win_amd64.whl::pydantic_core-2.41.5.dist-info/licenses/LICENSE": {
+        "saved_as": "pydantic_core-2.41.5.dist-info_licenses_LICENSE",
+        "sha256": "fbe7f615f18d135c07000e5a86325db27f42c7729699ef166ac1f7a3f4586bf4",
+        "bytes": 1101,
+        "from_artifact": "pydantic_core-2.41.5-cp311-cp311-win_amd64.whl",
+        "artifact_sha256": "76ee27c6e9c7f16f47db7a94157112a2f3a00e958bc626e2f4ee8bec5c328fbe"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

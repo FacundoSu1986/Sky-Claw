@@ -1,0 +1,3535 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": "lxml dev team",
+      "author_email": "lxml@lxml.de",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Information Technology",
+        "Operating System :: OS Independent",
+        "Programming Language :: C",
+        "Programming Language :: Cython",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Topic :: Text Processing :: Markup :: HTML",
+        "Topic :: Text Processing :: Markup :: XML"
+      ],
+      "description": "lxml is a Pythonic, mature binding for the libxml2 and libxslt libraries.\nIt provides safe and convenient access to these libraries using the\nElementTree API.\n\nIt extends the ElementTree API significantly to offer support for XPath,\nRelaxNG, XML Schema, XSLT, C14N and much more.\n\nTo contact the project, go to the `project home page <https://lxml.de/>`_\nor see our bug tracker at https://launchpad.net/lxml\n\nIn case you want to use the current in-development version of lxml,\nyou can get it from the github repository at\nhttps://github.com/lxml/lxml .  Note that this requires Cython to\nbuild the sources, see the build instructions on the project home page.\n\n\nAfter an official release of a new stable series, bug fixes may become available at\nhttps://github.com/lxml/lxml/tree/lxml-6.1 .\nRunning ``pip install https://github.com/lxml/lxml/archive/refs/heads/lxml-6.1.tar.gz``\nwill install the unreleased branch state as soon as a maintenance branch has been established.\nNote that this requires Cython to be installed at an appropriate version for the build.\n\n6.1.1 (2026-05-18)\n==================\n\nBugs fixed\n----------\n\n* The known link attributes in ``lxml.html.defs.link_attrs`` were missing ``xlink:href``,\n  which can be used for URL bypass attacks in embedded SVG/MathML/etc. content.\n  https://github.com/fedora-python/lxml_html_clean/security/advisories/GHSA-4jhm-jv67-739f\n\n* The Linux wheels use a patched libxslt 1.1.43, fixing CVE-2025-7424 and CVE-2025-11731.\n\n* The Windows wheels use libxslt 1.1.45, fixing CVE-2025-7424 and CVE-2025-11731.\n\n\n",
+      "description_content_type": null,
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": [
+        "Author",
+        "Author-Email",
+        "Classifier",
+        "Description",
+        "Home-Page",
+        "License",
+        "License-File",
+        "Maintainer",
+        "Maintainer-Email",
+        "Project-Url",
+        "Provides-Extra",
+        "Requires-Python",
+        "Summary"
+      ],
+      "home_page": "https://lxml.de/",
+      "keywords": null,
+      "license": "BSD-3-Clause",
+      "license_expression": null,
+      "license_files": [
+        "LICENSE.txt",
+        "LICENSES.txt"
+      ],
+      "maintainer": "lxml dev team",
+      "maintainer_email": "lxml@lxml.de",
+      "name": "lxml",
+      "package_url": "https://pypi.org/project/lxml/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/lxml/",
+      "project_urls": {
+        "Bug Tracker": "https://bugs.launchpad.net/lxml",
+        "Homepage": "https://lxml.de/",
+        "Source": "https://github.com/lxml/lxml"
+      },
+      "provides_extra": [
+        "source",
+        "cssselect",
+        "html5",
+        "htmlsoup",
+        "html-clean"
+      ],
+      "release_url": "https://pypi.org/project/lxml/6.1.1/",
+      "requires_dist": [
+        "cssselect>=0.7; extra == \"cssselect\"",
+        "html5lib; extra == \"html5\"",
+        "BeautifulSoup4; extra == \"htmlsoup\"",
+        "lxml_html_clean; extra == \"html-clean\""
+      ],
+      "requires_python": ">=3.8",
+      "summary": "Powerful and Pythonic XML processing library combining libxml2/libxslt with the ElementTree API.",
+      "version": "6.1.1",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 44257714,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "faassen"
+        },
+        {
+          "role": "Owner",
+          "user": "scoder"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "12dadbe4dfc01ac226fb0504fad035f4d69f3202f3502e20e68537631daddd96",
+          "md5": "46e19e9183d6dc8dc4f24b3a69c514ab",
+          "sha256": "09dd5b7075dc2f7709654a46543ba1ea3c2e217b2ed8fbd413a8a945a0f40f60"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-macosx_10_9_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "46e19e9183d6dc8dc4f24b3a69c514ab",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 8541124,
+        "upload_time": "2026-05-18T19:17:11",
+        "upload_time_iso_8601": "2026-05-18T19:17:11.589326Z",
+        "url": "https://files.pythonhosted.org/packages/12/da/dbe4dfc01ac226fb0504fad035f4d69f3202f3502e20e68537631daddd96/lxml-6.1.1-cp310-cp310-macosx_10_9_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "7820f7095ed9fc2c025f9cfe71cc6ec9f1feb05624edc1812423b5f1aecf3d4b",
+          "md5": "e9acdccf835f65767e680ba489e02266",
+          "sha256": "f6ac4ef4d82dff54670227a69c67782ae0b811b5cf6b17954f1e8f7502fc0d1d"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "e9acdccf835f65767e680ba489e02266",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 4602783,
+        "upload_time": "2026-05-18T19:17:20",
+        "upload_time_iso_8601": "2026-05-18T19:17:20.888943Z",
+        "url": "https://files.pythonhosted.org/packages/78/20/f7095ed9fc2c025f9cfe71cc6ec9f1feb05624edc1812423b5f1aecf3d4b/lxml-6.1.1-cp310-cp310-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "4aa465c63ca98bd129f6cff7b8c2fa48953ab058cc6005b541354e7dd54d8000",
+          "md5": "3ac2157091ae6fd108c8d26f7d1ced55",
+          "sha256": "556e94a63c9b04716f8e4de2abb65775061f846e89331b6c5be79183a24f98ea"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "3ac2157091ae6fd108c8d26f7d1ced55",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 5002687,
+        "upload_time": "2026-05-18T19:17:01",
+        "upload_time_iso_8601": "2026-05-18T19:17:01.738156Z",
+        "url": "https://files.pythonhosted.org/packages/4a/a4/65c63ca98bd129f6cff7b8c2fa48953ab058cc6005b541354e7dd54d8000/lxml-6.1.1-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "961dab7a5c4b5a394d98a94e2d0fc67bab8297597426770dd4978370fbdaf531",
+          "md5": "38027e4f212ee5666bf22adcaa8ea3e0",
+          "sha256": "5c6bf403fbb3b3e348a561a5f4f0b9961835657981c802a1df03653eef8a9074"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "38027e4f212ee5666bf22adcaa8ea3e0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 5155099,
+        "upload_time": "2026-05-18T19:17:05",
+        "upload_time_iso_8601": "2026-05-18T19:17:05.159337Z",
+        "url": "https://files.pythonhosted.org/packages/96/1d/ab7a5c4b5a394d98a94e2d0fc67bab8297597426770dd4978370fbdaf531/lxml-6.1.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "d0b107603bfeeb891a2596d5c2a68f7d2f70f7d11c841ebe391412c69c2857b0",
+          "md5": "6462ff94e26a19616890f1a82e1a652f",
+          "sha256": "1dde6131244bba38a17c745836ba190bc753fd73c9291666287fd0a3fa3dcf30"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "6462ff94e26a19616890f1a82e1a652f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 5057225,
+        "upload_time": "2026-05-18T19:17:08",
+        "upload_time_iso_8601": "2026-05-18T19:17:08.117312Z",
+        "url": "https://files.pythonhosted.org/packages/d0/b1/07603bfeeb891a2596d5c2a68f7d2f70f7d11c841ebe391412c69c2857b0/lxml-6.1.1-cp310-cp310-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "7a16cb391ee4b90186fa16d9ebcbe3ea96c71b8da3b0686386c8dcbcc3c67d44",
+          "md5": "3ddf622bc521288512fc51ebbe169e8d",
+          "sha256": "98fc784c2c1440667aeedf8465bdfe10208acf0ead656a2c68627299f546b315"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3ddf622bc521288512fc51ebbe169e8d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 5287643,
+        "upload_time": "2026-05-18T19:17:11",
+        "upload_time_iso_8601": "2026-05-18T19:17:11.507848Z",
+        "url": "https://files.pythonhosted.org/packages/7a/16/cb391ee4b90186fa16d9ebcbe3ea96c71b8da3b0686386c8dcbcc3c67d44/lxml-6.1.1-cp310-cp310-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "ebd6b619717f918fd76747448fdbaee0e769edbc70e659b5b5d0112b7020b7a3",
+          "md5": "84382d0463cf2016789493bdd5619e90",
+          "sha256": "add8cf6ddf9a65116119a28ece0f7886e30af27ba724a7594305f1d1b58a92a1"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "84382d0463cf2016789493bdd5619e90",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 5412445,
+        "upload_time": "2026-05-18T19:17:22",
+        "upload_time_iso_8601": "2026-05-18T19:17:22.182040Z",
+        "url": "https://files.pythonhosted.org/packages/eb/d6/b619717f918fd76747448fdbaee0e769edbc70e659b5b5d0112b7020b7a3/lxml-6.1.1-cp310-cp310-manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "c68012bc5390ac0a3edeb579d9535e5049a5dda663438728e179d52fb319c33a",
+          "md5": "e0247d7dd0b3606ff182617ded7a6815",
+          "sha256": "cf9d57306d848218f3601fee7601fab1a327c942d56e2e97610583cb4dd74206"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-manylinux_2_31_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "e0247d7dd0b3606ff182617ded7a6815",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 4770864,
+        "upload_time": "2026-05-18T19:17:26",
+        "upload_time_iso_8601": "2026-05-18T19:17:26.851685Z",
+        "url": "https://files.pythonhosted.org/packages/c6/80/12bc5390ac0a3edeb579d9535e5049a5dda663438728e179d52fb319c33a/lxml-6.1.1-cp310-cp310-manylinux_2_31_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "0b596500c09da3137f54f020e908d81cfc5ee3e8888e908fd380207afad7c2e6",
+          "md5": "9437962f48a53278060136238dcf9c62",
+          "sha256": "88136950da4d13c318bde414ce10219931937851327f44328f2df4d2c4614067"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "9437962f48a53278060136238dcf9c62",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 5359594,
+        "upload_time": "2026-05-18T19:17:32",
+        "upload_time_iso_8601": "2026-05-18T19:17:32.527659Z",
+        "url": "https://files.pythonhosted.org/packages/0b/59/6500c09da3137f54f020e908d81cfc5ee3e8888e908fd380207afad7c2e6/lxml-6.1.1-cp310-cp310-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "f29bf64b4cc6b7ebcf75d95af3cde934d254b5f2f10d4163928d838d86b6eb48",
+          "md5": "7b3b4e694b6bc3cc705ab77af84997ed",
+          "sha256": "cecdd5dfdc87b1fd87dbf81d4b037a544f47f4c744200a67013771682d67686a"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "7b3b4e694b6bc3cc705ab77af84997ed",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 5107713,
+        "upload_time": "2026-05-18T19:17:04",
+        "upload_time_iso_8601": "2026-05-18T19:17:04.402748Z",
+        "url": "https://files.pythonhosted.org/packages/f2/9b/f64b4cc6b7ebcf75d95af3cde934d254b5f2f10d4163928d838d86b6eb48/lxml-6.1.1-cp310-cp310-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "1619c7388ad5d3a72315d2832dc1458cbf4f2af7f2b990b606ff4876efd04511",
+          "md5": "6b8bcda23eeed370964b9e111fe603b3",
+          "sha256": "cd312b9692e831d2ffcad61eab31d91d4b4655a962e61de8fb410472cbcd37aa"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "6b8bcda23eeed370964b9e111fe603b3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 4803973,
+        "upload_time": "2026-05-18T19:17:06",
+        "upload_time_iso_8601": "2026-05-18T19:17:06.545034Z",
+        "url": "https://files.pythonhosted.org/packages/16/19/c7388ad5d3a72315d2832dc1458cbf4f2af7f2b990b606ff4876efd04511/lxml-6.1.1-cp310-cp310-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "3f2276197f0bbf165f0b9e75be59be4997e5259cde973f12f098c1b54c7f5d60",
+          "md5": "1c89daa61e0796072fb37c37f2371625",
+          "sha256": "5b7328b46d49fc9477d91ae8f6d55340347d827b7734ba3ea33faae0efef1383"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-musllinux_1_2_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "1c89daa61e0796072fb37c37f2371625",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 5349925,
+        "upload_time": "2026-05-18T19:17:09",
+        "upload_time_iso_8601": "2026-05-18T19:17:09.743063Z",
+        "url": "https://files.pythonhosted.org/packages/3f/22/76197f0bbf165f0b9e75be59be4997e5259cde973f12f098c1b54c7f5d60/lxml-6.1.1-cp310-cp310-musllinux_1_2_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "2452d2a0cfeccb9bcdc47c7ee05cdae5d69b48c9acf20997790a6338bb0d0b3b",
+          "md5": "53d1ec7fb785bd401dcd8c8a95e22b65",
+          "sha256": "37a58976370f36d9329d118ad0b953c5aeb9119ac9c6a4e258942a225d0573a1"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "53d1ec7fb785bd401dcd8c8a95e22b65",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 5309825,
+        "upload_time": "2026-05-18T19:17:13",
+        "upload_time_iso_8601": "2026-05-18T19:17:13.831053Z",
+        "url": "https://files.pythonhosted.org/packages/24/52/d2a0cfeccb9bcdc47c7ee05cdae5d69b48c9acf20997790a6338bb0d0b3b/lxml-6.1.1-cp310-cp310-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "194ab30944266776c2f49749ef2445aa7e78898194134b80ad776386f61b56ae",
+          "md5": "67234c618b2e1636e642718209e25829",
+          "sha256": "cea3f4c1af79af13cdb2da0c028111d8f8522d4f22a000c82385535f24e5cf3a"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-win32.whl",
+        "has_sig": false,
+        "md5_digest": "67234c618b2e1636e642718209e25829",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 3598402,
+        "upload_time": "2026-05-18T19:17:08",
+        "upload_time_iso_8601": "2026-05-18T19:17:08.210277Z",
+        "url": "https://files.pythonhosted.org/packages/19/4a/b30944266776c2f49749ef2445aa7e78898194134b80ad776386f61b56ae/lxml-6.1.1-cp310-cp310-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "9e9733691c66a4d7ec1a5a98e7c909a5b83ee45c7f7ba4cf92b1c4cf26e98079",
+          "md5": "9aab770b48d55367aea22f4baf36278d",
+          "sha256": "3abf332af33a74288675d936fe861fd4344da0dd6622193fbc4f2bfbb35536b5"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "9aab770b48d55367aea22f4baf36278d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 4021295,
+        "upload_time": "2026-05-18T19:17:28",
+        "upload_time_iso_8601": "2026-05-18T19:17:28.638961Z",
+        "url": "https://files.pythonhosted.org/packages/9e/97/33691c66a4d7ec1a5a98e7c909a5b83ee45c7f7ba4cf92b1c4cf26e98079/lxml-6.1.1-cp310-cp310-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "d05f26a4dd0e12b9456ff7b12a21af5b491eb6629680d1edd73f4140fd386bcf",
+          "md5": "7dddc8cdaf875c7aaf76b71f2b54501d",
+          "sha256": "8dadbe5b217ff35b6a8d16610dd710219b59b76d13f0e3f0d9f36786206e4485"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp310-cp310-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "7dddc8cdaf875c7aaf76b71f2b54501d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.8",
+        "size": 3667717,
+        "upload_time": "2026-05-19T19:22:44",
+        "upload_time_iso_8601": "2026-05-19T19:22:44.474910Z",
+        "url": "https://files.pythonhosted.org/packages/d0/5f/26a4dd0e12b9456ff7b12a21af5b491eb6629680d1edd73f4140fd386bcf/lxml-6.1.1-cp310-cp310-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "62b083f481780d1548750b8ce2ec824073deef2f452d9cd1a6faff8507e3d16d",
+          "md5": "e94cc9166162c1436fd3c1e289c898ce",
+          "sha256": "53b7d2b7a10b1c35c0a5e21e9224accf60c1bbfba523990732e521b2b73adef2"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-macosx_10_9_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "e94cc9166162c1436fd3c1e289c898ce",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 8526461,
+        "upload_time": "2026-05-18T19:17:25",
+        "upload_time_iso_8601": "2026-05-18T19:17:25.862493Z",
+        "url": "https://files.pythonhosted.org/packages/62/b0/83f481780d1548750b8ce2ec824073deef2f452d9cd1a6faff8507e3d16d/lxml-6.1.1-cp311-cp311-macosx_10_9_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "b9d530fa0f808002c7329397bfbb24e306789c0b29f04aa5842c07b174b4216f",
+          "md5": "3b675a253e0d9ea049dde771ed3931f8",
+          "sha256": "ff3f333630ab480244a1bff72043e511a91eb22e7595dead8653ee5612dd8f3d"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3b675a253e0d9ea049dde771ed3931f8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 4595375,
+        "upload_time": "2026-05-18T19:17:34",
+        "upload_time_iso_8601": "2026-05-18T19:17:34.555570Z",
+        "url": "https://files.pythonhosted.org/packages/b9/d5/30fa0f808002c7329397bfbb24e306789c0b29f04aa5842c07b174b4216f/lxml-6.1.1-cp311-cp311-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "4fd2edb71cf0e561581a7c5eb2626244320eb04e9f8ce6d563184fd668b45073",
+          "md5": "e4f03ba141efe95c790865c617e733f6",
+          "sha256": "a4bbea04c97f6d78a48e3fbc1cb9116d2780b1b39e03a23f6eb9b603fd61f510"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "e4f03ba141efe95c790865c617e733f6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 4923654,
+        "upload_time": "2026-05-18T19:17:42",
+        "upload_time_iso_8601": "2026-05-18T19:17:42.917674Z",
+        "url": "https://files.pythonhosted.org/packages/4f/d2/edb71cf0e561581a7c5eb2626244320eb04e9f8ce6d563184fd668b45073/lxml-6.1.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "4c771bc7eeb0de4577d783fb625aa092cc9357883bba35845a3666bf1259f3dc",
+          "md5": "2e9c88e77393384169ec9a39f8d066cc",
+          "sha256": "db1d75f6617a49c1c01bc7023713e0ff59ab32c9579ae62a7674c0e34f3b0b0a"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "2e9c88e77393384169ec9a39f8d066cc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 5067921,
+        "upload_time": "2026-05-18T19:17:49",
+        "upload_time_iso_8601": "2026-05-18T19:17:49.175165Z",
+        "url": "https://files.pythonhosted.org/packages/4c/77/1bc7eeb0de4577d783fb625aa092cc9357883bba35845a3666bf1259f3dc/lxml-6.1.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "1b3cc0690d74bd2bc17bc03b5b0d093569ead597dd0bfa088bf99eef8c24e19c",
+          "md5": "3b191179702d25726cf356857d465fec",
+          "sha256": "3a12689be69a28ddaa0ab99a5a1137da2afd5f8f16df7b5680b66f616d3eda1d"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "3b191179702d25726cf356857d465fec",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 5002456,
+        "upload_time": "2026-05-18T19:17:59",
+        "upload_time_iso_8601": "2026-05-18T19:17:59.715740Z",
+        "url": "https://files.pythonhosted.org/packages/1b/3c/c0690d74bd2bc17bc03b5b0d093569ead597dd0bfa088bf99eef8c24e19c/lxml-6.1.1-cp311-cp311-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "668dd1b3271af0c0f1e27e8472a849e4d2c65bc7766884b9ad2da9e76e145c88",
+          "md5": "a49c2b7fd6c3e9b3d5263e11f725b1fb",
+          "sha256": "18b73c339ae29b90fd2d06e58ebd555a751bde9cd6bbd36cc0281b9a2c94e9d8"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "a49c2b7fd6c3e9b3d5263e11f725b1fb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 5202776,
+        "upload_time": "2026-05-18T19:18:08",
+        "upload_time_iso_8601": "2026-05-18T19:18:08.924871Z",
+        "url": "https://files.pythonhosted.org/packages/66/8d/d1b3271af0c0f1e27e8472a849e4d2c65bc7766884b9ad2da9e76e145c88/lxml-6.1.1-cp311-cp311-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "7a45689824ffb237fd10125ad273f32b28ff04dc6203c2822c85ff65a93df65e",
+          "md5": "fa327a4696fa460104ae5b11e932a184",
+          "sha256": "752d3bbfe874715ccd0aec7f88d7fc623c0f1fd7aa7b3238a084e017bad2a009"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "fa327a4696fa460104ae5b11e932a184",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 5329945,
+        "upload_time": "2026-05-18T19:18:13",
+        "upload_time_iso_8601": "2026-05-18T19:18:13.673156Z",
+        "url": "https://files.pythonhosted.org/packages/7a/45/689824ffb237fd10125ad273f32b28ff04dc6203c2822c85ff65a93df65e/lxml-6.1.1-cp311-cp311-manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "5dc0ef73af53767e958fd87d437c170f272e2f6e6c0f854939f133a895f1e711",
+          "md5": "b1473031b5487d472efcbb8d96910131",
+          "sha256": "6b1761fbf9ec984e2e9d9c589ef5f5fd684b7c19f92aadd567a26c5224958db6"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-manylinux_2_31_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "b1473031b5487d472efcbb8d96910131",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 4659237,
+        "upload_time": "2026-05-18T19:18:18",
+        "upload_time_iso_8601": "2026-05-18T19:18:18.657447Z",
+        "url": "https://files.pythonhosted.org/packages/5d/c0/ef73af53767e958fd87d437c170f272e2f6e6c0f854939f133a895f1e711/lxml-6.1.1-cp311-cp311-manylinux_2_31_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "a05ee1158e40397585e91cb0472374a1f63d0926a1ddeaa92f13d1a1ffe306d5",
+          "md5": "c69a6fb883bdf439e8089b6b96fd6c1b",
+          "sha256": "d680fbcb768404c601ecb43519ecd8461f6954cb11c06a78962f666832ccfca8"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "c69a6fb883bdf439e8089b6b96fd6c1b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 5265904,
+        "upload_time": "2026-05-18T19:18:24",
+        "upload_time_iso_8601": "2026-05-18T19:18:24.883401Z",
+        "url": "https://files.pythonhosted.org/packages/a0/5e/e1158e40397585e91cb0472374a1f63d0926a1ddeaa92f13d1a1ffe306d5/lxml-6.1.1-cp311-cp311-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "a0168687e5d1400ed1c0bc41dace232ebb7553952b618ea1f2e5fb6e2cfbbe23",
+          "md5": "f7b8a5c5be8ffb48153679d320d24eac",
+          "sha256": "162af1091cd785f2f27e62d3547ae9bc58ec5c86dd314d67021fd02463708d83"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "f7b8a5c5be8ffb48153679d320d24eac",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 5045225,
+        "upload_time": "2026-05-18T19:17:20",
+        "upload_time_iso_8601": "2026-05-18T19:17:20.073194Z",
+        "url": "https://files.pythonhosted.org/packages/a0/16/8687e5d1400ed1c0bc41dace232ebb7553952b618ea1f2e5fb6e2cfbbe23/lxml-6.1.1-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "ca18d877bd1ae2e5ffdfd4836565aba350db31feb2f2656d6ce70316ed66a05e",
+          "md5": "d36c88fdd39dc880eea3d3e94cac3b9a",
+          "sha256": "e9308ff8241c532df3f3e570f9a5aeed6c853f888512ba4b75638d7c11c95ef6"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "d36c88fdd39dc880eea3d3e94cac3b9a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 4712721,
+        "upload_time": "2026-05-18T19:17:40",
+        "upload_time_iso_8601": "2026-05-18T19:17:40.512776Z",
+        "url": "https://files.pythonhosted.org/packages/ca/18/d877bd1ae2e5ffdfd4836565aba350db31feb2f2656d6ce70316ed66a05e/lxml-6.1.1-cp311-cp311-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "444d1f44fd1d770b10dacbf6b5c6e520f4d6e0708744930f719dc04e67cab981",
+          "md5": "57d0248736c36ec5e66209c8925c054c",
+          "sha256": "5f6994074ebae6ffb04447268e37dc16edc304f9859cf91acb86e0af6c1b395c"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-musllinux_1_2_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "57d0248736c36ec5e66209c8925c054c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 5252549,
+        "upload_time": "2026-05-18T19:17:51",
+        "upload_time_iso_8601": "2026-05-18T19:17:51.236809Z",
+        "url": "https://files.pythonhosted.org/packages/44/4d/1f44fd1d770b10dacbf6b5c6e520f4d6e0708744930f719dc04e67cab981/lxml-6.1.1-cp311-cp311-musllinux_1_2_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "645d1d66b84f850089254c230ef6ea6b267a5a54e2e179a5d960036a05d501d7",
+          "md5": "3f9ff4f15c607d959726728c4cd0e296",
+          "sha256": "80c2dfadb855da477cf73373ad29a333535dedb9b12bad02c9814c8e2b43bf08"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3f9ff4f15c607d959726728c4cd0e296",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 5226877,
+        "upload_time": "2026-05-18T19:18:00",
+        "upload_time_iso_8601": "2026-05-18T19:18:00.875517Z",
+        "url": "https://files.pythonhosted.org/packages/64/5d/1d66b84f850089254c230ef6ea6b267a5a54e2e179a5d960036a05d501d7/lxml-6.1.1-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "ad0084c4b5302d42a2d0184f38d538c8a197f33b52a50bd4f7bcfe990bce3036",
+          "md5": "ab1b80e9cd6fddb932329a1d0235acf3",
+          "sha256": "30a89d3ac8faec007453fb541f3f46807eeec88edd5826f6e3fe001752a2c621"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-win32.whl",
+        "has_sig": false,
+        "md5_digest": "ab1b80e9cd6fddb932329a1d0235acf3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 3594072,
+        "upload_time": "2026-05-18T19:17:12",
+        "upload_time_iso_8601": "2026-05-18T19:17:12.714724Z",
+        "url": "https://files.pythonhosted.org/packages/ad/00/84c4b5302d42a2d0184f38d538c8a197f33b52a50bd4f7bcfe990bce3036/lxml-6.1.1-cp311-cp311-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "619d2e2f7d876349f45e0f3e29f72da311668853d59b58d473a2dea4f0160135",
+          "md5": "60209a7ba44f29432d9ee6e2417567d6",
+          "sha256": "abbefa31eee84842140f67acef1c828e28bba8bbf0c3bc6e5492a9af88152c28"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "60209a7ba44f29432d9ee6e2417567d6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 4025469,
+        "upload_time": "2026-05-18T19:17:50",
+        "upload_time_iso_8601": "2026-05-18T19:17:50.566427Z",
+        "url": "https://files.pythonhosted.org/packages/61/9d/2e2f7d876349f45e0f3e29f72da311668853d59b58d473a2dea4f0160135/lxml-6.1.1-cp311-cp311-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "b0d5570e6390e4110331e6208b2ba83d1482cc9146808ee118b22824a34c1070",
+          "md5": "a708801e368c6aa1a7408bf3c201aa5b",
+          "sha256": "dcb292aa7fe485ceff7af4f92e46c5af397daec5dff64871a528f0fc47a3cc5b"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp311-cp311-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "a708801e368c6aa1a7408bf3c201aa5b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.8",
+        "size": 3667640,
+        "upload_time": "2026-05-19T19:22:48",
+        "upload_time_iso_8601": "2026-05-19T19:22:48.293741Z",
+        "url": "https://files.pythonhosted.org/packages/b0/d5/570e6390e4110331e6208b2ba83d1482cc9146808ee118b22824a34c1070/lxml-6.1.1-cp311-cp311-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "6a6ec4add832b6fc1e887125b96f880d7b9b70aae5248718e046b1704bcac4b9",
+          "md5": "a4cedbd8691379c727bd88573b6099e7",
+          "sha256": "104c09bda8d2a562824c0e319d0768ce26a779b7601e0931d33b09b53c392ef7"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-macosx_10_13_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "a4cedbd8691379c727bd88573b6099e7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 8570821,
+        "upload_time": "2026-05-18T19:17:42",
+        "upload_time_iso_8601": "2026-05-18T19:17:42.068404Z",
+        "url": "https://files.pythonhosted.org/packages/6a/6e/c4add832b6fc1e887125b96f880d7b9b70aae5248718e046b1704bcac4b9/lxml-6.1.1-cp312-cp312-macosx_10_13_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "2200ff3009c88e65de8011630acf8ab5a09cb2becd2aaf47fba2f3449f6224e9",
+          "md5": "a9ec84fc2ed3aea5cc9e92dc73d2830f",
+          "sha256": "25c6997a9a534e016695a0ba06b2f07945de682731ff01065b6d5a4474179da1"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-macosx_10_13_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "a9ec84fc2ed3aea5cc9e92dc73d2830f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 4624252,
+        "upload_time": "2026-05-18T19:17:47",
+        "upload_time_iso_8601": "2026-05-18T19:17:47.897804Z",
+        "url": "https://files.pythonhosted.org/packages/22/00/ff3009c88e65de8011630acf8ab5a09cb2becd2aaf47fba2f3449f6224e9/lxml-6.1.1-cp312-cp312-macosx_10_13_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "4295bb63f0fd62e554fe078e1fb3c8fe9083c14ddc7ad7fa178d10e57e071ac7",
+          "md5": "e03760d4234fac4610dd32a7eea73ba9",
+          "sha256": "c921ba5c51e4e9f63b8b00267d06566e1f63407408a0496da2d1d0bfc819c7fc"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "e03760d4234fac4610dd32a7eea73ba9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 4930746,
+        "upload_time": "2026-05-18T19:18:29",
+        "upload_time_iso_8601": "2026-05-18T19:18:29.637168Z",
+        "url": "https://files.pythonhosted.org/packages/42/95/bb63f0fd62e554fe078e1fb3c8fe9083c14ddc7ad7fa178d10e57e071ac7/lxml-6.1.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "eb990013e8d9b5960f4f041cf0b73e2f80c23eb5205b1f7bfb20203243651359",
+          "md5": "19596f7d7eccb61a9a317bdfebe75ae7",
+          "sha256": "54a7f95e4de5fb94e2f9f4b9055c6ba33bf3d628fd77a1d647c5923caa2cdcdc"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "19596f7d7eccb61a9a317bdfebe75ae7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 5093723,
+        "upload_time": "2026-05-18T19:18:34",
+        "upload_time_iso_8601": "2026-05-18T19:18:34.168010Z",
+        "url": "https://files.pythonhosted.org/packages/eb/99/0013e8d9b5960f4f041cf0b73e2f80c23eb5205b1f7bfb20203243651359/lxml-6.1.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "2991317b332636bfc7bddcff828d41b3307f50043f4b237e40849c333d80fa1a",
+          "md5": "bedc3b53dc9e6f548e89e7b747612e04",
+          "sha256": "96f2ec43df44b1f76249ee0a615334f9b5b060e1c8bd90e706dad2d14d02f383"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "bedc3b53dc9e6f548e89e7b747612e04",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 5005557,
+        "upload_time": "2026-05-18T19:18:39",
+        "upload_time_iso_8601": "2026-05-18T19:18:39.798925Z",
+        "url": "https://files.pythonhosted.org/packages/29/91/317b332636bfc7bddcff828d41b3307f50043f4b237e40849c333d80fa1a/lxml-6.1.1-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "422fcc9bf06afe70f9c9093ae60855d9759da9db601ec4080f7473319666ffd7",
+          "md5": "7c7fee14ad3acfe1b157eb42f09f66ac",
+          "sha256": "70ef8a7e102a1508f8121aae5b0867abd663f72c14f0a9c937e6554cb4587b7b"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-manylinux_2_26_ppc64le.manylinux_2_28_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "7c7fee14ad3acfe1b157eb42f09f66ac",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 5631036,
+        "upload_time": "2026-05-18T19:18:44",
+        "upload_time_iso_8601": "2026-05-18T19:18:44.858269Z",
+        "url": "https://files.pythonhosted.org/packages/42/2f/cc9bf06afe70f9c9093ae60855d9759da9db601ec4080f7473319666ffd7/lxml-6.1.1-cp312-cp312-manylinux_2_26_ppc64le.manylinux_2_28_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "08f6af32e23e563971ffb0fb86be52bc5be5c2c118858ffc119bf6a9039b173d",
+          "md5": "8acdc0bceae45355df1fd66de98a9c91",
+          "sha256": "ebe6af670449830d6d9b752c256a983291c766a1365ba5d5460048f9e33a7818"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "8acdc0bceae45355df1fd66de98a9c91",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 5240367,
+        "upload_time": "2026-05-18T19:18:49",
+        "upload_time_iso_8601": "2026-05-18T19:18:49.217969Z",
+        "url": "https://files.pythonhosted.org/packages/08/f6/af32e23e563971ffb0fb86be52bc5be5c2c118858ffc119bf6a9039b173d/lxml-6.1.1-cp312-cp312-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "78838555d40948b09ce86f1bd0c68a7ac31d07b1929f92cc1b074006c97ef2d2",
+          "md5": "d353dd0a0e6c42fb7a956c9f8d324b59",
+          "sha256": "27acc820660aaffa4f7c087f29120e12980f7779d56d8492d263170111284740"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "d353dd0a0e6c42fb7a956c9f8d324b59",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 5350171,
+        "upload_time": "2026-05-18T19:18:52",
+        "upload_time_iso_8601": "2026-05-18T19:18:52.779239Z",
+        "url": "https://files.pythonhosted.org/packages/78/83/8555d40948b09ce86f1bd0c68a7ac31d07b1929f92cc1b074006c97ef2d2/lxml-6.1.1-cp312-cp312-manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "63755d92da93729b7bad783689e6496049fa40927b45bec7bf183c981de3ca70",
+          "md5": "bc4d1647df5db9a04bebbe66d945277f",
+          "sha256": "1db753c9115ec7100d073b744d17e25e88a8f90f5c39b2f5dd878149af59671f"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-manylinux_2_31_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "bc4d1647df5db9a04bebbe66d945277f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 4694874,
+        "upload_time": "2026-05-18T19:18:55",
+        "upload_time_iso_8601": "2026-05-18T19:18:55.139541Z",
+        "url": "https://files.pythonhosted.org/packages/63/75/5d92da93729b7bad783689e6496049fa40927b45bec7bf183c981de3ca70/lxml-6.1.1-cp312-cp312-manylinux_2_31_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "c5b53aad415a9a25b822e783f15deeb4dffccf5113030f1afa2222dd929313d9",
+          "md5": "33ef254443932c5739101a21d2485e56",
+          "sha256": "c4f469aebd783bb741c2ecb2a681008fd26bfe5c16a9a72ed5467f834e810df2"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "33ef254443932c5739101a21d2485e56",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 5244492,
+        "upload_time": "2026-05-18T19:19:01",
+        "upload_time_iso_8601": "2026-05-18T19:19:01.280858Z",
+        "url": "https://files.pythonhosted.org/packages/c5/b5/3aad415a9a25b822e783f15deeb4dffccf5113030f1afa2222dd929313d9/lxml-6.1.1-cp312-cp312-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "f1a15fcf7eb9904b80086aa47dcf0027de07b1bb990afad2e6823144c368ae04",
+          "md5": "80b76ad243e477a45273558df7c8eed0",
+          "sha256": "766b010012d59470072c1816b5b6c69f1d243e5db36ea5968e94accf430a4635"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "80b76ad243e477a45273558df7c8eed0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 5048232,
+        "upload_time": "2026-05-18T19:18:12",
+        "upload_time_iso_8601": "2026-05-18T19:18:12.670838Z",
+        "url": "https://files.pythonhosted.org/packages/f1/a1/5fcf7eb9904b80086aa47dcf0027de07b1bb990afad2e6823144c368ae04/lxml-6.1.1-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "77741f601b63c7a69fcdf10fa9b148c81da8442204194f6c55509cc485c786b9",
+          "md5": "10f433cdcbbfe0af3faa25db5ea282fa",
+          "sha256": "b8d812c6011c08b8111a15e54dd990b8923692d80adf35488bee34026c35accf"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "10f433cdcbbfe0af3faa25db5ea282fa",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 4777023,
+        "upload_time": "2026-05-18T19:18:15",
+        "upload_time_iso_8601": "2026-05-18T19:18:15.928004Z",
+        "url": "https://files.pythonhosted.org/packages/77/74/1f601b63c7a69fcdf10fa9b148c81da8442204194f6c55509cc485c786b9/lxml-6.1.1-cp312-cp312-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "a2b97a78f51aec95b1bf780d78e12705a9f6533284f8693dc5c0e6724fa53d3f",
+          "md5": "bdd247acbc125f0f9ccccf2dcad20143",
+          "sha256": "fe0306bd29505a9177aac19f1877174b0e7422c222a59f70b2cd41633448c3dc"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "bdd247acbc125f0f9ccccf2dcad20143",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 5645773,
+        "upload_time": "2026-05-18T19:18:23",
+        "upload_time_iso_8601": "2026-05-18T19:18:23.223932Z",
+        "url": "https://files.pythonhosted.org/packages/a2/b9/7a78f51aec95b1bf780d78e12705a9f6533284f8693dc5c0e6724fa53d3f/lxml-6.1.1-cp312-cp312-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "a56e98a7b7ad54e4e74fa1f20fff776913980619d0ebe5558232d7da6580bdd8",
+          "md5": "5b4f33b1ca25f21239b16fcc50d9f562",
+          "sha256": "5ba186ad207446c65d3bb3d3e0412b032b1d9f595e59861e2354798c5703d955"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-musllinux_1_2_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "5b4f33b1ca25f21239b16fcc50d9f562",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 5233088,
+        "upload_time": "2026-05-18T19:18:31",
+        "upload_time_iso_8601": "2026-05-18T19:18:31.433756Z",
+        "url": "https://files.pythonhosted.org/packages/a5/6e/98a7b7ad54e4e74fa1f20fff776913980619d0ebe5558232d7da6580bdd8/lxml-6.1.1-cp312-cp312-musllinux_1_2_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "65d1bc0ed2427bf609f2ee10da303a6a226f9c8bce94f945dc29a32ce55de6e4",
+          "md5": "2bba8ef2611844421ab1ab1f733a8246",
+          "sha256": "aa366a1e55b8ebfe8ca8ddc3cfe75c8ebade181aeb0f661d0cb05986b647f72a"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "2bba8ef2611844421ab1ab1f733a8246",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 5260995,
+        "upload_time": "2026-05-18T19:18:37",
+        "upload_time_iso_8601": "2026-05-18T19:18:37.091866Z",
+        "url": "https://files.pythonhosted.org/packages/65/d1/bc0ed2427bf609f2ee10da303a6a226f9c8bce94f945dc29a32ce55de6e4/lxml-6.1.1-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "698b6772e1a4b513fc50a8d931f19edde0e13ae6918510a1e13ff67864f3e5ed",
+          "md5": "46802f5e009736e5898bae53689c062a",
+          "sha256": "126c93f7f56f0eda92f6d8c619edc463a4f23d9252f1c9d0405a76f25fa9f11a"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-win32.whl",
+        "has_sig": false,
+        "md5_digest": "46802f5e009736e5898bae53689c062a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 3596382,
+        "upload_time": "2026-05-18T19:17:18",
+        "upload_time_iso_8601": "2026-05-18T19:17:18.370769Z",
+        "url": "https://files.pythonhosted.org/packages/69/8b/6772e1a4b513fc50a8d931f19edde0e13ae6918510a1e13ff67864f3e5ed/lxml-6.1.1-cp312-cp312-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "1b8945198e9624762af2dfd2cb8782598477ceb29f6e59caab560388ae1f4ec1",
+          "md5": "246f7d38734fe07b2c213e571e95efb5",
+          "sha256": "26e6eda8d38c1fcab1090dd196ee87cbd13788e531937610e2589085de074e77"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "246f7d38734fe07b2c213e571e95efb5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 3997255,
+        "upload_time": "2026-05-18T19:17:56",
+        "upload_time_iso_8601": "2026-05-18T19:17:56.781376Z",
+        "url": "https://files.pythonhosted.org/packages/1b/89/45198e9624762af2dfd2cb8782598477ceb29f6e59caab560388ae1f4ec1/lxml-6.1.1-cp312-cp312-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "90a97a54b6834088d9ae528a7b780584ba6a39a9457b0ac330479f20ffbc9449",
+          "md5": "7b6d561bd1c857d6a0f9e82403fb45b9",
+          "sha256": "6540377fbd53fe1b629172288c464fb18db11ce1fa7dc15891da10aa9dcc3e7f"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp312-cp312-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "7b6d561bd1c857d6a0f9e82403fb45b9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.8",
+        "size": 3659610,
+        "upload_time": "2026-05-19T19:22:50",
+        "upload_time_iso_8601": "2026-05-19T19:22:50.843640Z",
+        "url": "https://files.pythonhosted.org/packages/90/a9/7a54b6834088d9ae528a7b780584ba6a39a9457b0ac330479f20ffbc9449/lxml-6.1.1-cp312-cp312-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "a5eb7e6f37c5584ccbb2ff267f56fd0339016938c1c8684cfefab9b33ffc2f36",
+          "md5": "48c66c81ed9b041f29a5c22bc9967c2a",
+          "sha256": "68a9198d0fc122d14bb76837de9aa80cf84caed990b5b237f532ed87d3706736"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-macosx_10_13_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "48c66c81ed9b041f29a5c22bc9967c2a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 8559780,
+        "upload_time": "2026-05-18T19:17:57",
+        "upload_time_iso_8601": "2026-05-18T19:17:57.661318Z",
+        "url": "https://files.pythonhosted.org/packages/a5/eb/7e6f37c5584ccbb2ff267f56fd0339016938c1c8684cfefab9b33ffc2f36/lxml-6.1.1-cp313-cp313-macosx_10_13_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "a136587c2521cf23a2cd6c9c22108aa7528f683a1f195ed7ccd23a4b1786ad36",
+          "md5": "9679a5d1cbcc6c4c3ac04cf8b2d90a0f",
+          "sha256": "7d47866cb32fb503450b6edc9df355d10dc49836af2e89901bd6ac6b0896d9d9"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-macosx_10_13_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9679a5d1cbcc6c4c3ac04cf8b2d90a0f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 4618006,
+        "upload_time": "2026-05-18T19:18:04",
+        "upload_time_iso_8601": "2026-05-18T19:18:04.452145Z",
+        "url": "https://files.pythonhosted.org/packages/a1/36/587c2521cf23a2cd6c9c22108aa7528f683a1f195ed7ccd23a4b1786ad36/lxml-6.1.1-cp313-cp313-macosx_10_13_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "6ecaab7bfe2bf4c972af5e7878262845ead3a24a929a9b04bc11c7c1ece6c82a",
+          "md5": "7a97eacf60a55eb3f0ff87c94cd2f3ba",
+          "sha256": "eb7c9811bfaa8b1ed5ed319f5d370dfbcaa59d52ea64be2a5a85e18195930354"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "7a97eacf60a55eb3f0ff87c94cd2f3ba",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 4924139,
+        "upload_time": "2026-05-18T19:19:04",
+        "upload_time_iso_8601": "2026-05-18T19:19:04.873591Z",
+        "url": "https://files.pythonhosted.org/packages/6e/ca/ab7bfe2bf4c972af5e7878262845ead3a24a929a9b04bc11c7c1ece6c82a/lxml-6.1.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "6b55a0c72851dfee5ecc689f949723a73dea457758912542cb955b108eaf0d8f",
+          "md5": "bb8d8079fdbfdd4f7a325ebe38957dc9",
+          "sha256": "762ff394d5bd56da0cf034a23dcce4e13923f15321a2adfa2ac00201dc6d3fca"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "bb8d8079fdbfdd4f7a325ebe38957dc9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 5082329,
+        "upload_time": "2026-05-18T19:19:09",
+        "upload_time_iso_8601": "2026-05-18T19:19:09.728491Z",
+        "url": "https://files.pythonhosted.org/packages/6b/55/a0c72851dfee5ecc689f949723a73dea457758912542cb955b108eaf0d8f/lxml-6.1.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "f0b60608f7d61a3b96cc67e5648a3d906e31a5082093e10e7be65b3886289938",
+          "md5": "43934e6c1e9936f53fe710659329ef3c",
+          "sha256": "a088f287f7d8275a33c07f2cac6c50b9319309a0200a39e7e75d80c707723099"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "43934e6c1e9936f53fe710659329ef3c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 4993564,
+        "upload_time": "2026-05-18T19:19:13",
+        "upload_time_iso_8601": "2026-05-18T19:19:13.608652Z",
+        "url": "https://files.pythonhosted.org/packages/f0/b6/0608f7d61a3b96cc67e5648a3d906e31a5082093e10e7be65b3886289938/lxml-6.1.1-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "4c66ae227524b066d29d55bf0b453d93d2d793c40218657d643dcbbca13b8faf",
+          "md5": "58e7273891bffcb01ba7cc88d48a27e9",
+          "sha256": "e902da4b04e6b52e5893900d4b8ab46068f75f3561f01bf1080957f9fd932ed6"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-manylinux_2_26_ppc64le.manylinux_2_28_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "58e7273891bffcb01ba7cc88d48a27e9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 5613467,
+        "upload_time": "2026-05-18T19:19:16",
+        "upload_time_iso_8601": "2026-05-18T19:19:16.228645Z",
+        "url": "https://files.pythonhosted.org/packages/4c/66/ae227524b066d29d55bf0b453d93d2d793c40218657d643dcbbca13b8faf/lxml-6.1.1-cp313-cp313-manylinux_2_26_ppc64le.manylinux_2_28_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "a676dbe4a00b50385e40194231dcfe5a12c059de7cf90e89c83407d2b085b719",
+          "md5": "3fc1b6f9d70d256df2b70be7a84c3b62",
+          "sha256": "1d4962d4c66bf830a7e59ed6cfc17d148149898a3aefa8ec6e59763e6e3ed085"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3fc1b6f9d70d256df2b70be7a84c3b62",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 5228304,
+        "upload_time": "2026-05-18T19:19:19",
+        "upload_time_iso_8601": "2026-05-18T19:19:19.354474Z",
+        "url": "https://files.pythonhosted.org/packages/a6/76/dbe4a00b50385e40194231dcfe5a12c059de7cf90e89c83407d2b085b719/lxml-6.1.1-cp313-cp313-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "1c0100b1b8442ed2041793336868ba0b9ea4b13d7da7c085c6404c207a63bf79",
+          "md5": "42130dd2167a81145d00435931e218b2",
+          "sha256": "581d4c8ae690a6609e64862dd6b7c2489635c2d13907fc2b20f2bc200ff1d21e"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "42130dd2167a81145d00435931e218b2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 5341607,
+        "upload_time": "2026-05-18T19:19:22",
+        "upload_time_iso_8601": "2026-05-18T19:19:22.297512Z",
+        "url": "https://files.pythonhosted.org/packages/1c/01/00b1b8442ed2041793336868ba0b9ea4b13d7da7c085c6404c207a63bf79/lxml-6.1.1-cp313-cp313-manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "63361ad29931e9a4638bb707869f01d423a6c815f82152138d1a40dfcfde2b95",
+          "md5": "d98cb98193f0860c3ba37c559016f47f",
+          "sha256": "876e1ff5930ed8bf295ec5ef9a8155e9b6b1876bbf1deed8b3a8069311875a8f"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-manylinux_2_31_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "d98cb98193f0860c3ba37c559016f47f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 4700168,
+        "upload_time": "2026-05-18T19:19:25",
+        "upload_time_iso_8601": "2026-05-18T19:19:25.133346Z",
+        "url": "https://files.pythonhosted.org/packages/63/36/1ad29931e9a4638bb707869f01d423a6c815f82152138d1a40dfcfde2b95/lxml-6.1.1-cp313-cp313-manylinux_2_31_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "3cd1a9536cecf9be18a0dc72d32bead283a2332d1ffebd2dd3ac70ce444686e5",
+          "md5": "da223b65cd8971c0889ab0120284684d",
+          "sha256": "9eb9b5a968f6e0f6d640092a567e14529ff8cea2e29d00da6f78a79fa49f013c"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "da223b65cd8971c0889ab0120284684d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 5232487,
+        "upload_time": "2026-05-18T19:19:28",
+        "upload_time_iso_8601": "2026-05-18T19:19:28.603483Z",
+        "url": "https://files.pythonhosted.org/packages/3c/d1/a9536cecf9be18a0dc72d32bead283a2332d1ffebd2dd3ac70ce444686e5/lxml-6.1.1-cp313-cp313-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "0e77b4fb1e03bf5d130e879214d3100092e386418807fb74dd0adc4b0a48f351",
+          "md5": "6b143f4ccf1094e7dba6e1eed36e8012",
+          "sha256": "aa49e06d94aba782c6a02eecb7e507969e7e7a41b267f1b359bb35585f295d5b"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "6b143f4ccf1094e7dba6e1eed36e8012",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 5044231,
+        "upload_time": "2026-05-18T19:18:42",
+        "upload_time_iso_8601": "2026-05-18T19:18:42.246350Z",
+        "url": "https://files.pythonhosted.org/packages/0e/77/b4fb1e03bf5d130e879214d3100092e386418807fb74dd0adc4b0a48f351/lxml-6.1.1-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "264cd00daeeb0a5530c4028a9232aa1b93db3ef4ed2158c116ea73c79a9765b3",
+          "md5": "0d7f64c2f7b5cbab82c1333ea74a154b",
+          "sha256": "70cdfd80589d59e43e18005dd7244e8895e93db8ab6a620b7e23df5445a4e3d2"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "0d7f64c2f7b5cbab82c1333ea74a154b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 4769450,
+        "upload_time": "2026-05-18T19:18:48",
+        "upload_time_iso_8601": "2026-05-18T19:18:48.013146Z",
+        "url": "https://files.pythonhosted.org/packages/26/4c/d00daeeb0a5530c4028a9232aa1b93db3ef4ed2158c116ea73c79a9765b3/lxml-6.1.1-cp313-cp313-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "ed6a715a3a8d156ce42f29cf014706f5410c2ff3b02267774110fc23266409fe",
+          "md5": "88ccfaee9c03c6b81d74f6d14c71fe9a",
+          "sha256": "aad9aa39483ed8ec44d6d2e59e5b98a0d80676ef0d92f44bfc374836111f62f5"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "88ccfaee9c03c6b81d74f6d14c71fe9a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 5635874,
+        "upload_time": "2026-05-18T19:18:51",
+        "upload_time_iso_8601": "2026-05-18T19:18:51.914114Z",
+        "url": "https://files.pythonhosted.org/packages/ed/6a/715a3a8d156ce42f29cf014706f5410c2ff3b02267774110fc23266409fe/lxml-6.1.1-cp313-cp313-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "45370544bc21dde2a88f3a17b504e6fc79c0e01d25a33c2f6079724e9e72b9c7",
+          "md5": "8fa1cefdf06aef6fa9d33799c22eac77",
+          "sha256": "d49514be2f28d895c38cf9d2b72d7b9a07d00314519f456c0b50b53cfcf4c785"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-musllinux_1_2_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "8fa1cefdf06aef6fa9d33799c22eac77",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 5223987,
+        "upload_time": "2026-05-18T19:18:59",
+        "upload_time_iso_8601": "2026-05-18T19:18:59.715211Z",
+        "url": "https://files.pythonhosted.org/packages/45/37/0544bc21dde2a88f3a17b504e6fc79c0e01d25a33c2f6079724e9e72b9c7/lxml-6.1.1-cp313-cp313-musllinux_1_2_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "4df8f6a5e8185bcb28c2befae3d31f8e3df3b811cb0f47746517a81279fcafe1",
+          "md5": "3013ae0284815fb416f95f58488189b3",
+          "sha256": "47402e62c52ff5988c1e8c6c63177f5708bccf48e366dea4e3dcf1e645e04947"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3013ae0284815fb416f95f58488189b3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 5250276,
+        "upload_time": "2026-05-18T19:19:03",
+        "upload_time_iso_8601": "2026-05-18T19:19:03.834943Z",
+        "url": "https://files.pythonhosted.org/packages/4d/f8/f6a5e8185bcb28c2befae3d31f8e3df3b811cb0f47746517a81279fcafe1/lxml-6.1.1-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "c7f21a2b9f1b7a49d45495369be7ef9ad05b262930f2eab3e3145706fca8083f",
+          "md5": "ea78930b3398432850eb9e3b4f8247cf",
+          "sha256": "3483644525531e1d5762b0c44a8e18b6efba321b6dcf8a8952de10b037618bca"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-win32.whl",
+        "has_sig": false,
+        "md5_digest": "ea78930b3398432850eb9e3b4f8247cf",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 3596903,
+        "upload_time": "2026-05-18T19:17:29",
+        "upload_time_iso_8601": "2026-05-18T19:17:29.863211Z",
+        "url": "https://files.pythonhosted.org/packages/c7/f2/1a2b9f1b7a49d45495369be7ef9ad05b262930f2eab3e3145706fca8083f/lxml-6.1.1-cp313-cp313-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "e699f4ffb024f238eec2131aaa09f3278fb6129cf892741bf68e1fc1afb8c100",
+          "md5": "29e3bb1b352ad820ff9ec41983f32711",
+          "sha256": "a10bd2fd62e8ce916ececb342f348f190724a098c1faa056fdfb2a22ad5e8660"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "29e3bb1b352ad820ff9ec41983f32711",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 3995869,
+        "upload_time": "2026-05-18T19:18:02",
+        "upload_time_iso_8601": "2026-05-18T19:18:02.596734Z",
+        "url": "https://files.pythonhosted.org/packages/e6/99/f4ffb024f238eec2131aaa09f3278fb6129cf892741bf68e1fc1afb8c100/lxml-6.1.1-cp313-cp313-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "d15370eb8c5c6037f27448f1e3c54ebede9545a801ae63f0a7254afca4fe8e45",
+          "md5": "03a10da7c4e4138ecbf77fb3cd412d82",
+          "sha256": "424aa57aca0897eb922aef34395bd1289b3b6f04e6bae20ea123c0c7e333cffc"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp313-cp313-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "03a10da7c4e4138ecbf77fb3cd412d82",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.8",
+        "size": 3658490,
+        "upload_time": "2026-05-19T19:22:53",
+        "upload_time_iso_8601": "2026-05-19T19:22:53.846543Z",
+        "url": "https://files.pythonhosted.org/packages/d1/53/70eb8c5c6037f27448f1e3c54ebede9545a801ae63f0a7254afca4fe8e45/lxml-6.1.1-cp313-cp313-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "13e22e325795566de01d0d7c3bb57d3c370616b2d07b01214e84eec5d3b10963",
+          "md5": "5ef659c1f29eb588a331c9bfe59302f4",
+          "sha256": "19b7ab10b210b0b3ad7985d9ac4eb66ab09a90b20fe6e2f7ba55d01a234345d0"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "5ef659c1f29eb588a331c9bfe59302f4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 8577146,
+        "upload_time": "2026-05-18T19:18:17",
+        "upload_time_iso_8601": "2026-05-18T19:18:17.765761Z",
+        "url": "https://files.pythonhosted.org/packages/13/e2/2e325795566de01d0d7c3bb57d3c370616b2d07b01214e84eec5d3b10963/lxml-6.1.1-cp314-cp314-macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "93cf5630b5e4be7d2e6bee8efe83865c925221103cf0221303b104ce134b01e2",
+          "md5": "1e1fd19eaed98e354582cdf4cbe7f93d",
+          "sha256": "c08e5c694306507275f2290073350c4f32e383db15213b2c69e7ff39c1193840"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "1e1fd19eaed98e354582cdf4cbe7f93d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 4623866,
+        "upload_time": "2026-05-18T19:18:30",
+        "upload_time_iso_8601": "2026-05-18T19:18:30.669732Z",
+        "url": "https://files.pythonhosted.org/packages/93/cf/5630b5e4be7d2e6bee8efe83865c925221103cf0221303b104ce134b01e2/lxml-6.1.1-cp314-cp314-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "d2513904907c063451cf8d4a5c9fe0cad95fa1f4ec57f4e3884fa0731bd7a305",
+          "md5": "f6fe6f25912084fbb45a247414b44e0d",
+          "sha256": "74a9717fd0d82effef5c2854f0d917231d5324b5a3eb7275c43ac9fa32f97a14"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "f6fe6f25912084fbb45a247414b44e0d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 4950022,
+        "upload_time": "2026-05-18T19:19:31",
+        "upload_time_iso_8601": "2026-05-18T19:19:31.958619Z",
+        "url": "https://files.pythonhosted.org/packages/d2/51/3904907c063451cf8d4a5c9fe0cad95fa1f4ec57f4e3884fa0731bd7a305/lxml-6.1.1-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "94cd9c7611a51c37a2830928405817cc5d56a97f64fab83cc3f628748b135749",
+          "md5": "2344f8127025f0881f690480ce088b07",
+          "sha256": "efe0374196335f93b53269acd811b944f2e6bdc88e8894f214bd636455484909"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "2344f8127025f0881f690480ce088b07",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5086695,
+        "upload_time": "2026-05-18T19:19:34",
+        "upload_time_iso_8601": "2026-05-18T19:19:34.764870Z",
+        "url": "https://files.pythonhosted.org/packages/94/cd/9c7611a51c37a2830928405817cc5d56a97f64fab83cc3f628748b135749/lxml-6.1.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "dad624e3b5906abb0b674ff2ae195bc3ce59708df2bcd17cf17703b2d7dd643a",
+          "md5": "375c968b5bc9b001a69ce9772bc7802c",
+          "sha256": "ac931cdc9442c1763b8a8f6cd62c0c938737eafc5be75eff88df55fc73bc0d00"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "375c968b5bc9b001a69ce9772bc7802c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5031642,
+        "upload_time": "2026-05-18T19:19:37",
+        "upload_time_iso_8601": "2026-05-18T19:19:37.771547Z",
+        "url": "https://files.pythonhosted.org/packages/da/d6/24e3b5906abb0b674ff2ae195bc3ce59708df2bcd17cf17703b2d7dd643a/lxml-6.1.1-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "2ddb6ec54f99019838bff54785c51da07f189eb4676861c5f2730962b0d8d665",
+          "md5": "9f793ea9937785ee9a7658f9d2fe59d4",
+          "sha256": "aee395f5d0927f947758b4ec119fd5fc8ec71f07a1c5c52077b30b04c0fa6955"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-manylinux_2_26_ppc64le.manylinux_2_28_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "9f793ea9937785ee9a7658f9d2fe59d4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5647338,
+        "upload_time": "2026-05-18T19:19:40",
+        "upload_time_iso_8601": "2026-05-18T19:19:40.553668Z",
+        "url": "https://files.pythonhosted.org/packages/2d/db/6ec54f99019838bff54785c51da07f189eb4676861c5f2730962b0d8d665/lxml-6.1.1-cp314-cp314-manylinux_2_26_ppc64le.manylinux_2_28_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "423def4dcfffd22d27a61805d8ed9f7fb888495bc6aa88648fa07c1eaa5586b6",
+          "md5": "fe50d6df68d65e7ca3dfd26b014af6ab",
+          "sha256": "9395002973c827b3ed67db77e6ec09f092919a587022174554096a269378fb13"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "fe50d6df68d65e7ca3dfd26b014af6ab",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5239528,
+        "upload_time": "2026-05-18T19:19:43",
+        "upload_time_iso_8601": "2026-05-18T19:19:43.657654Z",
+        "url": "https://files.pythonhosted.org/packages/42/3d/ef4dcfffd22d27a61805d8ed9f7fb888495bc6aa88648fa07c1eaa5586b6/lxml-6.1.1-cp314-cp314-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "62bb37fb3f0dff146bdcfa78eec47879273820b2a0bf350ec236ce14bd0b1c26",
+          "md5": "4584fecf2c38f6b80b908fd41b68f9c6",
+          "sha256": "73bc2086f141224ebddb7fc5c6a36ca58b31b94b561e1dfe8e073e3270fad1e7"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "4584fecf2c38f6b80b908fd41b68f9c6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5350730,
+        "upload_time": "2026-05-18T19:19:46",
+        "upload_time_iso_8601": "2026-05-18T19:19:46.307833Z",
+        "url": "https://files.pythonhosted.org/packages/62/bb/37fb3f0dff146bdcfa78eec47879273820b2a0bf350ec236ce14bd0b1c26/lxml-6.1.1-cp314-cp314-manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "904243253f168388df4fae1f38c01df36ddb9bee39e2048167b54cdcbae85ea3",
+          "md5": "59ea7d4bd0445b7f0dc7da7bc5974e08",
+          "sha256": "3779def59032b81e44a5f70096ef6bf2082f8d901937dca354474ba09782e245"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-manylinux_2_31_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "59ea7d4bd0445b7f0dc7da7bc5974e08",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 4697530,
+        "upload_time": "2026-05-18T19:19:49",
+        "upload_time_iso_8601": "2026-05-18T19:19:49.889411Z",
+        "url": "https://files.pythonhosted.org/packages/90/42/43253f168388df4fae1f38c01df36ddb9bee39e2048167b54cdcbae85ea3/lxml-6.1.1-cp314-cp314-manylinux_2_31_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "eba8c5a8504f81bbdfc8e7094c2c850cdb4ed6777fc4d5ddd9e5ab819f3b0d54",
+          "md5": "d03d94d768e79d6e89f37f5f545aebbc",
+          "sha256": "86c89b9d55ebf820ad7c90bc533410f0d098054f293351f10603c0c46ff598f5"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "d03d94d768e79d6e89f37f5f545aebbc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5250670,
+        "upload_time": "2026-05-18T19:19:53",
+        "upload_time_iso_8601": "2026-05-18T19:19:53.199559Z",
+        "url": "https://files.pythonhosted.org/packages/eb/a8/c5a8504f81bbdfc8e7094c2c850cdb4ed6777fc4d5ddd9e5ab819f3b0d54/lxml-6.1.1-cp314-cp314-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "77b7c7e76ab18744d75e21f320ebf9ff9d1ceae2b54dd431ea5a64caf26c9672",
+          "md5": "3e02974959f4c0f8e3310f2c1ce26e01",
+          "sha256": "19607c6bbff2a44cf3fe8250abccd20942d3462473e0a721d01d379ed017e462"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "3e02974959f4c0f8e3310f2c1ce26e01",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5084485,
+        "upload_time": "2026-05-18T19:19:08",
+        "upload_time_iso_8601": "2026-05-18T19:19:08.422882Z",
+        "url": "https://files.pythonhosted.org/packages/77/b7/c7e76ab18744d75e21f320ebf9ff9d1ceae2b54dd431ea5a64caf26c9672/lxml-6.1.1-cp314-cp314-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "3131b35c53f8ef7b7c31cacd23d3638652fff7bcd1deb6eedb709ab43b685908",
+          "md5": "9cba46bc561c0cf7f3c0cb0f6135a6a8",
+          "sha256": "c6ed5141a5c7507cf3ee76bd363b0d6f801e3321adc35b5d825a23115faa5465"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "9cba46bc561c0cf7f3c0cb0f6135a6a8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 4737635,
+        "upload_time": "2026-05-18T19:19:12",
+        "upload_time_iso_8601": "2026-05-18T19:19:12.321145Z",
+        "url": "https://files.pythonhosted.org/packages/31/31/b35c53f8ef7b7c31cacd23d3638652fff7bcd1deb6eedb709ab43b685908/lxml-6.1.1-cp314-cp314-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "d90631f23c813a7fe8e0cb1b175e915b08c9bf4e86d225b210feadbdbe519667",
+          "md5": "673b56237bc75ebf46d7767001b2c07a",
+          "sha256": "62aeb7e85b5d60320b9d77eef2e773994e2c0ce10121b277e0a19804e1654a5a"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "673b56237bc75ebf46d7767001b2c07a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5670681,
+        "upload_time": "2026-05-18T19:19:15",
+        "upload_time_iso_8601": "2026-05-18T19:19:15.001857Z",
+        "url": "https://files.pythonhosted.org/packages/d9/06/31f23c813a7fe8e0cb1b175e915b08c9bf4e86d225b210feadbdbe519667/lxml-6.1.1-cp314-cp314-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "1abcce619bccc89b1fd9ad8a8e1330ee3f3beff9f2ff95b712d7bbcdd6e22fc3",
+          "md5": "70116c31d523c396b8ac943611c43c12",
+          "sha256": "b1b963fd8f5caa68e99dfae060d54de1fe9cba899b8718b44a00cdca53c3e590"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-musllinux_1_2_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "70116c31d523c396b8ac943611c43c12",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5238229,
+        "upload_time": "2026-05-18T19:19:18",
+        "upload_time_iso_8601": "2026-05-18T19:19:18.131177Z",
+        "url": "https://files.pythonhosted.org/packages/1a/bc/ce619bccc89b1fd9ad8a8e1330ee3f3beff9f2ff95b712d7bbcdd6e22fc3/lxml-6.1.1-cp314-cp314-musllinux_1_2_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "2f5db329acbbedc0b619ebc2be6cf7ee9ed07e80892c88d4dfd612c33805789a",
+          "md5": "3a34bda714fd852dca169f938800ffe3",
+          "sha256": "63876be28efefa04a1df615b46770e82042cce445cfdce55160522f57b231ccb"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3a34bda714fd852dca169f938800ffe3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5264191,
+        "upload_time": "2026-05-18T19:19:21",
+        "upload_time_iso_8601": "2026-05-18T19:19:21.118167Z",
+        "url": "https://files.pythonhosted.org/packages/2f/5d/b329acbbedc0b619ebc2be6cf7ee9ed07e80892c88d4dfd612c33805789a/lxml-6.1.1-cp314-cp314-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "78b200ed55b3a2efa4658fb795c38d1090ec9b3e8a6c3683d4441fa517f09c3b",
+          "md5": "7663e09cc1745614b27231d3a58d2970",
+          "sha256": "787b2496d0dbe8cd180984e8d29e3a6f76e7ea34db781cb3bd55e4ba1ef8b4ee"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "7663e09cc1745614b27231d3a58d2970",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 8827545,
+        "upload_time": "2026-05-18T19:18:41",
+        "upload_time_iso_8601": "2026-05-18T19:18:41.193113Z",
+        "url": "https://files.pythonhosted.org/packages/78/b2/00ed55b3a2efa4658fb795c38d1090ec9b3e8a6c3683d4441fa517f09c3b/lxml-6.1.1-cp314-cp314t-macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "c07374573db19baa618d5f266f2407898b087ff6927115b00b71e5fc1b700847",
+          "md5": "951f97b2d8dd1316704f32d7dbfcc818",
+          "sha256": "2c8daa471358dc2d6fcf02165e80ec68f77871a286df95bc5cc3816153b0fd2c"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "951f97b2d8dd1316704f32d7dbfcc818",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 4735736,
+        "upload_time": "2026-05-18T19:18:46",
+        "upload_time_iso_8601": "2026-05-18T19:18:46.761912Z",
+        "url": "https://files.pythonhosted.org/packages/c0/73/74573db19baa618d5f266f2407898b087ff6927115b00b71e5fc1b700847/lxml-6.1.1-cp314-cp314t-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "16026f7061f4f95f51e545d48e87647c54791d204a4e881be4156e7a26ba5338",
+          "md5": "c9779f951bc9a1d6c18b725ce735db4b",
+          "sha256": "acd7d70b64c0aae0c7922cca83d288a16f5f6da523637697872253415269baef"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "c9779f951bc9a1d6c18b725ce735db4b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 4970291,
+        "upload_time": "2026-05-18T19:19:56",
+        "upload_time_iso_8601": "2026-05-18T19:19:56.215233Z",
+        "url": "https://files.pythonhosted.org/packages/16/02/6f7061f4f95f51e545d48e87647c54791d204a4e881be4156e7a26ba5338/lxml-6.1.1-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "b00255fc057d8283427dea7d6edb102e7a840239c77a64a983d92f62a304c0e9",
+          "md5": "1f160882d7e84145f1a6f4f6df091ae7",
+          "sha256": "4f0dd2f01f9f8a89f565d000e03abcf0a13d692a346c8d22f628d49af098777a"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "1f160882d7e84145f1a6f4f6df091ae7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5102822,
+        "upload_time": "2026-05-18T19:19:59",
+        "upload_time_iso_8601": "2026-05-18T19:19:59.223254Z",
+        "url": "https://files.pythonhosted.org/packages/b0/02/55fc057d8283427dea7d6edb102e7a840239c77a64a983d92f62a304c0e9/lxml-6.1.1-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "e4488e1cf78d89d66850121d9255a2a24414c98f775da93b90cf976956c24b14",
+          "md5": "b7beb911623d3c3fc402a22d294c56d3",
+          "sha256": "0b7e8a14c8634bf6f7a568634cb395305a6d964aeb5b7ee32248094bed3a7e2c"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "b7beb911623d3c3fc402a22d294c56d3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5027923,
+        "upload_time": "2026-05-18T19:20:01",
+        "upload_time_iso_8601": "2026-05-18T19:20:01.549311Z",
+        "url": "https://files.pythonhosted.org/packages/e4/48/8e1cf78d89d66850121d9255a2a24414c98f775da93b90cf976956c24b14/lxml-6.1.1-cp314-cp314t-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "ed000632a0647612c8af24d26997b3b961397daa9d5b2581444805933629a4cb",
+          "md5": "2617de6b2313f1bb37695f8500566f9b",
+          "sha256": "86281fbdd6a8162756f8d603f37e3435bfa38043adb79c6dc6a2dfee065e7525"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-manylinux_2_26_ppc64le.manylinux_2_28_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "2617de6b2313f1bb37695f8500566f9b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5595843,
+        "upload_time": "2026-05-18T19:20:03",
+        "upload_time_iso_8601": "2026-05-18T19:20:03.930670Z",
+        "url": "https://files.pythonhosted.org/packages/ed/00/0632a0647612c8af24d26997b3b961397daa9d5b2581444805933629a4cb/lxml-6.1.1-cp314-cp314t-manylinux_2_26_ppc64le.manylinux_2_28_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "bc86ab008a7dc360711b66858d61c80a5979a70a09f2aa2b05d9698df80b803d",
+          "md5": "ca2342e50de19614e94677cab6e1c804",
+          "sha256": "c5d7152ec39ca7c402d8fb9bad86140a15b9503bd0c54484e3f1bbe3dd37ceca"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "ca2342e50de19614e94677cab6e1c804",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5224515,
+        "upload_time": "2026-05-18T19:20:06",
+        "upload_time_iso_8601": "2026-05-18T19:20:06.381368Z",
+        "url": "https://files.pythonhosted.org/packages/bc/86/ab008a7dc360711b66858d61c80a5979a70a09f2aa2b05d9698df80b803d/lxml-6.1.1-cp314-cp314t-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "75c62702ff375e728e34f56d9a45339a9cf7e4427e917f542225242d63a05afa",
+          "md5": "fe56ab295f1bef4aa775c4b131d24525",
+          "sha256": "88d8cb75b9d82858497a5393e3c63cfbf03035225e4b35a49ed7ccb151e4dc0e"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "fe56ab295f1bef4aa775c4b131d24525",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5312511,
+        "upload_time": "2026-05-18T19:20:09",
+        "upload_time_iso_8601": "2026-05-18T19:20:09.308719Z",
+        "url": "https://files.pythonhosted.org/packages/75/c6/2702ff375e728e34f56d9a45339a9cf7e4427e917f542225242d63a05afa/lxml-6.1.1-cp314-cp314t-manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "b757a5807c98f87a86f10ef9ffab35516df7c0f0c4b6d5d33e9f608ab9c04a31",
+          "md5": "ab4e1ce1da53ea96a7c9eed3de152618",
+          "sha256": "f64ec5397ea6a41fc1b4af0380d79b44a755b5531dcaccd9940fb260dca93038"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-manylinux_2_31_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "ab4e1ce1da53ea96a7c9eed3de152618",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 4639206,
+        "upload_time": "2026-05-18T19:20:11",
+        "upload_time_iso_8601": "2026-05-18T19:20:11.704395Z",
+        "url": "https://files.pythonhosted.org/packages/b7/57/a5807c98f87a86f10ef9ffab35516df7c0f0c4b6d5d33e9f608ab9c04a31/lxml-6.1.1-cp314-cp314t-manylinux_2_31_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "1fe18a0a2c35734812395f4da4eaf33748a7e5705bfb2a58b128da764339d5ec",
+          "md5": "69d445cad2eafd38fd4fd15888202ddb",
+          "sha256": "d34bbf07dbc7ca5970671b1512e928991fb5e9d95365636c9b2d8b4f53af405e"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "69d445cad2eafd38fd4fd15888202ddb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5232404,
+        "upload_time": "2026-05-18T19:20:14",
+        "upload_time_iso_8601": "2026-05-18T19:20:14.064090Z",
+        "url": "https://files.pythonhosted.org/packages/1f/e1/8a0a2c35734812395f4da4eaf33748a7e5705bfb2a58b128da764339d5ec/lxml-6.1.1-cp314-cp314t-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "c2e20e6a4dd5ad84d01d99aa7bae7cfefd4a760a0e0f8176818241de17d9b6c0",
+          "md5": "c46e45f2d37455c21d1efb0172779c3f",
+          "sha256": "17e0e18d4ad8adbd0399291bc44845b69d9dd68439a3cdebdf35ff902ec05072"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "c46e45f2d37455c21d1efb0172779c3f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5083769,
+        "upload_time": "2026-05-18T19:19:23",
+        "upload_time_iso_8601": "2026-05-18T19:19:23.758707Z",
+        "url": "https://files.pythonhosted.org/packages/c2/e2/0e6a4dd5ad84d01d99aa7bae7cfefd4a760a0e0f8176818241de17d9b6c0/lxml-6.1.1-cp314-cp314t-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "a07e161f33d463f6ffc1c7679104b65086dea120080d49dde4d238f015aaee2f",
+          "md5": "195eaaac49fabf97a404ca74950328f9",
+          "sha256": "3ab541146f1f6968c462d6c2ac495148e8cdba2f8347700b2141b6ec5a75bf52"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "195eaaac49fabf97a404ca74950328f9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 4758936,
+        "upload_time": "2026-05-18T19:19:27",
+        "upload_time_iso_8601": "2026-05-18T19:19:27.256253Z",
+        "url": "https://files.pythonhosted.org/packages/a0/7e/161f33d463f6ffc1c7679104b65086dea120080d49dde4d238f015aaee2f/lxml-6.1.1-cp314-cp314t-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "f1fb2369825e3f6ca99305bf9f7b7085fda91c8b0922a89e54d900974aa3ef85",
+          "md5": "7458689222b7f79590193c8be1ab19fa",
+          "sha256": "2a0217714657e023ef4293500f65aa20fce6164c8fd6b08fa5bd4a859fb14b9b"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "7458689222b7f79590193c8be1ab19fa",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5620296,
+        "upload_time": "2026-05-18T19:19:29",
+        "upload_time_iso_8601": "2026-05-18T19:19:29.993145Z",
+        "url": "https://files.pythonhosted.org/packages/f1/fb/2369825e3f6ca99305bf9f7b7085fda91c8b0922a89e54d900974aa3ef85/lxml-6.1.1-cp314-cp314t-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "3090d61e383146f74c5ab683947ea14dc7b82778838ab9b95ea73a23b60d0191",
+          "md5": "edb6d03eb855b4ee03e7ef86f2571ba8",
+          "sha256": "05a82eb6e1530a64f26225b55cbd178113bd0b5af1c2b625f25e5296742c26d2"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-musllinux_1_2_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "edb6d03eb855b4ee03e7ef86f2571ba8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5228598,
+        "upload_time": "2026-05-18T19:19:33",
+        "upload_time_iso_8601": "2026-05-18T19:19:33.523201Z",
+        "url": "https://files.pythonhosted.org/packages/30/90/d61e383146f74c5ab683947ea14dc7b82778838ab9b95ea73a23b60d0191/lxml-6.1.1-cp314-cp314t-musllinux_1_2_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "762d2dafd8149e94b05bb070690efd5bb2680720681e03ff03fc57d2b70a1105",
+          "md5": "b618c024d3f04b2067a3c266b0b1717c",
+          "sha256": "9e36f163528fc50cbef305f02a5fd66d404edf7049cdaff211dbc2cba5a7013e"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "b618c024d3f04b2067a3c266b0b1717c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 5247845,
+        "upload_time": "2026-05-18T19:19:36",
+        "upload_time_iso_8601": "2026-05-18T19:19:36.649295Z",
+        "url": "https://files.pythonhosted.org/packages/76/2d/2dafd8149e94b05bb070690efd5bb2680720681e03ff03fc57d2b70a1105/lxml-6.1.1-cp314-cp314t-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "ce68b30e913340c380ddac9580c6e6230991fc37240ec4f64704833e4f3e2769",
+          "md5": "61d3ecf3a7e50d1e3c728f5897f312b0",
+          "sha256": "649dda677cf3bd6ac9ae14007ba0c824ded8ce5808b53fc7431d9140399118c1"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-win32.whl",
+        "has_sig": false,
+        "md5_digest": "61d3ecf3a7e50d1e3c728f5897f312b0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 3897345,
+        "upload_time": "2026-05-18T19:17:33",
+        "upload_time_iso_8601": "2026-05-18T19:17:33.562463Z",
+        "url": "https://files.pythonhosted.org/packages/ce/68/b30e913340c380ddac9580c6e6230991fc37240ec4f64704833e4f3e2769/lxml-6.1.1-cp314-cp314t-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "3c4e9eb2af5335545f9fbcd7af57bcf87c6025d31eaa31b14ec184a6c8675328",
+          "md5": "3277a23dc1965cfa14042607b96e2dce",
+          "sha256": "793033d6c5cdf33a573f910d9bea14ef8f5771820411d118da8e1182edb53d5e"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "3277a23dc1965cfa14042607b96e2dce",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 4393350,
+        "upload_time": "2026-05-18T19:18:10",
+        "upload_time_iso_8601": "2026-05-18T19:18:10.076310Z",
+        "url": "https://files.pythonhosted.org/packages/3c/4e/9eb2af5335545f9fbcd7af57bcf87c6025d31eaa31b14ec184a6c8675328/lxml-6.1.1-cp314-cp314t-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "7f2c0f1e93c636720e8a3eb59af2bfda99d98b55891e1c53bc30c2e0e865f01b",
+          "md5": "2bc7db3227e082e3e61b6eba430f75d9",
+          "sha256": "58bb955caba94e467d2a96da17660d2d704e0675894cba21ab8a775b8621fd1c"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314t-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "2bc7db3227e082e3e61b6eba430f75d9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 3817223,
+        "upload_time": "2026-05-19T19:22:56",
+        "upload_time_iso_8601": "2026-05-19T19:22:56.823010Z",
+        "url": "https://files.pythonhosted.org/packages/7f/2c/0f1e93c636720e8a3eb59af2bfda99d98b55891e1c53bc30c2e0e865f01b/lxml-6.1.1-cp314-cp314t-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "d685be36fb1425b30db3c3f9df75fe86343ebffb79e6320bd7f588e25bfeac39",
+          "md5": "2004c287ea3639860b2a4e3158035706",
+          "sha256": "7f7a92e8583f06b1fd49d01158143b8461cfcd135dcb10ec807270a3051bd603"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-win32.whl",
+        "has_sig": false,
+        "md5_digest": "2004c287ea3639860b2a4e3158035706",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 3657202,
+        "upload_time": "2026-05-18T19:17:39",
+        "upload_time_iso_8601": "2026-05-18T19:17:39.509255Z",
+        "url": "https://files.pythonhosted.org/packages/d6/85/be36fb1425b30db3c3f9df75fe86343ebffb79e6320bd7f588e25bfeac39/lxml-6.1.1-cp314-cp314-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "b8ce3cf9a827342269f54d405a6202397de63f07c69cbd6ce7d183a3f0cba1e9",
+          "md5": "edd61b7dd1d7bc3d8f19e75acc5cd91f",
+          "sha256": "b2d444f2e66624d68e9c6b211e28a76e22fff5fcabcfff4deac18b529b7d4137"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "edd61b7dd1d7bc3d8f19e75acc5cd91f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 4064497,
+        "upload_time": "2026-05-18T19:18:14",
+        "upload_time_iso_8601": "2026-05-18T19:18:14.662987Z",
+        "url": "https://files.pythonhosted.org/packages/b8/ce/3cf9a827342269f54d405a6202397de63f07c69cbd6ce7d183a3f0cba1e9/lxml-6.1.1-cp314-cp314-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "d93e1a957bde8f0760039e627f94699f82caa782c9d838d86c3d28245ee67212",
+          "md5": "1fba851cf31d88054180c6fedb7dd921",
+          "sha256": "3fd9728a2735fda14f4e8235830c86b539e9661e849665bf926d3f867943b4bf"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp314-cp314-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "1fba851cf31d88054180c6fedb7dd921",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.8",
+        "size": 3741991,
+        "upload_time": "2026-05-19T19:22:59",
+        "upload_time_iso_8601": "2026-05-19T19:22:59.111938Z",
+        "url": "https://files.pythonhosted.org/packages/d9/3e/1a957bde8f0760039e627f94699f82caa782c9d838d86c3d28245ee67212/lxml-6.1.1-cp314-cp314-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "6194612a7bff242d54bd4b2a3c8961238d00f067566b41ad3a948746764b175f"
+        },
+        "digests": {
+          "blake2b_256": "e7902a23efb250167769570750e65468b787e7df1ea78260e98a33329f68ac64",
+          "md5": "02abe499491ddee664b434e7e60e8542",
+          "sha256": "6689e828a94eee4f139408c337bb198e014724bb8a8c26d3cfac49d119ed69a6"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp38-cp38-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "02abe499491ddee664b434e7e60e8542",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": ">=3.8",
+        "size": 4705505,
+        "upload_time": "2026-05-18T19:18:50",
+        "upload_time_iso_8601": "2026-05-18T19:18:50.286011Z",
+        "url": "https://files.pythonhosted.org/packages/e7/90/2a23efb250167769570750e65468b787e7df1ea78260e98a33329f68ac64/lxml-6.1.1-cp38-cp38-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "6194612a7bff242d54bd4b2a3c8961238d00f067566b41ad3a948746764b175f"
+        },
+        "digests": {
+          "blake2b_256": "84bf258ecb6dbd35379cae904d92402e92668911e4369af36655a9406dd0d4d6",
+          "md5": "5c71ca9ed31b927c8980efdc6248a7a9",
+          "sha256": "bdebcc8a75d38c7598dfb2c9ed852d7a9eb4a10d6e2d0764b919b802bf32ac88"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp38-cp38-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "5c71ca9ed31b927c8980efdc6248a7a9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": ">=3.8",
+        "size": 5074417,
+        "upload_time": "2026-05-18T19:20:16",
+        "upload_time_iso_8601": "2026-05-18T19:20:16.859252Z",
+        "url": "https://files.pythonhosted.org/packages/84/bf/258ecb6dbd35379cae904d92402e92668911e4369af36655a9406dd0d4d6/lxml-6.1.1-cp38-cp38-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "6194612a7bff242d54bd4b2a3c8961238d00f067566b41ad3a948746764b175f"
+        },
+        "digests": {
+          "blake2b_256": "dedceff216d79b7660f0a57d1c11b0b5de7e7ee8e0e5edb300d978257edad662",
+          "md5": "bed358d75e8a147e372623f9c7fb38a9",
+          "sha256": "8be8ad51249698103d24b0571df35a10990fbe93dd043b6c024172189485f5e3"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp38-cp38-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "bed358d75e8a147e372623f9c7fb38a9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": ">=3.8",
+        "size": 5220272,
+        "upload_time": "2026-05-18T19:20:19",
+        "upload_time_iso_8601": "2026-05-18T19:20:19.363030Z",
+        "url": "https://files.pythonhosted.org/packages/de/dc/eff216d79b7660f0a57d1c11b0b5de7e7ee8e0e5edb300d978257edad662/lxml-6.1.1-cp38-cp38-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "6194612a7bff242d54bd4b2a3c8961238d00f067566b41ad3a948746764b175f"
+        },
+        "digests": {
+          "blake2b_256": "ed3bf854d6b609e47719b16e5fd1bc7a01259778c65f0d6f2c70bd9ad41b9feb",
+          "md5": "6d6af1d6f6007816c6db37514b9982ff",
+          "sha256": "76447f65250ed2501ead1a1552f5ce8edff159a86f308348e6a9c4acb5e1f1b4"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp38-cp38-manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "6d6af1d6f6007816c6db37514b9982ff",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": ">=3.8",
+        "size": 5377062,
+        "upload_time": "2026-05-18T19:20:21",
+        "upload_time_iso_8601": "2026-05-18T19:20:21.795770Z",
+        "url": "https://files.pythonhosted.org/packages/ed/3b/f854d6b609e47719b16e5fd1bc7a01259778c65f0d6f2c70bd9ad41b9feb/lxml-6.1.1-cp38-cp38-manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "6194612a7bff242d54bd4b2a3c8961238d00f067566b41ad3a948746764b175f"
+        },
+        "digests": {
+          "blake2b_256": "d25fad042f749424694f3ebf05f503afc9f49b6e015f3aa902b1c34f28310aac",
+          "md5": "9ef5ed65420f4053de2558593595be85",
+          "sha256": "ffecec8eb889b58ba9be5b95fb1cc78e22ea8eedea38e8736a1568fe1979250e"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp38-cp38-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9ef5ed65420f4053de2558593595be85",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": ">=3.8",
+        "size": 5247897,
+        "upload_time": "2026-05-18T19:19:39",
+        "upload_time_iso_8601": "2026-05-18T19:19:39.220914Z",
+        "url": "https://files.pythonhosted.org/packages/d2/5f/ad042f749424694f3ebf05f503afc9f49b6e015f3aa902b1c34f28310aac/lxml-6.1.1-cp38-cp38-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "15362609dbf47942927ba54bcb86487ec2f11f377e523d287ba9b1b623be550c"
+        },
+        "digests": {
+          "blake2b_256": "e5c5bf0ce3a16d1df817b6efc30ab762856a5d7cccbd78a3b8f7fff271fc7318",
+          "md5": "a14440cf0b84eae68693125bd159d5b3",
+          "sha256": "c674693f055fa2495de12292cb45e9944199d8eaef5a2dec45175c7c61cb73e3"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp38-cp38-win32.whl",
+        "has_sig": false,
+        "md5_digest": "a14440cf0b84eae68693125bd159d5b3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": ">=3.8",
+        "size": 3611315,
+        "upload_time": "2026-05-18T19:17:52",
+        "upload_time_iso_8601": "2026-05-18T19:17:52.194568Z",
+        "url": "https://files.pythonhosted.org/packages/e5/c5/bf0ce3a16d1df817b6efc30ab762856a5d7cccbd78a3b8f7fff271fc7318/lxml-6.1.1-cp38-cp38-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "15362609dbf47942927ba54bcb86487ec2f11f377e523d287ba9b1b623be550c"
+        },
+        "digests": {
+          "blake2b_256": "b9d2d6b209b6b2267918065d9f1ffc21545c42c336c8d6a7437ba2c25f9b03c8",
+          "md5": "0caca86561eabb5b63cd76e8b2e7215d",
+          "sha256": "55b03549819867ea141c0202242c4816c82e52ec36e7e648db9d8da5a3dc3ed6"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp38-cp38-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "0caca86561eabb5b63cd76e8b2e7215d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": ">=3.8",
+        "size": 4033377,
+        "upload_time": "2026-05-18T19:18:26",
+        "upload_time_iso_8601": "2026-05-18T19:18:26.807036Z",
+        "url": "https://files.pythonhosted.org/packages/b9/d2/d6b209b6b2267918065d9f1ffc21545c42c336c8d6a7437ba2c25f9b03c8/lxml-6.1.1-cp38-cp38-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "d3b50a0f61cc8c6aa61f439d276e62e70cbf4f32205f57b1fbd483b8d0cf514b",
+          "md5": "e054eb362c3d334a522c4805249d6eb6",
+          "sha256": "c9f79d5325907f13e1be0b3e4dacc1049d1dffc4aeee3c995284bea5fe0fab7d"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-macosx_10_9_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "e054eb362c3d334a522c4805249d6eb6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 8553821,
+        "upload_time": "2026-05-18T19:18:54",
+        "upload_time_iso_8601": "2026-05-18T19:18:54.406710Z",
+        "url": "https://files.pythonhosted.org/packages/d3/b5/0a0f61cc8c6aa61f439d276e62e70cbf4f32205f57b1fbd483b8d0cf514b/lxml-6.1.1-cp39-cp39-macosx_10_9_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "f6dc66603d8f755d26f39c41cf29ed30e4a3bc93973d72a825cd12be91c5bd7b",
+          "md5": "12ce8fc3474152d11ad704da10082b4d",
+          "sha256": "83b6b30eb131da7a75b601f28c5d6971e6ed3e887919bf6b6a1ad3c2df289080"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "12ce8fc3474152d11ad704da10082b4d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 4607623,
+        "upload_time": "2026-05-18T19:18:58",
+        "upload_time_iso_8601": "2026-05-18T19:18:58.556610Z",
+        "url": "https://files.pythonhosted.org/packages/f6/dc/66603d8f755d26f39c41cf29ed30e4a3bc93973d72a825cd12be91c5bd7b/lxml-6.1.1-cp39-cp39-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "a9ad5ea70128e6b0d34a52d16e2386666f8f9529c17cfac46d5980fd22c35daa",
+          "md5": "998a9959dec9df5963fd34e8d6aeecbe",
+          "sha256": "441dd227fa0690eb9fc81edabc63cdcefc212bba99b906dcf6e32cc1a9d3e533"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "998a9959dec9df5963fd34e8d6aeecbe",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 5005993,
+        "upload_time": "2026-05-18T19:20:24",
+        "upload_time_iso_8601": "2026-05-18T19:20:24.125221Z",
+        "url": "https://files.pythonhosted.org/packages/a9/ad/5ea70128e6b0d34a52d16e2386666f8f9529c17cfac46d5980fd22c35daa/lxml-6.1.1-cp39-cp39-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "85c213a33e8659f95d59f28a293f31c31d61d858a1bd4294b82a662cfbae126b",
+          "md5": "e7e1ac7b6b8259ad12aa6c0e40f871ae",
+          "sha256": "e07c65f443c887bbcf31cc1771d932ecc192a5273943589b3c7572b749f1ffb2"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "e7e1ac7b6b8259ad12aa6c0e40f871ae",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 5160240,
+        "upload_time": "2026-05-18T19:20:26",
+        "upload_time_iso_8601": "2026-05-18T19:20:26.549676Z",
+        "url": "https://files.pythonhosted.org/packages/85/c2/13a33e8659f95d59f28a293f31c31d61d858a1bd4294b82a662cfbae126b/lxml-6.1.1-cp39-cp39-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "6506e850042d7b33cf47d2f1bc4accb31ab34478f56f46c376b7a67c6b1a84c5",
+          "md5": "99828fb00ae810cfca7c106c24e7efd3",
+          "sha256": "5bec7d03d78d853597d6107854c2310ce3f761fd218fe9fe91d5101fcf6c2efe"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "99828fb00ae810cfca7c106c24e7efd3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 5062940,
+        "upload_time": "2026-05-18T19:20:29",
+        "upload_time_iso_8601": "2026-05-18T19:20:29.027733Z",
+        "url": "https://files.pythonhosted.org/packages/65/06/e850042d7b33cf47d2f1bc4accb31ab34478f56f46c376b7a67c6b1a84c5/lxml-6.1.1-cp39-cp39-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "f95a8d7a0b3e42b21a553f01e288e70283f4de37c015c9c2477a0c31dafa0408",
+          "md5": "95b8d92d9cb0832de8727117eaeefb82",
+          "sha256": "9f76acfb5f68ba982635a53fd985a8044be98a35b43232c2a1ee235ffab3e1dd"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "95b8d92d9cb0832de8727117eaeefb82",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 5292921,
+        "upload_time": "2026-05-18T19:20:31",
+        "upload_time_iso_8601": "2026-05-18T19:20:31.463948Z",
+        "url": "https://files.pythonhosted.org/packages/f9/5a/8d7a0b3e42b21a553f01e288e70283f4de37c015c9c2477a0c31dafa0408/lxml-6.1.1-cp39-cp39-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "037c9238d52bc426c8737b427ce57ea48c8a5a91974c5dcc55a34260dd851763",
+          "md5": "7bdc4b3faa6323777642cc7e7c1bdb43",
+          "sha256": "8d43ca737b20e106e4aebc42b2f3ae19f00ba63d7eb731698ee083d72d15646f"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "7bdc4b3faa6323777642cc7e7c1bdb43",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 5416716,
+        "upload_time": "2026-05-18T19:20:34",
+        "upload_time_iso_8601": "2026-05-18T19:20:34.059041Z",
+        "url": "https://files.pythonhosted.org/packages/03/7c/9238d52bc426c8737b427ce57ea48c8a5a91974c5dcc55a34260dd851763/lxml-6.1.1-cp39-cp39-manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "6e06be127e1f36410d8ec84964adf76694b72f7705593c16c838dc8b1061b0b8",
+          "md5": "4560e516f25c47845c8a962a2d5307e5",
+          "sha256": "32ab449a5486f6c758e849bb86710d0e45edc24a04e250c01555f8f5653958f8"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-manylinux_2_31_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "4560e516f25c47845c8a962a2d5307e5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 4773279,
+        "upload_time": "2026-05-18T19:20:36",
+        "upload_time_iso_8601": "2026-05-18T19:20:36.555830Z",
+        "url": "https://files.pythonhosted.org/packages/6e/06/be127e1f36410d8ec84964adf76694b72f7705593c16c838dc8b1061b0b8/lxml-6.1.1-cp39-cp39-manylinux_2_31_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "77425e3ca677b4d56ae189a454764d28d922d343750419548409974d913a9b65",
+          "md5": "34457c06939bb86e12b89e8cf9871fbc",
+          "sha256": "53c909b62a0532183542fed00c5a7218258c56292d409bc789886fe1cb04c438"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "34457c06939bb86e12b89e8cf9871fbc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 5361618,
+        "upload_time": "2026-05-18T19:20:39",
+        "upload_time_iso_8601": "2026-05-18T19:20:39.044038Z",
+        "url": "https://files.pythonhosted.org/packages/77/42/5e3ca677b4d56ae189a454764d28d922d343750419548409974d913a9b65/lxml-6.1.1-cp39-cp39-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "cd20816979635625f8b8f88b69b5f7d9a4ebdc3c0bab1bf70c824e4ffe239879",
+          "md5": "33580d3805ca29a55caf835fe8bad9df",
+          "sha256": "640f97d43d867bcb9c75b3af013b64850756b746cb6bce8ace83b70da3abba9d"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "33580d3805ca29a55caf835fe8bad9df",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 5111217,
+        "upload_time": "2026-05-18T19:19:42",
+        "upload_time_iso_8601": "2026-05-18T19:19:42.123933Z",
+        "url": "https://files.pythonhosted.org/packages/cd/20/816979635625f8b8f88b69b5f7d9a4ebdc3c0bab1bf70c824e4ffe239879/lxml-6.1.1-cp39-cp39-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "2586a6ec97064d25959d4932f2e91b547ce6b8380daa27de08b103c7b50be323",
+          "md5": "ae228bbc8168b291f79b076df0a3006f",
+          "sha256": "469e3618338bd7ab5beb412d2439825479fcf0dab99e394ca563dbc4eaf6c834"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "ae228bbc8168b291f79b076df0a3006f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 4808149,
+        "upload_time": "2026-05-18T19:19:45",
+        "upload_time_iso_8601": "2026-05-18T19:19:45.317131Z",
+        "url": "https://files.pythonhosted.org/packages/25/86/a6ec97064d25959d4932f2e91b547ce6b8380daa27de08b103c7b50be323/lxml-6.1.1-cp39-cp39-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "ac85dc6087d1ba06589202ee25cda29abb175443da2da70c9e6bcf92091ad272",
+          "md5": "9eafe47584883534f99bf741ea6e94af",
+          "sha256": "aae97dfdb60715c164419ac2532a76d013c3918a665eb6cb7288098b5f349aaf"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-musllinux_1_2_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "9eafe47584883534f99bf741ea6e94af",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 5352761,
+        "upload_time": "2026-05-18T19:19:48",
+        "upload_time_iso_8601": "2026-05-18T19:19:48.608093Z",
+        "url": "https://files.pythonhosted.org/packages/ac/85/dc6087d1ba06589202ee25cda29abb175443da2da70c9e6bcf92091ad272/lxml-6.1.1-cp39-cp39-musllinux_1_2_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "6993e89fcb55d12b8e1473ce9a62b8f6ee215c89532f7a75a7ce55830834373b",
+          "md5": "eb1c35448307762a79edd0b06c70ec5a",
+          "sha256": "c9a4b821dc7055bf9e05ff5719e18ec501f75c0f0bbfabd573b277559780833d"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "eb1c35448307762a79edd0b06c70ec5a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 5315355,
+        "upload_time": "2026-05-18T19:19:51",
+        "upload_time_iso_8601": "2026-05-18T19:19:51.077766Z",
+        "url": "https://files.pythonhosted.org/packages/69/93/e89fcb55d12b8e1473ce9a62b8f6ee215c89532f7a75a7ce55830834373b/lxml-6.1.1-cp39-cp39-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "ffc14f07e22d26e2e1ad741666f768df2d3b18ff1ddab3a99e2cb35d5b5df3a3",
+          "md5": "986f1a6290fc30acc9080ac68d56b1a6",
+          "sha256": "639f6c857d91d9be29bd7502348d6736dab168b54b5158cd899abf11684dc186"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-win32.whl",
+        "has_sig": false,
+        "md5_digest": "986f1a6290fc30acc9080ac68d56b1a6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 3601121,
+        "upload_time": "2026-05-18T19:17:58",
+        "upload_time_iso_8601": "2026-05-18T19:17:58.570619Z",
+        "url": "https://files.pythonhosted.org/packages/ff/c1/4f07e22d26e2e1ad741666f768df2d3b18ff1ddab3a99e2cb35d5b5df3a3/lxml-6.1.1-cp39-cp39-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "1e494bcb779b303876f1750eb37f534230ef4e7221341826cbd5e42388087393",
+          "md5": "91cf4296c26370c4a7b2558b38223e7c",
+          "sha256": "34c2d737beabfe35baada43941ed519251e9a12e779031496bcd5d539fcfd730"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "91cf4296c26370c4a7b2558b38223e7c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 4024637,
+        "upload_time": "2026-05-18T19:18:32",
+        "upload_time_iso_8601": "2026-05-18T19:18:32.806487Z",
+        "url": "https://files.pythonhosted.org/packages/1e/49/4bcb779b303876f1750eb37f534230ef4e7221341826cbd5e42388087393/lxml-6.1.1-cp39-cp39-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "d8e60d1b437d0783874ff15fb94be03045bce6dcefbce1ea22e44a2dbd59a902",
+          "md5": "c3ed8a8ce6795ddea15b49eaaa5b57e1",
+          "sha256": "07a4a68e286ee7a1ed7dfb8af83e615757c0ccfe9f18c6b4ea6771388d9ba8c9"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-cp39-cp39-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "c3ed8a8ce6795ddea15b49eaaa5b57e1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.8",
+        "size": 3670865,
+        "upload_time": "2026-05-19T19:23:01",
+        "upload_time_iso_8601": "2026-05-19T19:23:01.555309Z",
+        "url": "https://files.pythonhosted.org/packages/d8/e6/0d1b437d0783874ff15fb94be03045bce6dcefbce1ea22e44a2dbd59a902/lxml-6.1.1-cp39-cp39-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "b53286a3f0f724a3a402d4627937a7fc27b160e45e7012b4adf47f6e1e844511",
+          "md5": "bf3609ad5be791f8c8a4a99cfa7b82df",
+          "sha256": "31033dc34636ea6b7d5cc11b1ddbda78a14de858ba9d3e1ed4b69a3085bc521e"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-pp311-pypy311_pp73-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "bf3609ad5be791f8c8a4a99cfa7b82df",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.8",
+        "size": 3930127,
+        "upload_time": "2026-05-18T19:19:02",
+        "upload_time_iso_8601": "2026-05-18T19:19:02.270835Z",
+        "url": "https://files.pythonhosted.org/packages/b5/32/86a3f0f724a3a402d4627937a7fc27b160e45e7012b4adf47f6e1e844511/lxml-6.1.1-pp311-pypy311_pp73-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "4044d832e82af08723761556d004b1d04d281c09f9a8cecd7d3148548c9941a3",
+          "md5": "bc0e9e29070fc83fce23089235291198",
+          "sha256": "3893c14c4b6ac5b2d54ba8cf03e99fe5104e592de491f19bd6b82756c09f8004"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-pp311-pypy311_pp73-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "bc0e9e29070fc83fce23089235291198",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.8",
+        "size": 4210769,
+        "upload_time": "2026-05-18T19:20:41",
+        "upload_time_iso_8601": "2026-05-18T19:20:41.427431Z",
+        "url": "https://files.pythonhosted.org/packages/40/44/d832e82af08723761556d004b1d04d281c09f9a8cecd7d3148548c9941a3/lxml-6.1.1-pp311-pypy311_pp73-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "6d390dc5949f759ed7d951e0bb8c2f2d9d7aca1908d22352fa84a8afd2ea54af",
+          "md5": "7099d47b498fbf1f190d3615db59d931",
+          "sha256": "c07da4cebf6889f03ebac8d238f62318e29f495de0aa18a51ea14e61ae907e2e"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-pp311-pypy311_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "7099d47b498fbf1f190d3615db59d931",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.8",
+        "size": 4318163,
+        "upload_time": "2026-05-18T19:20:44",
+        "upload_time_iso_8601": "2026-05-18T19:20:44.702219Z",
+        "url": "https://files.pythonhosted.org/packages/6d/39/0dc5949f759ed7d951e0bb8c2f2d9d7aca1908d22352fa84a8afd2ea54af/lxml-6.1.1-pp311-pypy311_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "e6fb8ab3845fe046ba4cbf74536bcf6801a774b7caf4350de1c5d37f1f0a9e90",
+          "md5": "1e47fe93ef0e9bb45efea7213ea1326c",
+          "sha256": "f6f0ce10945fab9c4c06ce14e22af9059d1a87493a9af4501a5b0b9187e21cf2"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-pp311-pypy311_pp73-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "1e47fe93ef0e9bb45efea7213ea1326c",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.8",
+        "size": 4250945,
+        "upload_time": "2026-05-18T19:20:47",
+        "upload_time_iso_8601": "2026-05-18T19:20:47.385752Z",
+        "url": "https://files.pythonhosted.org/packages/e6/fb/8ab3845fe046ba4cbf74536bcf6801a774b7caf4350de1c5d37f1f0a9e90/lxml-6.1.1-pp311-pypy311_pp73-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a9bbc00470881cf133707920044995ffd6063723e203ca68d65e2f2a25886bc7"
+        },
+        "digests": {
+          "blake2b_256": "681b7553ab136894374ffae8851ec06f98f511cd8e66246e41b6be059d0a7289",
+          "md5": "f0067fb154aff2ef0ca4f32a2e9ead0b",
+          "sha256": "f8844cd288697c6425c9beba919302241e3278871dc6519515e72b04e987abcf"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-pp311-pypy311_pp73-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "f0067fb154aff2ef0ca4f32a2e9ead0b",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.8",
+        "size": 4401664,
+        "upload_time": "2026-05-18T19:20:50",
+        "upload_time_iso_8601": "2026-05-18T19:20:50.489066Z",
+        "url": "https://files.pythonhosted.org/packages/68/1b/7553ab136894374ffae8851ec06f98f511cd8e66246e41b6be059d0a7289/lxml-6.1.1-pp311-pypy311_pp73-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0b6279dfca6a89d340c72bfdec06aac78e9879845ac900d043ed65d0b9648bae"
+        },
+        "digests": {
+          "blake2b_256": "dba4441aee36c6f6b249823d20fd91f9be9ab89d7c5a8ae542a4a4ca6d342d56",
+          "md5": "0906e027f7fda87f2f35c4f561245109",
+          "sha256": "ed21202aec73cda4d55d1ce57b389aadb90ffb044e6cd1080b8347efe1b1ec84"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1-pp311-pypy311_pp73-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "0906e027f7fda87f2f35c4f561245109",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.8",
+        "size": 3508989,
+        "upload_time": "2026-05-18T19:18:38",
+        "upload_time_iso_8601": "2026-05-18T19:18:38.158504Z",
+        "url": "https://files.pythonhosted.org/packages/db/a4/441aee36c6f6b249823d20fd91f9be9ab89d7c5a8ae542a4a4ca6d342d56/lxml-6.1.1-pp311-pypy311_pp73-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "053baab6728cae887456f409b4d75e8a01856e4f04bd510de38052a47768b680",
+          "md5": "6bbd3674ecba1340b08c9180afef1829",
+          "sha256": "ba96ae44888e0185281e937633a743ea90d5a196c6000f82565ebb0580012d40"
+        },
+        "downloads": -1,
+        "filename": "lxml-6.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6bbd3674ecba1340b08c9180afef1829",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.8",
+        "size": 4197430,
+        "upload_time": "2026-05-18T19:19:06",
+        "upload_time_iso_8601": "2026-05-18T19:19:06.424556Z",
+        "url": "https://files.pythonhosted.org/packages/05/3b/aab6728cae887456f409b4d75e8a01856e4f04bd510de38052a47768b680/lxml-6.1.1.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "lxml",
+    "version": "6.1.1",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "05a82eb6e1530a64f26225b55cbd178113bd0b5af1c2b625f25e5296742c26d2",
+      "07a4a68e286ee7a1ed7dfb8af83e615757c0ccfe9f18c6b4ea6771388d9ba8c9",
+      "09dd5b7075dc2f7709654a46543ba1ea3c2e217b2ed8fbd413a8a945a0f40f60",
+      "0b7e8a14c8634bf6f7a568634cb395305a6d964aeb5b7ee32248094bed3a7e2c",
+      "104c09bda8d2a562824c0e319d0768ce26a779b7601e0931d33b09b53c392ef7",
+      "126c93f7f56f0eda92f6d8c619edc463a4f23d9252f1c9d0405a76f25fa9f11a",
+      "162af1091cd785f2f27e62d3547ae9bc58ec5c86dd314d67021fd02463708d83",
+      "17e0e18d4ad8adbd0399291bc44845b69d9dd68439a3cdebdf35ff902ec05072",
+      "18b73c339ae29b90fd2d06e58ebd555a751bde9cd6bbd36cc0281b9a2c94e9d8",
+      "19607c6bbff2a44cf3fe8250abccd20942d3462473e0a721d01d379ed017e462",
+      "19b7ab10b210b0b3ad7985d9ac4eb66ab09a90b20fe6e2f7ba55d01a234345d0",
+      "1d4962d4c66bf830a7e59ed6cfc17d148149898a3aefa8ec6e59763e6e3ed085",
+      "1db753c9115ec7100d073b744d17e25e88a8f90f5c39b2f5dd878149af59671f",
+      "1dde6131244bba38a17c745836ba190bc753fd73c9291666287fd0a3fa3dcf30",
+      "25c6997a9a534e016695a0ba06b2f07945de682731ff01065b6d5a4474179da1",
+      "26e6eda8d38c1fcab1090dd196ee87cbd13788e531937610e2589085de074e77",
+      "27acc820660aaffa4f7c087f29120e12980f7779d56d8492d263170111284740",
+      "2a0217714657e023ef4293500f65aa20fce6164c8fd6b08fa5bd4a859fb14b9b",
+      "2c8daa471358dc2d6fcf02165e80ec68f77871a286df95bc5cc3816153b0fd2c",
+      "30a89d3ac8faec007453fb541f3f46807eeec88edd5826f6e3fe001752a2c621",
+      "31033dc34636ea6b7d5cc11b1ddbda78a14de858ba9d3e1ed4b69a3085bc521e",
+      "32ab449a5486f6c758e849bb86710d0e45edc24a04e250c01555f8f5653958f8",
+      "3483644525531e1d5762b0c44a8e18b6efba321b6dcf8a8952de10b037618bca",
+      "34c2d737beabfe35baada43941ed519251e9a12e779031496bcd5d539fcfd730",
+      "3779def59032b81e44a5f70096ef6bf2082f8d901937dca354474ba09782e245",
+      "37a58976370f36d9329d118ad0b953c5aeb9119ac9c6a4e258942a225d0573a1",
+      "3893c14c4b6ac5b2d54ba8cf03e99fe5104e592de491f19bd6b82756c09f8004",
+      "3a12689be69a28ddaa0ab99a5a1137da2afd5f8f16df7b5680b66f616d3eda1d",
+      "3ab541146f1f6968c462d6c2ac495148e8cdba2f8347700b2141b6ec5a75bf52",
+      "3abf332af33a74288675d936fe861fd4344da0dd6622193fbc4f2bfbb35536b5",
+      "3fd9728a2735fda14f4e8235830c86b539e9661e849665bf926d3f867943b4bf",
+      "424aa57aca0897eb922aef34395bd1289b3b6f04e6bae20ea123c0c7e333cffc",
+      "441dd227fa0690eb9fc81edabc63cdcefc212bba99b906dcf6e32cc1a9d3e533",
+      "469e3618338bd7ab5beb412d2439825479fcf0dab99e394ca563dbc4eaf6c834",
+      "47402e62c52ff5988c1e8c6c63177f5708bccf48e366dea4e3dcf1e645e04947",
+      "4f0dd2f01f9f8a89f565d000e03abcf0a13d692a346c8d22f628d49af098777a",
+      "53b7d2b7a10b1c35c0a5e21e9224accf60c1bbfba523990732e521b2b73adef2",
+      "53c909b62a0532183542fed00c5a7218258c56292d409bc789886fe1cb04c438",
+      "54a7f95e4de5fb94e2f9f4b9055c6ba33bf3d628fd77a1d647c5923caa2cdcdc",
+      "556e94a63c9b04716f8e4de2abb65775061f846e89331b6c5be79183a24f98ea",
+      "55b03549819867ea141c0202242c4816c82e52ec36e7e648db9d8da5a3dc3ed6",
+      "581d4c8ae690a6609e64862dd6b7c2489635c2d13907fc2b20f2bc200ff1d21e",
+      "58bb955caba94e467d2a96da17660d2d704e0675894cba21ab8a775b8621fd1c",
+      "5b7328b46d49fc9477d91ae8f6d55340347d827b7734ba3ea33faae0efef1383",
+      "5ba186ad207446c65d3bb3d3e0412b032b1d9f595e59861e2354798c5703d955",
+      "5bec7d03d78d853597d6107854c2310ce3f761fd218fe9fe91d5101fcf6c2efe",
+      "5c6bf403fbb3b3e348a561a5f4f0b9961835657981c802a1df03653eef8a9074",
+      "5f6994074ebae6ffb04447268e37dc16edc304f9859cf91acb86e0af6c1b395c",
+      "62aeb7e85b5d60320b9d77eef2e773994e2c0ce10121b277e0a19804e1654a5a",
+      "63876be28efefa04a1df615b46770e82042cce445cfdce55160522f57b231ccb",
+      "639f6c857d91d9be29bd7502348d6736dab168b54b5158cd899abf11684dc186",
+      "640f97d43d867bcb9c75b3af013b64850756b746cb6bce8ace83b70da3abba9d",
+      "649dda677cf3bd6ac9ae14007ba0c824ded8ce5808b53fc7431d9140399118c1",
+      "6540377fbd53fe1b629172288c464fb18db11ce1fa7dc15891da10aa9dcc3e7f",
+      "6689e828a94eee4f139408c337bb198e014724bb8a8c26d3cfac49d119ed69a6",
+      "68a9198d0fc122d14bb76837de9aa80cf84caed990b5b237f532ed87d3706736",
+      "6b1761fbf9ec984e2e9d9c589ef5f5fd684b7c19f92aadd567a26c5224958db6",
+      "70cdfd80589d59e43e18005dd7244e8895e93db8ab6a620b7e23df5445a4e3d2",
+      "70ef8a7e102a1508f8121aae5b0867abd663f72c14f0a9c937e6554cb4587b7b",
+      "73bc2086f141224ebddb7fc5c6a36ca58b31b94b561e1dfe8e073e3270fad1e7",
+      "74a9717fd0d82effef5c2854f0d917231d5324b5a3eb7275c43ac9fa32f97a14",
+      "752d3bbfe874715ccd0aec7f88d7fc623c0f1fd7aa7b3238a084e017bad2a009",
+      "762ff394d5bd56da0cf034a23dcce4e13923f15321a2adfa2ac00201dc6d3fca",
+      "76447f65250ed2501ead1a1552f5ce8edff159a86f308348e6a9c4acb5e1f1b4",
+      "766b010012d59470072c1816b5b6c69f1d243e5db36ea5968e94accf430a4635",
+      "787b2496d0dbe8cd180984e8d29e3a6f76e7ea34db781cb3bd55e4ba1ef8b4ee",
+      "793033d6c5cdf33a573f910d9bea14ef8f5771820411d118da8e1182edb53d5e",
+      "7d47866cb32fb503450b6edc9df355d10dc49836af2e89901bd6ac6b0896d9d9",
+      "7f7a92e8583f06b1fd49d01158143b8461cfcd135dcb10ec807270a3051bd603",
+      "80c2dfadb855da477cf73373ad29a333535dedb9b12bad02c9814c8e2b43bf08",
+      "83b6b30eb131da7a75b601f28c5d6971e6ed3e887919bf6b6a1ad3c2df289080",
+      "86281fbdd6a8162756f8d603f37e3435bfa38043adb79c6dc6a2dfee065e7525",
+      "86c89b9d55ebf820ad7c90bc533410f0d098054f293351f10603c0c46ff598f5",
+      "876e1ff5930ed8bf295ec5ef9a8155e9b6b1876bbf1deed8b3a8069311875a8f",
+      "88136950da4d13c318bde414ce10219931937851327f44328f2df4d2c4614067",
+      "88d8cb75b9d82858497a5393e3c63cfbf03035225e4b35a49ed7ccb151e4dc0e",
+      "8be8ad51249698103d24b0571df35a10990fbe93dd043b6c024172189485f5e3",
+      "8d43ca737b20e106e4aebc42b2f3ae19f00ba63d7eb731698ee083d72d15646f",
+      "8dadbe5b217ff35b6a8d16610dd710219b59b76d13f0e3f0d9f36786206e4485",
+      "9395002973c827b3ed67db77e6ec09f092919a587022174554096a269378fb13",
+      "96f2ec43df44b1f76249ee0a615334f9b5b060e1c8bd90e706dad2d14d02f383",
+      "98fc784c2c1440667aeedf8465bdfe10208acf0ead656a2c68627299f546b315",
+      "9e36f163528fc50cbef305f02a5fd66d404edf7049cdaff211dbc2cba5a7013e",
+      "9eb9b5a968f6e0f6d640092a567e14529ff8cea2e29d00da6f78a79fa49f013c",
+      "9f76acfb5f68ba982635a53fd985a8044be98a35b43232c2a1ee235ffab3e1dd",
+      "a088f287f7d8275a33c07f2cac6c50b9319309a0200a39e7e75d80c707723099",
+      "a10bd2fd62e8ce916ececb342f348f190724a098c1faa056fdfb2a22ad5e8660",
+      "a4bbea04c97f6d78a48e3fbc1cb9116d2780b1b39e03a23f6eb9b603fd61f510",
+      "aa366a1e55b8ebfe8ca8ddc3cfe75c8ebade181aeb0f661d0cb05986b647f72a",
+      "aa49e06d94aba782c6a02eecb7e507969e7e7a41b267f1b359bb35585f295d5b",
+      "aad9aa39483ed8ec44d6d2e59e5b98a0d80676ef0d92f44bfc374836111f62f5",
+      "aae97dfdb60715c164419ac2532a76d013c3918a665eb6cb7288098b5f349aaf",
+      "abbefa31eee84842140f67acef1c828e28bba8bbf0c3bc6e5492a9af88152c28",
+      "ac931cdc9442c1763b8a8f6cd62c0c938737eafc5be75eff88df55fc73bc0d00",
+      "acd7d70b64c0aae0c7922cca83d288a16f5f6da523637697872253415269baef",
+      "add8cf6ddf9a65116119a28ece0f7886e30af27ba724a7594305f1d1b58a92a1",
+      "aee395f5d0927f947758b4ec119fd5fc8ec71f07a1c5c52077b30b04c0fa6955",
+      "b1b963fd8f5caa68e99dfae060d54de1fe9cba899b8718b44a00cdca53c3e590",
+      "b2d444f2e66624d68e9c6b211e28a76e22fff5fcabcfff4deac18b529b7d4137",
+      "b8d812c6011c08b8111a15e54dd990b8923692d80adf35488bee34026c35accf",
+      "ba96ae44888e0185281e937633a743ea90d5a196c6000f82565ebb0580012d40",
+      "bdebcc8a75d38c7598dfb2c9ed852d7a9eb4a10d6e2d0764b919b802bf32ac88",
+      "c07da4cebf6889f03ebac8d238f62318e29f495de0aa18a51ea14e61ae907e2e",
+      "c08e5c694306507275f2290073350c4f32e383db15213b2c69e7ff39c1193840",
+      "c4f469aebd783bb741c2ecb2a681008fd26bfe5c16a9a72ed5467f834e810df2",
+      "c5d7152ec39ca7c402d8fb9bad86140a15b9503bd0c54484e3f1bbe3dd37ceca",
+      "c674693f055fa2495de12292cb45e9944199d8eaef5a2dec45175c7c61cb73e3",
+      "c6ed5141a5c7507cf3ee76bd363b0d6f801e3321adc35b5d825a23115faa5465",
+      "c921ba5c51e4e9f63b8b00267d06566e1f63407408a0496da2d1d0bfc819c7fc",
+      "c9a4b821dc7055bf9e05ff5719e18ec501f75c0f0bbfabd573b277559780833d",
+      "c9f79d5325907f13e1be0b3e4dacc1049d1dffc4aeee3c995284bea5fe0fab7d",
+      "cd312b9692e831d2ffcad61eab31d91d4b4655a962e61de8fb410472cbcd37aa",
+      "cea3f4c1af79af13cdb2da0c028111d8f8522d4f22a000c82385535f24e5cf3a",
+      "cecdd5dfdc87b1fd87dbf81d4b037a544f47f4c744200a67013771682d67686a",
+      "cf9d57306d848218f3601fee7601fab1a327c942d56e2e97610583cb4dd74206",
+      "d34bbf07dbc7ca5970671b1512e928991fb5e9d95365636c9b2d8b4f53af405e",
+      "d49514be2f28d895c38cf9d2b72d7b9a07d00314519f456c0b50b53cfcf4c785",
+      "d680fbcb768404c601ecb43519ecd8461f6954cb11c06a78962f666832ccfca8",
+      "db1d75f6617a49c1c01bc7023713e0ff59ab32c9579ae62a7674c0e34f3b0b0a",
+      "dcb292aa7fe485ceff7af4f92e46c5af397daec5dff64871a528f0fc47a3cc5b",
+      "e07c65f443c887bbcf31cc1771d932ecc192a5273943589b3c7572b749f1ffb2",
+      "e902da4b04e6b52e5893900d4b8ab46068f75f3561f01bf1080957f9fd932ed6",
+      "e9308ff8241c532df3f3e570f9a5aeed6c853f888512ba4b75638d7c11c95ef6",
+      "eb7c9811bfaa8b1ed5ed319f5d370dfbcaa59d52ea64be2a5a85e18195930354",
+      "ebe6af670449830d6d9b752c256a983291c766a1365ba5d5460048f9e33a7818",
+      "ed21202aec73cda4d55d1ce57b389aadb90ffb044e6cd1080b8347efe1b1ec84",
+      "efe0374196335f93b53269acd811b944f2e6bdc88e8894f214bd636455484909",
+      "f64ec5397ea6a41fc1b4af0380d79b44a755b5531dcaccd9940fb260dca93038",
+      "f6ac4ef4d82dff54670227a69c67782ae0b811b5cf6b17954f1e8f7502fc0d1d",
+      "f6f0ce10945fab9c4c06ce14e22af9059d1a87493a9af4501a5b0b9187e21cf2",
+      "f8844cd288697c6425c9beba919302241e3278871dc6519515e72b04e987abcf",
+      "fe0306bd29505a9177aac19f1877174b0e7422c222a59f70b2cd41633448c3dc",
+      "ff3f333630ab480244a1bff72043e511a91eb22e7595dead8653ee5612dd8f3d",
+      "ffecec8eb889b58ba9be5b95fb1cc78e22ea8eedea38e8736a1568fe1979250e"
+    ],
+    "retrieved_at": "2026-11-28T12:09:56+00:00",
+    "pypi_info": {
+      "license": "BSD-3-Clause",
+      "license_expression": null,
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Information Technology",
+        "Operating System :: OS Independent",
+        "Programming Language :: C",
+        "Programming Language :: Cython",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Topic :: Text Processing :: Markup :: HTML",
+        "Topic :: Text Processing :: Markup :: XML"
+      ],
+      "requires_python": ">=3.8",
+      "project_urls": {
+        "Bug Tracker": "https://bugs.launchpad.net/lxml",
+        "Homepage": "https://lxml.de/",
+        "Source": "https://github.com/lxml/lxml"
+      },
+      "home_page": "https://lxml.de/",
+      "summary": "Powerful and Pythonic XML processing library combining libxml2/libxslt with the ElementTree API.",
+      "author": "lxml@lxml.de"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "lxml-6.1.1-cp311-cp311-win_amd64.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "lxml-6.1.1-cp311-cp311-win_amd64.whl",
+        "url": "https://files.pythonhosted.org/packages/61/9d/2e2f7d876349f45e0f3e29f72da311668853d59b58d473a2dea4f0160135/lxml-6.1.1-cp311-cp311-win_amd64.whl",
+        "packagetype": "bdist_wheel",
+        "size": 4025469,
+        "sha256_pypi": "abbefa31eee84842140f67acef1c828e28bba8bbf0c3bc6e5492a9af88152c28",
+        "sha256_verified": "abbefa31eee84842140f67acef1c828e28bba8bbf0c3bc6e5492a9af88152c28",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "lxml-6.1.1-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/61/9d/2e2f7d876349f45e0f3e29f72da311668853d59b58d473a2dea4f0160135/lxml-6.1.1-cp311-cp311-win_amd64.whl",
+      "packagetype": "bdist_wheel",
+      "size": 4025469,
+      "sha256_pypi": "abbefa31eee84842140f67acef1c828e28bba8bbf0c3bc6e5492a9af88152c28",
+      "sha256_verified": "abbefa31eee84842140f67acef1c828e28bba8bbf0c3bc6e5492a9af88152c28",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "lxml-6.1.1-cp311-cp311-win_amd64.whl::lxml-6.1.1.dist-info/licenses/LICENSE.txt": {
+        "saved_as": "lxml-6.1.1.dist-info_licenses_LICENSE.txt",
+        "sha256": "e7c3ce8d76331b0101cc46790ab43958ea90a364bcf962ed8763d5a818340e69",
+        "bytes": 1538,
+        "from_artifact": "lxml-6.1.1-cp311-cp311-win_amd64.whl",
+        "artifact_sha256": "abbefa31eee84842140f67acef1c828e28bba8bbf0c3bc6e5492a9af88152c28"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

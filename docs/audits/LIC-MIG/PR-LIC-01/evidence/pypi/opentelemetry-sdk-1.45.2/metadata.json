@@ -1,0 +1,198 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "OpenTelemetry Authors <cncf-opentelemetry-contributors@lists.cncf.io>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Framework :: OpenTelemetry",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Typing :: Typed"
+      ],
+      "description": "OpenTelemetry Python SDK\n============================================================================\n\n|pypi|\n\n.. |pypi| image:: https://badge.fury.io/py/opentelemetry-sdk.svg\n   :target: https://pypi.org/project/opentelemetry-sdk/\n\nInstallation\n------------\n\n::\n\n    pip install opentelemetry-sdk\n\nReferences\n----------\n\n* `OpenTelemetry Project <https://opentelemetry.io/>`_\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": null,
+      "license": null,
+      "license_expression": "Apache-2.0",
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "opentelemetry-sdk",
+      "package_url": "https://pypi.org/project/opentelemetry-sdk/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/opentelemetry-sdk/",
+      "project_urls": {
+        "Homepage": "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-sdk",
+        "Repository": "https://github.com/open-telemetry/opentelemetry-python"
+      },
+      "provides_extra": [
+        "file-configuration"
+      ],
+      "release_url": "https://pypi.org/project/opentelemetry-sdk/1.45.2/",
+      "requires_dist": [
+        "opentelemetry-api==1.45.2",
+        "opentelemetry-semantic-conventions==0.66b2",
+        "typing-extensions>=4.5.0",
+        "opentelemetry-configuration==0.66b2; extra == \"file-configuration\""
+      ],
+      "requires_python": ">=3.10",
+      "summary": "OpenTelemetry Python SDK",
+      "version": "1.45.2",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 42928783,
+    "ownership": {
+      "organization": "opentelemetry",
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "LeightonC"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "97f0b558caae567c607dc5b53fc755deb2d0e305fe08093bb8d6c59ed55aa3e4"
+        },
+        "digests": {
+          "blake2b_256": "9fa59a3b793ef48245f2336a16beb2324c2397dbb3f987cd68942f77cca06156",
+          "md5": "9fe22dbad5cd96a044248e142bab6980",
+          "sha256": "ff974ea70ee4f1d51e2ec152db37c2b626c7bf82bb3f7d86114fd8704e7199c6"
+        },
+        "downloads": -1,
+        "filename": "opentelemetry_sdk-1.45.2-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "9fe22dbad5cd96a044248e142bab6980",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.10",
+        "size": 141756,
+        "upload_time": "2026-10-29T17:29:33",
+        "upload_time_iso_8601": "2026-10-29T17:29:33.722226Z",
+        "url": "https://files.pythonhosted.org/packages/9f/a5/9a3b793ef48245f2336a16beb2324c2397dbb3f987cd68942f77cca06156/opentelemetry_sdk-1.45.2-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "7b1a74a21d4d6969fb8b432ac397e66112a8167a6deb267ea4559dbaf2fe91ef",
+          "md5": "510476545c2a6e7f0f7773d6688d10b1",
+          "sha256": "7eec4de13dd21ff3a1670dcb0e02079e692736f94d733dfdce5af461d884248d"
+        },
+        "downloads": -1,
+        "filename": "opentelemetry_sdk-1.45.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "510476545c2a6e7f0f7773d6688d10b1",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.10",
+        "size": 221705,
+        "upload_time": "2026-10-29T17:29:54",
+        "upload_time_iso_8601": "2026-10-29T17:29:54.685750Z",
+        "url": "https://files.pythonhosted.org/packages/7b/1a/74a21d4d6969fb8b432ac397e66112a8167a6deb267ea4559dbaf2fe91ef/opentelemetry_sdk-1.45.2.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "opentelemetry-sdk",
+    "version": "1.45.2",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "7eec4de13dd21ff3a1670dcb0e02079e692736f94d733dfdce5af461d884248d",
+      "ff974ea70ee4f1d51e2ec152db37c2b626c7bf82bb3f7d86114fd8704e7199c6"
+    ],
+    "retrieved_at": "2026-11-28T12:09:57+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": "Apache-2.0",
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Framework :: OpenTelemetry",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Typing :: Typed"
+      ],
+      "requires_python": ">=3.10",
+      "project_urls": {
+        "Homepage": "https://github.com/open-telemetry/opentelemetry-python/tree/main/opentelemetry-sdk",
+        "Repository": "https://github.com/open-telemetry/opentelemetry-python"
+      },
+      "home_page": null,
+      "summary": "OpenTelemetry Python SDK",
+      "author": "OpenTelemetry Authors <cncf-opentelemetry-contributors@lists.cncf.io>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "opentelemetry_sdk-1.45.2-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "opentelemetry_sdk-1.45.2-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/9f/a5/9a3b793ef48245f2336a16beb2324c2397dbb3f987cd68942f77cca06156/opentelemetry_sdk-1.45.2-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 141756,
+        "sha256_pypi": "ff974ea70ee4f1d51e2ec152db37c2b626c7bf82bb3f7d86114fd8704e7199c6",
+        "sha256_verified": "ff974ea70ee4f1d51e2ec152db37c2b626c7bf82bb3f7d86114fd8704e7199c6",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "opentelemetry_sdk-1.45.2-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/9f/a5/9a3b793ef48245f2336a16beb2324c2397dbb3f987cd68942f77cca06156/opentelemetry_sdk-1.45.2-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 141756,
+      "sha256_pypi": "ff974ea70ee4f1d51e2ec152db37c2b626c7bf82bb3f7d86114fd8704e7199c6",
+      "sha256_verified": "ff974ea70ee4f1d51e2ec152db37c2b626c7bf82bb3f7d86114fd8704e7199c6",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "opentelemetry_sdk-1.45.2-py3-none-any.whl::opentelemetry_sdk-1.45.2.dist-info/licenses/LICENSE": {
+        "saved_as": "opentelemetry_sdk-1.45.2.dist-info_licenses_LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "bytes": 11357,
+        "from_artifact": "opentelemetry_sdk-1.45.2-py3-none-any.whl",
+        "artifact_sha256": "ff974ea70ee4f1d51e2ec152db37c2b626c7bf82bb3f7d86114fd8704e7199c6"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

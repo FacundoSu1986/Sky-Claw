@@ -1,0 +1,2022 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": null,
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: Apache Software License",
+        "License :: OSI Approved :: MIT License",
+        "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+        "Operating System :: MacOS",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.15",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Rust",
+        "Typing :: Typed"
+      ],
+      "description": "# orjson\n\norjson is a fast, correct JSON library for Python. It\n[benchmarks](https://github.com/ijl/orjson?tab=readme-ov-file#performance) as the fastest Python\nlibrary for JSON and is more correct than the standard json library or other\nthird-party libraries. It serializes\n[dataclass](https://github.com/ijl/orjson?tab=readme-ov-file#dataclass),\n[datetime](https://github.com/ijl/orjson?tab=readme-ov-file#datetime),\n[numpy](https://github.com/ijl/orjson?tab=readme-ov-file#numpy), and\n[UUID](https://github.com/ijl/orjson?tab=readme-ov-file#uuid) instances natively.\n\n[orjson.dumps()](https://github.com/ijl/orjson?tab=readme-ov-file#serialize) is\nsomething like 10x as fast as `json`, serializes\ncommon types and subtypes, has a `default` parameter for the caller to specify\nhow to serialize arbitrary types, and has a number of flags controlling output.\n\n[orjson.loads()](https://github.com/ijl/orjson?tab=readme-ov-file#deserialize)\nis something like 2x as fast as `json`, and is strictly compliant with UTF-8 and\nRFC 8259 (\"The JavaScript Object Notation (JSON) Data Interchange Format\").\n\nReading from and writing to files, line-delimited JSON files, and so on is\nnot provided by the library.\n\norjson supports CPython 3.10, 3.11, 3.12, 3.13, 3.14, and 3.15.\n\nIt distributes amd64/x86_64/x64, i686/x86, aarch64/arm64/armv8, arm7,\nppc64le/POWER8, and s390x wheels for Linux, amd64 and aarch64 wheels\nfor macOS, and amd64, i686, and aarch64 wheels for Windows.\n\nWheels published to PyPI for amd64 run on x86-64-v1 (2003)\nor later, but will at runtime use AVX-512 if available for a\nsignificant performance benefit; aarch64 wheels run on ARMv8-A (2011) or\nlater.\n\norjson does not and will not support PyPy, embedded Python builds for\nAndroid/iOS, or PEP 554 subinterpreters.\n\norjson may support PEP 703 free-threading when it is stable.\n\nReleases follow semantic versioning and serializing a new object type\nwithout an opt-in flag is considered a breaking change.\n\norjson contains source code licensed under the Mozilla Public License 2.0,\nApache 2.0, and MIT licenses. The repository from which PyPI artifacts are\npublished is [github.com/ijl/orjson](https://github.com/ijl/orjson) and an\nalternative repository is [codeberg.org/ijl/orjson](https://codeberg.org/ijl/orjson).\nThere is no open issue tracker or pull requests due to signal-to-noise ratio.\nThere is a [CHANGELOG](https://github.com/ijl/orjson/blob/master/CHANGELOG.md)\navailable in the repository.\n\n1. [Usage](https://github.com/ijl/orjson?tab=readme-ov-file#usage)\n    1. [Install](https://github.com/ijl/orjson?tab=readme-ov-file#install)\n    2. [Quickstart](https://github.com/ijl/orjson?tab=readme-ov-file#quickstart)\n    3. [Migrating](https://github.com/ijl/orjson?tab=readme-ov-file#migrating)\n    4. [Serialize](https://github.com/ijl/orjson?tab=readme-ov-file#serialize)\n        1. [default](https://github.com/ijl/orjson?tab=readme-ov-file#default)\n        2. [option](https://github.com/ijl/orjson?tab=readme-ov-file#option)\n        3. [Fragment](https://github.com/ijl/orjson?tab=readme-ov-file#fragment)\n    5. [Deserialize](https://github.com/ijl/orjson?tab=readme-ov-file#deserialize)\n2. [Types](https://github.com/ijl/orjson?tab=readme-ov-file#types)\n    1. [dataclass](https://github.com/ijl/orjson?tab=readme-ov-file#dataclass)\n    2. [datetime](https://github.com/ijl/orjson?tab=readme-ov-file#datetime)\n    3. [enum](https://github.com/ijl/orjson?tab=readme-ov-file#enum)\n    4. [float](https://github.com/ijl/orjson?tab=readme-ov-file#float)\n    5. [int](https://github.com/ijl/orjson?tab=readme-ov-file#int)\n    6. [numpy](https://github.com/ijl/orjson?tab=readme-ov-file#numpy)\n    7. [str](https://github.com/ijl/orjson?tab=readme-ov-file#str)\n    8. [uuid](https://github.com/ijl/orjson?tab=readme-ov-file#uuid)\n3. [Testing](https://github.com/ijl/orjson?tab=readme-ov-file#testing)\n4. [Performance](https://github.com/ijl/orjson?tab=readme-ov-file#performance)\n    1. [Latency](https://github.com/ijl/orjson?tab=readme-ov-file#latency)\n    2. [Reproducing](https://github.com/ijl/orjson?tab=readme-ov-file#reproducing)\n5. [Questions](https://github.com/ijl/orjson?tab=readme-ov-file#questions)\n6. [Packaging](https://github.com/ijl/orjson?tab=readme-ov-file#packaging)\n7. [License](https://github.com/ijl/orjson?tab=readme-ov-file#license)\n\n## Usage\n\n### Install\n\nTo install a wheel from PyPI, install the `orjson` package.\n\nIn `requirements.in` or `requirements.txt` format, specify:\n\n```txt\norjson >= 3.10,<4\n```\n\nIn `pyproject.toml` format, specify:\n\n```toml\norjson = \"^3.10\"\n```\n\nTo build a wheel, see [packaging](https://github.com/ijl/orjson?tab=readme-ov-file#packaging).\n\n### Quickstart\n\nThis is an example of serializing, with options specified, and deserializing:\n\n```python\n>>> import orjson, datetime, numpy\n>>> data = {\n    \"type\": \"job\",\n    \"created_at\": datetime.datetime(1970, 1, 1),\n    \"status\": \"🆗\",\n    \"payload\": numpy.array([[1, 2], [3, 4]]),\n}\n>>> orjson.dumps(data, option=orjson.OPT_NAIVE_UTC | orjson.OPT_SERIALIZE_NUMPY)\nb'{\"type\":\"job\",\"created_at\":\"1970-01-01T00:00:00+00:00\",\"status\":\"\\xf0\\x9f\\x86\\x97\",\"payload\":[[1,2],[3,4]]}'\n>>> orjson.loads(_)\n{'type': 'job', 'created_at': '1970-01-01T00:00:00+00:00', 'status': '🆗', 'payload': [[1, 2], [3, 4]]}\n```\n\n### Migrating\n\norjson version 3 serializes more types than version 2. Subclasses of `str`,\n`int`, `dict`, and `list` are now serialized. This is faster and more similar\nto the standard library. It can be disabled with\n`orjson.OPT_PASSTHROUGH_SUBCLASS`.`dataclasses.dataclass` instances\nare now serialized by default and cannot be customized in a\n`default` function unless `option=orjson.OPT_PASSTHROUGH_DATACLASS` is\nspecified. `uuid.UUID` instances are serialized by default.\nFor any type that is now serialized,\nimplementations in a `default` function and options enabling them can be\nremoved but do not need to be. There was no change in deserialization.\n\nTo migrate from the standard library, the largest difference is that\n`orjson.dumps` returns `bytes` and `json.dumps` returns a `str`.\n\nUsers with `dict` objects using non-`str` keys should specify `option=orjson.OPT_NON_STR_KEYS`.\n\n`sort_keys` is replaced by `option=orjson.OPT_SORT_KEYS`.\n\n`indent` is replaced by `option=orjson.OPT_INDENT_2` and other levels of indentation are not\nsupported.\n\n`ensure_ascii` is probably not relevant today and UTF-8 characters cannot be\nescaped to ASCII.\n\n### Serialize\n\n```python\ndef dumps(\n    __obj: Any,\n    default: Optional[Callable[[Any], Any]] = ...,\n    option: Optional[int] = ...,\n) -> bytes: ...\n```\n\n`dumps()` serializes Python objects to JSON.\n\nIt natively serializes\n`str`, `dict`, `list`, `tuple`, `int`, `float`, `bool`, `None`,\n`dataclasses.dataclass`, `typing.TypedDict`, `datetime.datetime`,\n`datetime.date`, `datetime.time`, `uuid.UUID`, `numpy.ndarray`, and\n`orjson.Fragment` instances. It supports arbitrary types through `default`. It\nserializes subclasses of `str`, `int`, `dict`, `list`,\n`dataclasses.dataclass`, and `enum.Enum`. It does not serialize subclasses\nof `tuple` to avoid serializing `namedtuple` objects as arrays. To avoid\nserializing subclasses, specify the option `orjson.OPT_PASSTHROUGH_SUBCLASS`.\n\nThe output is a `bytes` object containing UTF-8.\n\nThe global interpreter lock (GIL) is held for the duration of the call.\n\nIt raises `JSONEncodeError` on an unsupported type. This exception message\ndescribes the invalid object with the error message\n`Type is not JSON serializable: ...`. To fix this, specify\n[default](https://github.com/ijl/orjson?tab=readme-ov-file#default).\n\nIt raises `JSONEncodeError` on a `str` that contains invalid UTF-8.\n\nIt raises `JSONEncodeError` on an integer that exceeds 64 bits by default or,\nwith `OPT_STRICT_INTEGER`, 53 bits.\n\nIt raises `JSONEncodeError` if a `dict` has a key of a type other than `str`,\nunless `OPT_NON_STR_KEYS` is specified.\n\nIt raises `JSONEncodeError` if the output of `default` recurses to handling by\n`default` more than 254 levels deep.\n\nIt raises `JSONEncodeError` on circular references.\n\nIt raises `JSONEncodeError`  if a `tzinfo` on a datetime object is\nunsupported.\n\n`JSONEncodeError` is a subclass of `TypeError`. This is for compatibility\nwith the standard library.\n\nIf the failure was caused by an exception in `default` then\n`JSONEncodeError` chains the original exception as `__cause__`.\n\n#### default\n\nTo serialize a subclass or arbitrary types, specify `default` as a\ncallable that returns a supported type. `default` may be a function,\nlambda, or callable class instance. To specify that a type was not\nhandled by `default`, raise an exception such as `TypeError`.\n\n```python\n>>> import orjson, decimal\n>>>\ndef default(obj):\n    if isinstance(obj, decimal.Decimal):\n        return str(obj)\n    raise TypeError\n\n>>> orjson.dumps(decimal.Decimal(\"0.0842389659712649442845\"))\nJSONEncodeError: Type is not JSON serializable: decimal.Decimal\n>>> orjson.dumps(decimal.Decimal(\"0.0842389659712649442845\"), default=default)\nb'\"0.0842389659712649442845\"'\n>>> orjson.dumps({1, 2}, default=default)\norjson.JSONEncodeError: Type is not JSON serializable: set\n```\n\nThe `default` callable may return an object that itself\nmust be handled by `default` up to 254 times before an exception\nis raised.\n\nIt is important that `default` raise an exception if a type cannot be handled.\nPython otherwise implicitly returns `None`, which appears to the caller\nlike a legitimate value and is serialized:\n\n```python\n>>> import orjson, json\n>>>\ndef default(obj):\n    if isinstance(obj, decimal.Decimal):\n        return str(obj)\n\n>>> orjson.dumps({\"set\":{1, 2}}, default=default)\nb'{\"set\":null}'\n>>> json.dumps({\"set\":{1, 2}}, default=default)\n'{\"set\":null}'\n```\n\n#### option\n\nTo modify how data is serialized, specify `option`. Each `option` is an integer\nconstant in `orjson`. To specify multiple options, mask them together, e.g.,\n`option=orjson.OPT_STRICT_INTEGER | orjson.OPT_NAIVE_UTC`.\n\n##### OPT_APPEND_NEWLINE\n\nAppend `\\n` to the output. This is a convenience and optimization for the\npattern of `dumps(...) + \"\\n\"`. `bytes` objects are immutable and this\npattern copies the original contents.\n\n```python\n>>> import orjson\n>>> orjson.dumps([])\nb\"[]\"\n>>> orjson.dumps([], option=orjson.OPT_APPEND_NEWLINE)\nb\"[]\\n\"\n```\n\n##### OPT_INDENT_2\n\nPretty-print output with an indent of two spaces. This is equivalent to\n`indent=2` in the standard library. Pretty printing is slower and the output\nlarger. This option is compatible with all other options.\n\n```python\n>>> import orjson\n>>> orjson.dumps({\"a\": \"b\", \"c\": {\"d\": True}, \"e\": [1, 2]})\nb'{\"a\":\"b\",\"c\":{\"d\":true},\"e\":[1,2]}'\n>>> orjson.dumps(\n    {\"a\": \"b\", \"c\": {\"d\": True}, \"e\": [1, 2]},\n    option=orjson.OPT_INDENT_2\n)\nb'{\\n  \"a\": \"b\",\\n  \"c\": {\\n    \"d\": true\\n  },\\n  \"e\": [\\n    1,\\n    2\\n  ]\\n}'\n```\n\nIf displayed, the indentation and linebreaks appear like this:\n\n```json\n{\n  \"a\": \"b\",\n  \"c\": {\n    \"d\": true\n  },\n  \"e\": [\n    1,\n    2\n  ]\n}\n```\n\nThis measures serializing the github.json fixture as compact (52KiB) or\npretty (64KiB):\n\n| Library   |   compact (ms) |   pretty (ms) |   vs. orjson |\n|-----------|----------------|---------------|--------------|\n| orjson    |           0.01 |          0.02 |            1 |\n| json      |           0.13 |          0.54 |           34 |\n\nThis measures serializing the citm_catalog.json fixture, more of a worst\ncase due to the amount of nesting and newlines, as compact (489KiB) or\npretty (1.1MiB):\n\n| Library   |   compact (ms) |   pretty (ms) |   vs. orjson |\n|-----------|----------------|---------------|--------------|\n| orjson    |           0.25 |          0.45 |          1   |\n| json      |           3.01 |         24.42 |         54.4 |\n\nThis can be reproduced using the `pyindent` script.\n\n##### OPT_NAIVE_UTC\n\nSerialize `datetime.datetime` objects without a `tzinfo` as UTC. This\nhas no effect on `datetime.datetime` objects that have `tzinfo` set.\n\n```python\n>>> import orjson, datetime\n>>> orjson.dumps(\n        datetime.datetime(1970, 1, 1, 0, 0, 0),\n    )\nb'\"1970-01-01T00:00:00\"'\n>>> orjson.dumps(\n        datetime.datetime(1970, 1, 1, 0, 0, 0),\n        option=orjson.OPT_NAIVE_UTC,\n    )\nb'\"1970-01-01T00:00:00+00:00\"'\n```\n\n##### OPT_NON_STR_KEYS\n\nSerialize `dict` keys of type other than `str`. This allows `dict` keys\nto be one of `str`, `int`, `float`, `bool`, `None`, `datetime.datetime`,\n`datetime.date`, `datetime.time`, `enum.Enum`, and `uuid.UUID`. For comparison,\nthe standard library serializes `str`, `int`, `float`, `bool` or `None` by\ndefault. orjson benchmarks as being faster at serializing non-`str` keys\nthan other libraries. This option is slower for `str` keys than the default.\n\n```python\n>>> import orjson, datetime, uuid\n>>> orjson.dumps(\n        {uuid.UUID(\"7202d115-7ff3-4c81-a7c1-2a1f067b1ece\"): [1, 2, 3]},\n        option=orjson.OPT_NON_STR_KEYS,\n    )\nb'{\"7202d115-7ff3-4c81-a7c1-2a1f067b1ece\":[1,2,3]}'\n>>> orjson.dumps(\n        {datetime.datetime(1970, 1, 1, 0, 0, 0): [1, 2, 3]},\n        option=orjson.OPT_NON_STR_KEYS | orjson.OPT_NAIVE_UTC,\n    )\nb'{\"1970-01-01T00:00:00+00:00\":[1,2,3]}'\n```\n\nThese types are generally serialized how they would be as\nvalues, e.g., `datetime.datetime` is still an RFC 3339 string and respects\noptions affecting it. The exception is that `int` serialization does not\nrespect `OPT_STRICT_INTEGER`.\n\nThis option has the risk of creating duplicate keys. This is because non-`str`\nobjects may serialize to the same `str` as an existing key, e.g.,\n`{\"1\": true, 1: false}`. The last key to be inserted to the `dict` will be\nserialized last and a JSON deserializer will presumably take the last\noccurrence of a key (in the above, `false`). The first value will be lost.\n\nThis option is compatible with `orjson.OPT_SORT_KEYS`. If sorting is used,\nnote the sort is unstable and will be unpredictable for duplicate keys.\n\n```python\n>>> import orjson, datetime\n>>> orjson.dumps(\n    {\"other\": 1, datetime.date(1970, 1, 5): 2, datetime.date(1970, 1, 3): 3},\n    option=orjson.OPT_NON_STR_KEYS | orjson.OPT_SORT_KEYS\n)\nb'{\"1970-01-03\":3,\"1970-01-05\":2,\"other\":1}'\n```\n\nThis measures serializing 589KiB of JSON comprising a `list` of 100 `dict`\nin which each `dict` has both 365 randomly-sorted `int` keys representing epoch\ntimestamps as well as one `str` key and the value for each key is a\nsingle integer. In \"str keys\", the keys were converted to `str` before\nserialization, and orjson still specifes `option=orjson.OPT_NON_STR_KEYS`\n(which is always somewhat slower).\n\n| Library   |   str keys (ms) |   int keys (ms) | int keys sorted (ms)   |\n|-----------|-----------------|-----------------|------------------------|\n| orjson    |            0.5  |            0.93 | 2.08                   |\n| json      |            2.72 |            3.59 |                        |\n\njson is blank because it\nraises `TypeError` on attempting to sort before converting all keys to `str`.\nThis can be reproduced using the `pynonstr` script.\n\n##### OPT_OMIT_MICROSECONDS\n\nDo not serialize the `microsecond` field on `datetime.datetime` and\n`datetime.time` instances.\n\n```python\n>>> import orjson, datetime\n>>> orjson.dumps(\n        datetime.datetime(1970, 1, 1, 0, 0, 0, 1),\n    )\nb'\"1970-01-01T00:00:00.000001\"'\n>>> orjson.dumps(\n        datetime.datetime(1970, 1, 1, 0, 0, 0, 1),\n        option=orjson.OPT_OMIT_MICROSECONDS,\n    )\nb'\"1970-01-01T00:00:00\"'\n```\n\n##### OPT_PASSTHROUGH_DATACLASS\n\nPassthrough `dataclasses.dataclass` instances to `default`. This allows\ncustomizing their output but is much slower.\n\n\n```python\n>>> import orjson, dataclasses\n>>>\n@dataclasses.dataclass\nclass User:\n    id: str\n    name: str\n    password: str\n\ndef default(obj):\n    if isinstance(obj, User):\n        return {\"id\": obj.id, \"name\": obj.name}\n    raise TypeError\n\n>>> orjson.dumps(User(\"3b1\", \"asd\", \"zxc\"))\nb'{\"id\":\"3b1\",\"name\":\"asd\",\"password\":\"zxc\"}'\n>>> orjson.dumps(User(\"3b1\", \"asd\", \"zxc\"), option=orjson.OPT_PASSTHROUGH_DATACLASS)\nTypeError: Type is not JSON serializable: User\n>>> orjson.dumps(\n        User(\"3b1\", \"asd\", \"zxc\"),\n        option=orjson.OPT_PASSTHROUGH_DATACLASS,\n        default=default,\n    )\nb'{\"id\":\"3b1\",\"name\":\"asd\"}'\n```\n\n##### OPT_PASSTHROUGH_DATETIME\n\nPassthrough `datetime.datetime`, `datetime.date`, and `datetime.time` instances\nto `default`. This allows serializing datetimes to a custom format, e.g.,\nHTTP dates:\n\n```python\n>>> import orjson, datetime\n>>>\ndef default(obj):\n    if isinstance(obj, datetime.datetime):\n        return obj.strftime(\"%a, %d %b %Y %H:%M:%S GMT\")\n    raise TypeError\n\n>>> orjson.dumps({\"created_at\": datetime.datetime(1970, 1, 1)})\nb'{\"created_at\":\"1970-01-01T00:00:00\"}'\n>>> orjson.dumps({\"created_at\": datetime.datetime(1970, 1, 1)}, option=orjson.OPT_PASSTHROUGH_DATETIME)\nTypeError: Type is not JSON serializable: datetime.datetime\n>>> orjson.dumps(\n        {\"created_at\": datetime.datetime(1970, 1, 1)},\n        option=orjson.OPT_PASSTHROUGH_DATETIME,\n        default=default,\n    )\nb'{\"created_at\":\"Thu, 01 Jan 1970 00:00:00 GMT\"}'\n```\n\nThis does not affect datetimes in `dict` keys if using OPT_NON_STR_KEYS.\n\n##### OPT_PASSTHROUGH_SUBCLASS\n\nPassthrough subclasses of builtin types to `default`.\n\n```python\n>>> import orjson\n>>>\nclass Secret(str):\n    pass\n\ndef default(obj):\n    if isinstance(obj, Secret):\n        return \"******\"\n    raise TypeError\n\n>>> orjson.dumps(Secret(\"zxc\"))\nb'\"zxc\"'\n>>> orjson.dumps(Secret(\"zxc\"), option=orjson.OPT_PASSTHROUGH_SUBCLASS)\nTypeError: Type is not JSON serializable: Secret\n>>> orjson.dumps(Secret(\"zxc\"), option=orjson.OPT_PASSTHROUGH_SUBCLASS, default=default)\nb'\"******\"'\n```\n\nThis does not affect serializing subclasses as `dict` keys if using\nOPT_NON_STR_KEYS.\n\n##### OPT_SERIALIZE_DATACLASS\n\nThis is deprecated and has no effect in version 3. In version 2 this was\nrequired to serialize  `dataclasses.dataclass` instances. For more, see\n[dataclass](https://github.com/ijl/orjson?tab=readme-ov-file#dataclass).\n\n##### OPT_SERIALIZE_NUMPY\n\nSerialize `numpy.ndarray` instances. For more, see\n[numpy](https://github.com/ijl/orjson?tab=readme-ov-file#numpy).\n\n##### OPT_SERIALIZE_UUID\n\nThis is deprecated and has no effect in version 3. In version 2 this was\nrequired to serialize `uuid.UUID` instances. For more, see\n[UUID](https://github.com/ijl/orjson?tab=readme-ov-file#UUID).\n\n##### OPT_SORT_KEYS\n\nSerialize `dict` keys in sorted order. The default is to serialize in an\nunspecified order. This is equivalent to `sort_keys=True` in the standard\nlibrary.\n\nThis can be used to ensure the order is deterministic for hashing or tests.\nIt has a substantial performance penalty and is not recommended in general.\n\n```python\n>>> import orjson\n>>> orjson.dumps({\"b\": 1, \"c\": 2, \"a\": 3})\nb'{\"b\":1,\"c\":2,\"a\":3}'\n>>> orjson.dumps({\"b\": 1, \"c\": 2, \"a\": 3}, option=orjson.OPT_SORT_KEYS)\nb'{\"a\":3,\"b\":1,\"c\":2}'\n```\n\nThis measures serializing the twitter.json fixture unsorted and sorted:\n\n| Library   |   unsorted (ms) |   sorted (ms) |   vs. orjson |\n|-----------|-----------------|---------------|--------------|\n| orjson    |            0.11 |          0.3  |          1   |\n| json      |            1.36 |          1.93 |          6.4 |\n\nThe benchmark can be reproduced using the `pysort` script.\n\nThe sorting is not collation/locale-aware:\n\n```python\n>>> import orjson\n>>> orjson.dumps({\"a\": 1, \"ä\": 2, \"A\": 3}, option=orjson.OPT_SORT_KEYS)\nb'{\"A\":3,\"a\":1,\"\\xc3\\xa4\":2}'\n```\n\nThis is the same sorting behavior as the standard library.\n\n`dataclass` also serialize as maps but this has no effect on them.\n\n##### OPT_STRICT_INTEGER\n\nEnforce 53-bit limit on integers. The limit is otherwise 64 bits, the same as\nthe Python standard library. For more, see [int](https://github.com/ijl/orjson?tab=readme-ov-file#int).\n\n##### OPT_UTC_Z\n\nSerialize a UTC timezone on `datetime.datetime` instances as `Z` instead\nof `+00:00`.\n\n```python\n>>> import orjson, datetime, zoneinfo\n>>> orjson.dumps(\n        datetime.datetime(1970, 1, 1, 0, 0, 0, tzinfo=zoneinfo.ZoneInfo(\"UTC\")),\n    )\nb'\"1970-01-01T00:00:00+00:00\"'\n>>> orjson.dumps(\n        datetime.datetime(1970, 1, 1, 0, 0, 0, tzinfo=zoneinfo.ZoneInfo(\"UTC\")),\n        option=orjson.OPT_UTC_Z\n    )\nb'\"1970-01-01T00:00:00Z\"'\n```\n\n#### Fragment\n\n`orjson.Fragment` includes already-serialized JSON in a document. This is an\nefficient way to include JSON blobs from a cache, JSONB field, or separately\nserialized object without first deserializing to Python objects via `loads()`.\n\n```python\n>>> import orjson\n>>> orjson.dumps({\"key\": \"zxc\", \"data\": orjson.Fragment(b'{\"a\": \"b\", \"c\": 1}')})\nb'{\"key\":\"zxc\",\"data\":{\"a\": \"b\", \"c\": 1}}'\n```\n\nIt does no reformatting: `orjson.OPT_INDENT_2` will not affect a\ncompact blob nor will a pretty-printed JSON blob be rewritten as compact.\n\nThe input must be `bytes` or `str` and given as a positional argument.\n\nThis raises `orjson.JSONEncodeError` if a `str` is given and the input is\nnot valid UTF-8. It otherwise does no validation and it is possible to\nwrite invalid JSON. This does not escape characters. The implementation is\ntested to not crash if given invalid strings or invalid JSON.\n\n### Deserialize\n\n```python\ndef loads(__obj: Union[bytes, bytearray, memoryview, str]) -> Any: ...\n```\n\n`loads()` deserializes JSON to Python objects. It deserializes to `dict`,\n`list`, `int`, `float`, `str`, `bool`, and `None` objects.\n\n`bytes`, `bytearray`, `memoryview`, and `str` input are accepted. If the input\nexists as a `memoryview`, `bytearray`, or `bytes` object, it is recommended to\npass these directly rather than creating an unnecessary `str` object. That is,\n`orjson.loads(b\"{}\")` instead of `orjson.loads(b\"{}\".decode(\"utf-8\"))`. This\nhas lower memory usage and lower latency.\n\nThe input must be valid UTF-8.\n\norjson maintains a cache of map keys for the duration of the process. This\ncauses a net reduction in memory usage by avoiding duplicate strings. The\nkeys must be at most 64 bytes to be cached and 2048 entries are stored.\n\nThe global interpreter lock (GIL) is held for the duration of the call.\n\nIt raises `JSONDecodeError` if given an invalid type or invalid\nJSON. This includes if the input contains `NaN`, `Infinity`, or `-Infinity`,\nwhich the standard library allows, but is not valid JSON.\n\nIt raises `JSONDecodeError` if a combination of array or object recurses\n1024 levels deep.\n\nIt raises `JSONDecodeError` if unable to allocate a buffer large enough\nto parse the document.\n\n`JSONDecodeError` is a subclass of `json.JSONDecodeError` and `ValueError`.\nThis is for compatibility with the standard library.\n\n## Types\n\n### dataclass\n\norjson serializes instances of `dataclasses.dataclass` natively. It serializes\ninstances 40-50x as fast as other libraries and avoids a severe slowdown seen\nin other libraries compared to serializing `dict`.\n\nIt is supported to pass all variants of dataclasses, including dataclasses\nusing `__slots__`, frozen dataclasses, those with optional or default\nattributes, and subclasses. There is a performance benefit to not\nusing `__slots__`.\n\n| Library   |   dict (ms) |   dataclass (ms) |   vs. orjson |\n|-----------|-------------|------------------|--------------|\n| orjson    |        0.43 |             0.95 |            1 |\n| json      |        5.81 |            38.32 |           40 |\n\nThis measures serializing 555KiB of JSON, orjson natively and other libraries\nusing `default` to serialize the output of `dataclasses.asdict()`. This can be\nreproduced using the `pydataclass` script.\n\nDataclasses are serialized as maps, with every attribute serialized and in\nthe order given on class definition:\n\n```python\n>>> import dataclasses, orjson, typing\n\n@dataclasses.dataclass\nclass Member:\n    id: int\n    active: bool = dataclasses.field(default=False)\n\n@dataclasses.dataclass\nclass Object:\n    id: int\n    name: str\n    members: typing.List[Member]\n\n>>> orjson.dumps(Object(1, \"a\", [Member(1, True), Member(2)]))\nb'{\"id\":1,\"name\":\"a\",\"members\":[{\"id\":1,\"active\":true},{\"id\":2,\"active\":false}]}'\n```\n\n### datetime\n\norjson serializes `datetime.datetime` objects to\n[RFC 3339](https://tools.ietf.org/html/rfc3339) format,\ne.g., \"1970-01-01T00:00:00+00:00\". This is a subset of ISO 8601 and is\ncompatible with `isoformat()` in the standard library.\n\n```python\n>>> import orjson, datetime, zoneinfo\n>>> orjson.dumps(\n    datetime.datetime(2018, 12, 1, 2, 3, 4, 9, tzinfo=zoneinfo.ZoneInfo(\"Australia/Adelaide\"))\n)\nb'\"2018-12-01T02:03:04.000009+10:30\"'\n>>> orjson.dumps(\n    datetime.datetime(2100, 9, 1, 21, 55, 2).replace(tzinfo=zoneinfo.ZoneInfo(\"UTC\"))\n)\nb'\"2100-09-01T21:55:02+00:00\"'\n>>> orjson.dumps(\n    datetime.datetime(2100, 9, 1, 21, 55, 2)\n)\nb'\"2100-09-01T21:55:02\"'\n```\n\n`datetime.datetime` supports instances with a `tzinfo` that is `None`,\n`datetime.timezone.utc`, a timezone instance from the standard library `zoneinfo`\nmodule, or a timezone instance from the third-party `pendulum`, `pytz`, or\n`dateutil`/`arrow` libraries.\n\nIt is fastest to use the standard library's `zoneinfo.ZoneInfo` for timezones.\n\n`datetime.time` objects must not have a `tzinfo`.\n\n```python\n>>> import orjson, datetime\n>>> orjson.dumps(datetime.time(12, 0, 15, 290))\nb'\"12:00:15.000290\"'\n```\n\n`datetime.date` objects will always serialize.\n\n```python\n>>> import orjson, datetime\n>>> orjson.dumps(datetime.date(1900, 1, 2))\nb'\"1900-01-02\"'\n```\n\nErrors with `tzinfo` result in `JSONEncodeError` being raised.\n\nTo disable serialization of `datetime` objects specify the option\n`orjson.OPT_PASSTHROUGH_DATETIME`.\n\nTo use \"Z\" suffix instead of \"+00:00\" to indicate UTC (\"Zulu\") time, use the option\n`orjson.OPT_UTC_Z`.\n\nTo assume datetimes without timezone are UTC, use the option `orjson.OPT_NAIVE_UTC`.\n\n### enum\n\norjson serializes enums natively. Options apply to their values.\n\n```python\n>>> import enum, datetime, orjson\n>>>\nclass DatetimeEnum(enum.Enum):\n    EPOCH = datetime.datetime(1970, 1, 1, 0, 0, 0)\n>>> orjson.dumps(DatetimeEnum.EPOCH)\nb'\"1970-01-01T00:00:00\"'\n>>> orjson.dumps(DatetimeEnum.EPOCH, option=orjson.OPT_NAIVE_UTC)\nb'\"1970-01-01T00:00:00+00:00\"'\n```\n\nEnums with members that are not supported types can be serialized using\n`default`:\n\n```python\n>>> import enum, orjson\n>>>\nclass Custom:\n    def __init__(self, val):\n        self.val = val\n\ndef default(obj):\n    if isinstance(obj, Custom):\n        return obj.val\n    raise TypeError\n\nclass CustomEnum(enum.Enum):\n    ONE = Custom(1)\n\n>>> orjson.dumps(CustomEnum.ONE, default=default)\nb'1'\n```\n\n### float\n\norjson serializes and deserializes double precision floats with no loss of\nprecision and consistent rounding.\n\n`orjson.dumps()` serializes Nan, Infinity, and -Infinity, which are not\ncompliant JSON, as `null`:\n\n```python\n>>> import orjson, json\n>>> orjson.dumps([float(\"NaN\"), float(\"Infinity\"), float(\"-Infinity\")])\nb'[null,null,null]'\n>>> json.dumps([float(\"NaN\"), float(\"Infinity\"), float(\"-Infinity\")])\n'[NaN, Infinity, -Infinity]'\n```\n\n### int\n\norjson serializes and deserializes 64-bit integers by default. The range\nsupported is a signed 64-bit integer's minimum (-9223372036854775807) to\nan unsigned 64-bit integer's maximum (18446744073709551615). This\nis widely compatible, but there are implementations\nthat only support 53-bits for integers, e.g.,\nweb browsers. For those implementations, `dumps()` can be configured to\nraise a `JSONEncodeError` on values exceeding the 53-bit range.\n\n```python\n>>> import orjson\n>>> orjson.dumps(9007199254740992)\nb'9007199254740992'\n>>> orjson.dumps(9007199254740992, option=orjson.OPT_STRICT_INTEGER)\nJSONEncodeError: Integer exceeds 53-bit range\n>>> orjson.dumps(-9007199254740992, option=orjson.OPT_STRICT_INTEGER)\nJSONEncodeError: Integer exceeds 53-bit range\n```\n\n### numpy\n\norjson natively serializes `numpy.ndarray` and individual\n`numpy.float64`, `numpy.float32`, `numpy.float16` (`numpy.half`),\n`numpy.int64`, `numpy.int32`, `numpy.int16`, `numpy.int8`,\n`numpy.uint64`, `numpy.uint32`, `numpy.uint16`, `numpy.uint8`,\n`numpy.uintp`, `numpy.intp`, `numpy.datetime64`, and `numpy.bool`\ninstances.\n\norjson is compatible with both numpy v1 and v2.\n\norjson is faster than all compared libraries at serializing\nnumpy instances. Serializing numpy data requires specifying\n`option=orjson.OPT_SERIALIZE_NUMPY`.\n\n```python\n>>> import orjson, numpy\n>>> orjson.dumps(\n        numpy.array([[1, 2, 3], [4, 5, 6]]),\n        option=orjson.OPT_SERIALIZE_NUMPY,\n)\nb'[[1,2,3],[4,5,6]]'\n```\n\nThe array must be a contiguous C array (`C_CONTIGUOUS`) and one of the\nsupported datatypes.\n\nNote a difference between serializing `numpy.float32` using `ndarray.tolist()`\nor `orjson.dumps(..., option=orjson.OPT_SERIALIZE_NUMPY)`: `tolist()` converts\nto a `double` before serializing and orjson's native path does not. This\ncan result in different rounding.\n\n`numpy.datetime64` instances are serialized as RFC 3339 strings and\ndatetime options affect them.\n\n```python\n>>> import orjson, numpy\n>>> orjson.dumps(\n        numpy.datetime64(\"2021-01-01T00:00:00.172\"),\n        option=orjson.OPT_SERIALIZE_NUMPY,\n)\nb'\"2021-01-01T00:00:00.172000\"'\n>>> orjson.dumps(\n        numpy.datetime64(\"2021-01-01T00:00:00.172\"),\n        option=(\n            orjson.OPT_SERIALIZE_NUMPY |\n            orjson.OPT_NAIVE_UTC |\n            orjson.OPT_OMIT_MICROSECONDS\n        ),\n)\nb'\"2021-01-01T00:00:00+00:00\"'\n```\n\nIf an array is not a contiguous C array, contains an unsupported datatype,\nor contains a `numpy.datetime64` using an unsupported representation\n(e.g., picoseconds), orjson falls through to `default`. In `default`,\n`obj.tolist()` can be specified.\n\nIf an array is not in the native endianness, e.g., an array of big-endian values\non a little-endian system, `orjson.JSONEncodeError`  is raised.\n\nIf an array is malformed, `orjson.JSONEncodeError` is raised.\n\nThis measures serializing 92MiB of JSON from an `numpy.ndarray` with\ndimensions of `(50000, 100)` and `numpy.float64` values:\n\n| Library   | Latency (ms)   |   RSS diff (MiB) |   vs. orjson |\n|-----------|----------------|------------------|--------------|\n| orjson    | 105            |              105 |          1   |\n| json      | 1,481          |              295 |         14.2 |\n\nThis measures serializing 100MiB of JSON from an `numpy.ndarray` with\ndimensions of `(100000, 100)` and `numpy.int32` values:\n\n| Library   |   Latency (ms) |   RSS diff (MiB) |   vs. orjson |\n|-----------|----------------|------------------|--------------|\n| orjson    |             68 |              119 |          1   |\n| json      |            684 |              501 |         10.1 |\n\nThis measures serializing 105MiB of JSON from an `numpy.ndarray` with\ndimensions of `(100000, 200)` and `numpy.bool` values:\n\n| Library   |   Latency (ms) |   RSS diff (MiB) |   vs. orjson |\n|-----------|----------------|------------------|--------------|\n| orjson    |             50 |              125 |          1   |\n| json      |            573 |              398 |         11.5 |\n\nIn these benchmarks, orjson serializes natively and `json` serializes\n`ndarray.tolist()` via `default`. The RSS column measures peak memory\nusage during serialization. This can be reproduced using the `pynumpy` script.\n\norjson does not have an installation or compilation dependency on numpy. The\nimplementation is independent, reading `numpy.ndarray` using\n`PyArrayInterface`.\n\n### str\n\norjson is strict about UTF-8 conformance. This is stricter than the standard\nlibrary's json module, which will serialize and deserialize UTF-16 surrogates,\ne.g., \"\\ud800\", that are invalid UTF-8.\n\nIf `orjson.dumps()` is given a `str` that does not contain valid UTF-8,\n`orjson.JSONEncodeError` is raised. If `loads()` receives invalid UTF-8,\n`orjson.JSONDecodeError` is raised.\n\n```python\n>>> import orjson, json\n>>> orjson.dumps('\\ud800')\nJSONEncodeError: str is not valid UTF-8: surrogates not allowed\n>>> json.dumps('\\ud800')\n'\"\\\\ud800\"'\n>>> orjson.loads('\"\\\\ud800\"')\nJSONDecodeError: unexpected end of hex escape at line 1 column 8: line 1 column 1 (char 0)\n>>> json.loads('\"\\\\ud800\"')\n'\\ud800'\n```\n\nTo make a best effort at deserializing bad input, first decode `bytes` using\nthe `replace` or `lossy` argument for `errors`:\n\n```python\n>>> import orjson\n>>> orjson.loads(b'\"\\xed\\xa0\\x80\"')\nJSONDecodeError: str is not valid UTF-8: surrogates not allowed\n>>> orjson.loads(b'\"\\xed\\xa0\\x80\"'.decode(\"utf-8\", \"replace\"))\n'���'\n```\n\n### uuid\n\norjson serializes `uuid.UUID` instances to\n[RFC 4122](https://tools.ietf.org/html/rfc4122) format, e.g.,\n\"f81d4fae-7dec-11d0-a765-00a0c91e6bf6\".\n\n``` python\n>>> import orjson, uuid\n>>> orjson.dumps(uuid.uuid5(uuid.NAMESPACE_DNS, \"python.org\"))\nb'\"886313e1-3b8a-5372-9b90-0c9aee199e5d\"'\n```\n\n## Testing\n\nThe library has comprehensive tests. There are tests against fixtures in the\n[JSONTestSuite](https://github.com/nst/JSONTestSuite) and\n[nativejson-benchmark](https://github.com/miloyip/nativejson-benchmark)\nrepositories. It is tested to not crash against the\n[Big List of Naughty Strings](https://github.com/minimaxir/big-list-of-naughty-strings).\nIt is tested to not leak memory. It is tested to not crash\nagainst and not accept invalid UTF-8. There are integration tests\nexercising the library's use in web servers (gunicorn using multiprocess/forked\nworkers) and when multithreaded.\n\norjson is the most correct of the compared libraries. This graph shows how each\nlibrary handles a combined 342 JSON fixtures from the\n[JSONTestSuite](https://github.com/nst/JSONTestSuite) and\n[nativejson-benchmark](https://github.com/miloyip/nativejson-benchmark) tests:\n\n| Library    |   Invalid JSON documents not rejected |   Valid JSON documents not deserialized |\n|------------|---------------------------------------|-----------------------------------------|\n| orjson     |                                     0 |                                       0 |\n| json       |                                    17 |                                       0 |\n\nThis shows that all libraries deserialize valid JSON but only orjson\ncorrectly rejects the given invalid JSON fixtures. Errors are largely due to\naccepting invalid strings and numbers.\n\nThe graph above can be reproduced using the `pycorrectness` script.\n\n## Performance\n\nSerialization and deserialization performance of orjson is consistently better\nthan the standard library's `json`. The graphs below illustrate a few commonly\nused documents.\n\n### Latency\n\n![Serialization](doc/serialization.png)\n\n![Deserialization](doc/deserialization.png)\n\n#### twitter.json serialization\n\n| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |\n|-----------|---------------------------------|-------------------------|----------------------|\n| orjson    |                             0.1 |                    8453 |                  1   |\n| json      |                             1.3 |                     765 |                 11.1 |\n\n#### twitter.json deserialization\n\n| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |\n|-----------|---------------------------------|-------------------------|----------------------|\n| orjson    |                             0.5 |                    1889 |                  1   |\n| json      |                             2.2 |                     453 |                  4.2 |\n\n#### github.json serialization\n\n| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |\n|-----------|---------------------------------|-------------------------|----------------------|\n| orjson    |                            0.01 |                  103693 |                  1   |\n| json      |                            0.13 |                    7648 |                 13.6 |\n\n#### github.json deserialization\n\n| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |\n|-----------|---------------------------------|-------------------------|----------------------|\n| orjson    |                            0.04 |                   23264 |                  1   |\n| json      |                            0.1  |                   10430 |                  2.2 |\n\n#### citm_catalog.json serialization\n\n| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |\n|-----------|---------------------------------|-------------------------|----------------------|\n| orjson    |                             0.3 |                    3975 |                  1   |\n| json      |                             3   |                     338 |                 11.8 |\n\n#### citm_catalog.json deserialization\n\n| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |\n|-----------|---------------------------------|-------------------------|----------------------|\n| orjson    |                             1.3 |                     781 |                  1   |\n| json      |                             4   |                     250 |                  3.1 |\n\n#### canada.json serialization\n\n| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |\n|-----------|---------------------------------|-------------------------|----------------------|\n| orjson    |                             2.5 |                     399 |                  1   |\n| json      |                            29.8 |                      33 |                 11.9 |\n\n#### canada.json deserialization\n\n| Library   |   Median latency (milliseconds) |   Operations per second |   Relative (latency) |\n|-----------|---------------------------------|-------------------------|----------------------|\n| orjson    |                               3 |                     333 |                    1 |\n| json      |                              18 |                      55 |                    6 |\n\n### Reproducing\n\nThe above was measured using Python 3.11.10 in a Fedora 42 container on an\nx86-64-v4 machine using the\n`orjson-3.10.11-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl`\nartifact on PyPI. The latency results can be reproduced using the `pybench` script.\n\n## Questions\n\n### Will it deserialize to dataclasses, UUIDs, decimals, etc or support object_hook?\n\nNo. This requires a schema specifying what types are expected and how to\nhandle errors etc. This is addressed by data validation libraries a\nlevel above this.\n\n### Will it serialize to `str`?\n\nNo. `bytes` is the correct type for a serialized blob.\n\n### Will it support NDJSON or JSONL?\n\nNo. [orjsonl](https://github.com/umarbutler/orjsonl) may be appropriate.\n\n### Will it support JSON5 or RJSON?\n\nNo, it supports RFC 8259.\n\n### How do I depend on orjson in a Rust project?\n\norjson is only shipped as a Python module. The project should depend on\n`orjson` in its own Python requirements and should obtain pointers to\nfunctions and objects using the normal `PyImport_*` APIs.\n\n## Packaging\n\nTo package orjson requires at least [Rust](https://www.rust-lang.org/) 1.95,\na C compiler, and the [maturin](https://github.com/PyO3/maturin) build tool.\nThe recommended build command is:\n\n```sh\nmaturin build --release --strip\n```\n\nThe project's own CI tests against `nightly-2026-05-01` and stable 1.95. It\nis prudent to pin the nightly version because that channel can introduce\nbreaking changes. There is a significant performance benefit to using\nnightly.\n\norjson is tested on native hardware for amd64, aarch64, and i686 on Linux. It is\ncross-compiled and may be tested via emulation for arm7, ppc64le, and s390x. It\nis tested for aarch64 on macOS and cross-compiles for amd64. For\nWindows it is tested on amd64, i686, and aarch64.\n\nThere are no runtime dependencies other than libc.\n\nThe source distribution on PyPI contains all dependencies' source and can be\nbuilt without network access. The file can be downloaded from\n`https://files.pythonhosted.org/packages/source/o/orjson/orjson-${version}.tar.gz`.\n\norjson's tests are included in the source distribution on PyPI. The tests\nrequire only `pytest`. There are optional packages such as `pytz` and `numpy`\nlisted in `test/requirements.txt` and used in ~10% of tests. Not having these\ndependencies causes the tests needing them to skip. Tests can be run\nwith `pytest -q test`.\n\n## License\n\norjson was written by ijl <<ijl@mailbox.org>>, copyright 2018 - 2026, with\nsome source files available under the Mozilla Public License 2.0 and some\navailable under your choice of the Apache 2 license or MIT license.\n\n",
+      "description_content_type": "text/markdown; charset=UTF-8; variant=GFM",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": null,
+      "license": null,
+      "license_expression": "MPL-2.0 AND (Apache-2.0 OR MIT)",
+      "license_files": [
+        "LICENSE-APACHE",
+        "LICENSE-MIT",
+        "LICENSE-MPL-2.0"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "orjson",
+      "package_url": "https://pypi.org/project/orjson/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/orjson/",
+      "project_urls": {
+        "changelog": "https://github.com/ijl/orjson/blob/master/CHANGELOG.md",
+        "documentation": "https://github.com/ijl/orjson",
+        "source": "https://github.com/ijl/orjson"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/orjson/3.11.9/",
+      "requires_dist": null,
+      "requires_python": ">=3.10",
+      "summary": "Fast, correct Python JSON library supporting dataclasses, datetimes, and numpy",
+      "version": "3.11.9",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 41926781,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "ijl"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "105db95ca542a001135cc250a49370f282f578c8f4e46cc8617d73775297eea8",
+          "md5": "133b531f64c5d8fc4be7110b938181b3",
+          "sha256": "135869ef917b8704ea0a94e01620e0c05021c15c52036e4663baffe75e72f8ce"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp310-cp310-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "133b531f64c5d8fc4be7110b938181b3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 228986,
+        "upload_time": "2026-05-06T15:09:14",
+        "upload_time_iso_8601": "2026-05-06T15:09:14.765338Z",
+        "url": "https://files.pythonhosted.org/packages/10/5d/b95ca542a001135cc250a49370f282f578c8f4e46cc8617d73775297eea8/orjson-3.11.9-cp310-cp310-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "8001be33fbff646e22f93398429ea645f20d2097aea1a6cdc1e6628e70125f83",
+          "md5": "132deb4afd06eaf18c8dea5a2db54115",
+          "sha256": "115ab5f5f4a0f203cc2a5f0fb09aee503a3f771aa08392949ab5ca230c4fbdbd"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "132deb4afd06eaf18c8dea5a2db54115",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 132558,
+        "upload_time": "2026-05-06T15:09:17",
+        "upload_time_iso_8601": "2026-05-06T15:09:17.431498Z",
+        "url": "https://files.pythonhosted.org/packages/80/01/be33fbff646e22f93398429ea645f20d2097aea1a6cdc1e6628e70125f83/orjson-3.11.9-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "4e6173d49333bba660a075daccca10970dc6409ce1cf42ae4046646a19468aad",
+          "md5": "711c0fcfe912dfeca8237ddabf648855",
+          "sha256": "4da3c38a2083ca4aaf9c2a36776cce3e9328e6647b10d118948f3cfb4913ffe4"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp310-cp310-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "711c0fcfe912dfeca8237ddabf648855",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 128213,
+        "upload_time": "2026-05-06T15:09:18",
+        "upload_time_iso_8601": "2026-05-06T15:09:18.719336Z",
+        "url": "https://files.pythonhosted.org/packages/4e/61/73d49333bba660a075daccca10970dc6409ce1cf42ae4046646a19468aad/orjson-3.11.9-cp310-cp310-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "1f7d30e844b3dac3f74aed66b1f984daf9db3c98c0328c03d965a9e8dc06449e",
+          "md5": "535b06879126864be353eb819d09e826",
+          "sha256": "53b50b0e14084b8f7e29c5ce84c5af0f1160169b30d8a6914231d97d2fe297d4"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp310-cp310-manylinux_2_17_i686.manylinux2014_i686.whl",
+        "has_sig": false,
+        "md5_digest": "535b06879126864be353eb819d09e826",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 135430,
+        "upload_time": "2026-05-06T15:09:20",
+        "upload_time_iso_8601": "2026-05-06T15:09:20.257557Z",
+        "url": "https://files.pythonhosted.org/packages/1f/7d/30e844b3dac3f74aed66b1f984daf9db3c98c0328c03d965a9e8dc06449e/orjson-3.11.9-cp310-cp310-manylinux_2_17_i686.manylinux2014_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "1664bd815f5c610b3facc204f26ba94e87a9eb49b0d83de3d5fc1eee2402d91b",
+          "md5": "0214d98294b60f7a539f68506f2c7e86",
+          "sha256": "231742b4a11dad8d5380a435962c57e91b7c37b79be858f4ef1c0df1a259897e"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp310-cp310-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "0214d98294b60f7a539f68506f2c7e86",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 146178,
+        "upload_time": "2026-05-06T15:09:21",
+        "upload_time_iso_8601": "2026-05-06T15:09:21.616811Z",
+        "url": "https://files.pythonhosted.org/packages/16/64/bd815f5c610b3facc204f26ba94e87a9eb49b0d83de3d5fc1eee2402d91b/orjson-3.11.9-cp310-cp310-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "c735e744fd36c79b339d27beb06068b5a08a8882ef5418804d0ce545a31f718d",
+          "md5": "e11ae11b3c7071eecf9a517e8b688849",
+          "sha256": "34fd2317602587321faab75ab76c623a0117e80841a6413654f04e47f339a8fb"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp310-cp310-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "e11ae11b3c7071eecf9a517e8b688849",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 133068,
+        "upload_time": "2026-05-06T15:09:23",
+        "upload_time_iso_8601": "2026-05-06T15:09:23.228851Z",
+        "url": "https://files.pythonhosted.org/packages/c7/35/e744fd36c79b339d27beb06068b5a08a8882ef5418804d0ce545a31f718d/orjson-3.11.9-cp310-cp310-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "2a56d54152b67b63a0b3e556cfc549d6ce84f74d7f425ddeadc6c8a74d913da7",
+          "md5": "cc37a478786cfb46e6722e2b2d928601",
+          "sha256": "71f3db16e69b667b132e0f305a833d5497da302d801508cbb051ed9a9819da47"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "cc37a478786cfb46e6722e2b2d928601",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 134217,
+        "upload_time": "2026-05-06T15:09:24",
+        "upload_time_iso_8601": "2026-05-06T15:09:24.847642Z",
+        "url": "https://files.pythonhosted.org/packages/2a/56/d54152b67b63a0b3e556cfc549d6ce84f74d7f425ddeadc6c8a74d913da7/orjson-3.11.9-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "0bee66154baf69f71c7164a268a5e888908aec5a0819d13c81d5e2755a257758",
+          "md5": "7ec4d8e08b8e1420094095fa75256614",
+          "sha256": "0b34789fa0da61cf7bef0546b09c738fb195331e017e477096d129e9105ab03d"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp310-cp310-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "7ec4d8e08b8e1420094095fa75256614",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 141917,
+        "upload_time": "2026-05-06T15:09:26",
+        "upload_time_iso_8601": "2026-05-06T15:09:26.647219Z",
+        "url": "https://files.pythonhosted.org/packages/0b/ee/66154baf69f71c7164a268a5e888908aec5a0819d13c81d5e2755a257758/orjson-3.11.9-cp310-cp310-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "09d3c5824260ca8b9d7ba82648d042a3f8f4815d18c15bb98a1f30edd1bb2d83",
+          "md5": "e5f479032d10a48d31f6219ad26f55a2",
+          "sha256": "87e4d4ab280b0c87424d47695bec2182caf8cfc17879ea78dab76680194abc13"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp310-cp310-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "e5f479032d10a48d31f6219ad26f55a2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 415356,
+        "upload_time": "2026-05-06T15:09:28",
+        "upload_time_iso_8601": "2026-05-06T15:09:28.252715Z",
+        "url": "https://files.pythonhosted.org/packages/09/d3/c5824260ca8b9d7ba82648d042a3f8f4815d18c15bb98a1f30edd1bb2d83/orjson-3.11.9-cp310-cp310-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "64cb509c2e816fe4df641d93dc92f6a89adc8df3ada8ebdee2bd44aba3264c3c",
+          "md5": "060adf8bd7ff20fcb86ea8b3c6f64620",
+          "sha256": "ace6c58523302d3b97b6ac5c38a5298a54b473762b6be82726b4265c41029f92"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp310-cp310-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "060adf8bd7ff20fcb86ea8b3c6f64620",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 148112,
+        "upload_time": "2026-05-06T15:09:29",
+        "upload_time_iso_8601": "2026-05-06T15:09:29.783846Z",
+        "url": "https://files.pythonhosted.org/packages/64/cb/509c2e816fe4df641d93dc92f6a89adc8df3ada8ebdee2bd44aba3264c3c/orjson-3.11.9-cp310-cp310-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "dbb53ceae56d2e4962979eedb023ba6a46a4bb65f333960379be0ca470686220",
+          "md5": "31a67aeffe7b374d21c2d852f1c8d100",
+          "sha256": "97d0d932803c1b164fde11cb542a9efcb1e0f63b184537cca65887147906ff48"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp310-cp310-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "31a67aeffe7b374d21c2d852f1c8d100",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 137112,
+        "upload_time": "2026-05-06T15:09:31",
+        "upload_time_iso_8601": "2026-05-06T15:09:31.432280Z",
+        "url": "https://files.pythonhosted.org/packages/db/b5/3ceae56d2e4962979eedb023ba6a46a4bb65f333960379be0ca470686220/orjson-3.11.9-cp310-cp310-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "53e38db257f6b17af9193bb1130f99d9d108420dc83dc134720563104c46bab0"
+        },
+        "digests": {
+          "blake2b_256": "d77a81fa3f2c7bef79b04cf2ab7838e5ac74b1f12511ceab979759b0275d6bb4",
+          "md5": "837d063141bc7912468eb90f29baf076",
+          "sha256": "b3afcf569c15577a9fe64627292daa3e6b3a70f4fb77a5df246a87ec21681b94"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp310-cp310-win32.whl",
+        "has_sig": false,
+        "md5_digest": "837d063141bc7912468eb90f29baf076",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 131706,
+        "upload_time": "2026-05-06T15:09:32",
+        "upload_time_iso_8601": "2026-05-06T15:09:32.707353Z",
+        "url": "https://files.pythonhosted.org/packages/d7/7a/81fa3f2c7bef79b04cf2ab7838e5ac74b1f12511ceab979759b0275d6bb4/orjson-3.11.9-cp310-cp310-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "53e38db257f6b17af9193bb1130f99d9d108420dc83dc134720563104c46bab0"
+        },
+        "digests": {
+          "blake2b_256": "aed8b64600f9083c7f151ad39717a5877fccbeb0ef6d7efcb55f971ce00b6bee",
+          "md5": "7577c58dcc3f4f56200df304e242da5e",
+          "sha256": "8697ab6a080a5c46edaad50e2bc5bd8c7ca5c66442d24104fa44ec74910a8244"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp310-cp310-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "7577c58dcc3f4f56200df304e242da5e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 127282,
+        "upload_time": "2026-05-06T15:09:33",
+        "upload_time_iso_8601": "2026-05-06T15:09:33.955272Z",
+        "url": "https://files.pythonhosted.org/packages/ae/d8/b64600f9083c7f151ad39717a5877fccbeb0ef6d7efcb55f971ce00b6bee/orjson-3.11.9-cp310-cp310-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "1e513fb9e65ae76ee97bd611869a503fa3fc0a6e81dd8b737cf3003f682df7ff",
+          "md5": "6ad3cb13f39ca0ff3c4e82c3d554c0ce",
+          "sha256": "f01c4818b3fc9b0da8e096722a84318071eaa118df35f6ed2344da0e73a5444f"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp311-cp311-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "6ad3cb13f39ca0ff3c4e82c3d554c0ce",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 228522,
+        "upload_time": "2026-05-06T15:09:35",
+        "upload_time_iso_8601": "2026-05-06T15:09:35.362880Z",
+        "url": "https://files.pythonhosted.org/packages/1e/51/3fb9e65ae76ee97bd611869a503fa3fc0a6e81dd8b737cf3003f682df7ff/orjson-3.11.9-cp311-cp311-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "16fa9d54b07cb3f3b0bfd57841478e42d7a0ece4a9f49f9907eecf5a45461687",
+          "md5": "8a11fee21db9210b1df7cfcf0a699e7e",
+          "sha256": "3ebca4179031ee716ed076ffadc29428e900512f6fccee8614c9983157fcf19c"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp311-cp311-macosx_15_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "8a11fee21db9210b1df7cfcf0a699e7e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 128463,
+        "upload_time": "2026-05-06T15:09:37",
+        "upload_time_iso_8601": "2026-05-06T15:09:37.063079Z",
+        "url": "https://files.pythonhosted.org/packages/16/fa/9d54b07cb3f3b0bfd57841478e42d7a0ece4a9f49f9907eecf5a45461687/orjson-3.11.9-cp311-cp311-macosx_15_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "88b16ceafc2eefd0a553e3be77ce6c49d107e772485d9568629376171c50e634",
+          "md5": "9c5918c3e44f7a07092c77698c22036c",
+          "sha256": "48ee05097750de0ff69ed5b7bbcf0732182fd57a24043dcc2a1da780a5ead3a5"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "9c5918c3e44f7a07092c77698c22036c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 132306,
+        "upload_time": "2026-05-06T15:09:38",
+        "upload_time_iso_8601": "2026-05-06T15:09:38.299990Z",
+        "url": "https://files.pythonhosted.org/packages/88/b1/6ceafc2eefd0a553e3be77ce6c49d107e772485d9568629376171c50e634/orjson-3.11.9-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "ea76f11311285324a40aab1e3031385c50b635a7cd0734fdaf60c7e89a696f60",
+          "md5": "5bc7a5dff7182a00a8051fc0eecfd375",
+          "sha256": "a6082706765a95a6680d812e1daf1c0cfe8adec7831b3ff3b625693f3b461b1c"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp311-cp311-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "5bc7a5dff7182a00a8051fc0eecfd375",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 127988,
+        "upload_time": "2026-05-06T15:09:39",
+        "upload_time_iso_8601": "2026-05-06T15:09:39.597033Z",
+        "url": "https://files.pythonhosted.org/packages/ea/76/f11311285324a40aab1e3031385c50b635a7cd0734fdaf60c7e89a696f60/orjson-3.11.9-cp311-cp311-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "9e850ef63bcf1337f44031ce9b91b1919563f62a37527b3ea4368bb15a22e5d7",
+          "md5": "1385ad1627d41d5756cd373e00ca83c8",
+          "sha256": "277fefe9d76ee17eb14debf399e3533d4d63b5f677a4d3719eb763536af1f4bd"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp311-cp311-manylinux_2_17_i686.manylinux2014_i686.whl",
+        "has_sig": false,
+        "md5_digest": "1385ad1627d41d5756cd373e00ca83c8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 135188,
+        "upload_time": "2026-05-06T15:09:40",
+        "upload_time_iso_8601": "2026-05-06T15:09:40.957793Z",
+        "url": "https://files.pythonhosted.org/packages/9e/85/0ef63bcf1337f44031ce9b91b1919563f62a37527b3ea4368bb15a22e5d7/orjson-3.11.9-cp311-cp311-manylinux_2_17_i686.manylinux2014_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "0594b0d27090ea8a2095db3c2bd1b1c96f96f19bbb494d7fef33130e846e613d",
+          "md5": "d88ced0c94276098f781c74655397a70",
+          "sha256": "03db380e3780fa0015ed776a90f20e8e20bb11dde13b216ce19e5718e3dfba62"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp311-cp311-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "d88ced0c94276098f781c74655397a70",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 145937,
+        "upload_time": "2026-05-06T15:09:42",
+        "upload_time_iso_8601": "2026-05-06T15:09:42.249436Z",
+        "url": "https://files.pythonhosted.org/packages/05/94/b0d27090ea8a2095db3c2bd1b1c96f96f19bbb494d7fef33130e846e613d/orjson-3.11.9-cp311-cp311-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "09eb75d50c29c05b8054013e221e598820a365c8e64065312e75e202ed880709",
+          "md5": "2a54244340db1e9726d1e9f86189db01",
+          "sha256": "33d7d766701847dc6729846362dc27895d2f2d2251264f9d10e7cb9878194877"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp311-cp311-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "2a54244340db1e9726d1e9f86189db01",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 132758,
+        "upload_time": "2026-05-06T15:09:43",
+        "upload_time_iso_8601": "2026-05-06T15:09:43.945826Z",
+        "url": "https://files.pythonhosted.org/packages/09/eb/75d50c29c05b8054013e221e598820a365c8e64065312e75e202ed880709/orjson-3.11.9-cp311-cp311-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "49bd360686f39348aa88827cb6fbf7dc606fd41c831a35235e1abf1db8e3a9e6",
+          "md5": "4928999ec12f4a93dbed758efd6a9964",
+          "sha256": "147302878da387104b66bb4a8b0227d1d487e976ce41a8501916161072ed87b1"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "4928999ec12f4a93dbed758efd6a9964",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 133971,
+        "upload_time": "2026-05-06T15:09:45",
+        "upload_time_iso_8601": "2026-05-06T15:09:45.239185Z",
+        "url": "https://files.pythonhosted.org/packages/49/bd/360686f39348aa88827cb6fbf7dc606fd41c831a35235e1abf1db8e3a9e6/orjson-3.11.9-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "0e303178eb16f3221aeef068b6f1f1ebe05f656ea5c6dffe9f6c917329fe17a3",
+          "md5": "ef940af6a7e0b04cf34f8ca1c4bbc2cc",
+          "sha256": "3513550321f8c8c811a7c3297b8a630e82dc08e4c10216d07703c997776236cd"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "ef940af6a7e0b04cf34f8ca1c4bbc2cc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 141685,
+        "upload_time": "2026-05-06T15:09:46",
+        "upload_time_iso_8601": "2026-05-06T15:09:46.858985Z",
+        "url": "https://files.pythonhosted.org/packages/0e/30/3178eb16f3221aeef068b6f1f1ebe05f656ea5c6dffe9f6c917329fe17a3/orjson-3.11.9-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "5ff1ff2f19ed0225f9680fafa42febca3570dd59444ebf190980738d376214c2",
+          "md5": "17b4465c8033934979c5780eb151e278",
+          "sha256": "c5d001196b89fa9cf0a4ab79766cd835b991a166e4b621ba95089edc50c429ff"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp311-cp311-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "17b4465c8033934979c5780eb151e278",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 415167,
+        "upload_time": "2026-05-06T15:09:48",
+        "upload_time_iso_8601": "2026-05-06T15:09:48.312318Z",
+        "url": "https://files.pythonhosted.org/packages/5f/f1/ff2f19ed0225f9680fafa42febca3570dd59444ebf190980738d376214c2/orjson-3.11.9-cp311-cp311-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "9b61863bddf0da6e9e586765414debd54b4e58db05f560902b6d00658cb88636",
+          "md5": "14f12109f706d74c3ea0cfb09b9e558c",
+          "sha256": "16969c9d369c98eb084889c6e4d2d39b77c7eb38ceccf8da2a9fff62ae908980"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp311-cp311-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "14f12109f706d74c3ea0cfb09b9e558c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 147913,
+        "upload_time": "2026-05-06T15:09:49",
+        "upload_time_iso_8601": "2026-05-06T15:09:49.733017Z",
+        "url": "https://files.pythonhosted.org/packages/9b/61/863bddf0da6e9e586765414debd54b4e58db05f560902b6d00658cb88636/orjson-3.11.9-cp311-cp311-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "b68a4081492586d75b073d60c5271a8d0f05a0955cabf1e34c8473f6fcd84235",
+          "md5": "593480efa43bd3058fa31698ba2c2a69",
+          "sha256": "63e0efbc991250c0b3143488fa57d95affcabbfc63c99c48d625dd37779aafe2"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "593480efa43bd3058fa31698ba2c2a69",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 136959,
+        "upload_time": "2026-05-06T15:09:51",
+        "upload_time_iso_8601": "2026-05-06T15:09:51.311170Z",
+        "url": "https://files.pythonhosted.org/packages/b6/8a/4081492586d75b073d60c5271a8d0f05a0955cabf1e34c8473f6fcd84235/orjson-3.11.9-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "53e38db257f6b17af9193bb1130f99d9d108420dc83dc134720563104c46bab0"
+        },
+        "digests": {
+          "blake2b_256": "0dbd70b6ab193594d7abb875320c0a7c8335e846f28968c432c31042409c3c8d",
+          "md5": "2563663ad9e44b62bc00060c31629f80",
+          "sha256": "14ed654580c1ed2bc217352ec82f91b047aef82951aa71c7f64e0dcb03c0e180"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp311-cp311-win32.whl",
+        "has_sig": false,
+        "md5_digest": "2563663ad9e44b62bc00060c31629f80",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 131533,
+        "upload_time": "2026-05-06T15:09:52",
+        "upload_time_iso_8601": "2026-05-06T15:09:52.637151Z",
+        "url": "https://files.pythonhosted.org/packages/0d/bd/70b6ab193594d7abb875320c0a7c8335e846f28968c432c31042409c3c8d/orjson-3.11.9-cp311-cp311-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "53e38db257f6b17af9193bb1130f99d9d108420dc83dc134720563104c46bab0"
+        },
+        "digests": {
+          "blake2b_256": "3f171a1a228183d62d1b77e2c30d210f47dd4768b310ebe1607c63e3c0e3a71e",
+          "md5": "cbb934b7e6572910a9829a0e59d27d0a",
+          "sha256": "57ea77fb70a448ce87d18fca050193202a3da5e54598f6501ca5476fb66cfe02"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp311-cp311-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "cbb934b7e6572910a9829a0e59d27d0a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 127106,
+        "upload_time": "2026-05-06T15:09:54",
+        "upload_time_iso_8601": "2026-05-06T15:09:54.204902Z",
+        "url": "https://files.pythonhosted.org/packages/3f/17/1a1a228183d62d1b77e2c30d210f47dd4768b310ebe1607c63e3c0e3a71e/orjson-3.11.9-cp311-cp311-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "53e38db257f6b17af9193bb1130f99d9d108420dc83dc134720563104c46bab0"
+        },
+        "digests": {
+          "blake2b_256": "b895285de5fa296d09681ee9c546cd4a8aeb773b701cf343dc125994f4d52953",
+          "md5": "94891c94b5d57ee3e27f2af23dd78ec9",
+          "sha256": "19b72ed11572a2ee51a67a903afbe5af504f84ed6f529c0fe44b0ab3fb5cc697"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp311-cp311-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "94891c94b5d57ee3e27f2af23dd78ec9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 126848,
+        "upload_time": "2026-05-06T15:09:55",
+        "upload_time_iso_8601": "2026-05-06T15:09:55.551980Z",
+        "url": "https://files.pythonhosted.org/packages/b8/95/285de5fa296d09681ee9c546cd4a8aeb773b701cf343dc125994f4d52953/orjson-3.11.9-cp311-cp311-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "166d11867a3ffa3a3608d84a4de51ef4dd0896d6b5cc9132fbe1daf593e677bc",
+          "md5": "6de24274b4ee9002c0215fd906dac61e",
+          "sha256": "9ef6fe90aadef185c7b128859f40beb24720b4ecea95379fc9000931179c3a49"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp312-cp312-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "6de24274b4ee9002c0215fd906dac61e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 228515,
+        "upload_time": "2026-05-06T15:09:57",
+        "upload_time_iso_8601": "2026-05-06T15:09:57.265185Z",
+        "url": "https://files.pythonhosted.org/packages/16/6d/11867a3ffa3a3608d84a4de51ef4dd0896d6b5cc9132fbe1daf593e677bc/orjson-3.11.9-cp312-cp312-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "247505912954c8b288f34fcf5cd4b9b071cb4f6e77b9961e175e56ebb258089f",
+          "md5": "bd105a5baa6ff84addcbc5c7b04d4242",
+          "sha256": "e5c9b8f28e726e97d97696c826bc7bea5d71cecd63576dba92924a32c1961291"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp312-cp312-macosx_15_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "bd105a5baa6ff84addcbc5c7b04d4242",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 128409,
+        "upload_time": "2026-05-06T15:09:59",
+        "upload_time_iso_8601": "2026-05-06T15:09:59.063929Z",
+        "url": "https://files.pythonhosted.org/packages/24/75/05912954c8b288f34fcf5cd4b9b071cb4f6e77b9961e175e56ebb258089f/orjson-3.11.9-cp312-cp312-macosx_15_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "ab861c3a47df3bc8191ea9ac51603bbb872a95167a364320c269f2557911f406",
+          "md5": "2fad6c791f7c3bac70f68536faaefa45",
+          "sha256": "26a473dbb4162108b27901492546f83c76fdcea3d0eadff00ae7a07e18dcce09"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "2fad6c791f7c3bac70f68536faaefa45",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 132106,
+        "upload_time": "2026-05-06T15:10:00",
+        "upload_time_iso_8601": "2026-05-06T15:10:00.798070Z",
+        "url": "https://files.pythonhosted.org/packages/ab/86/1c3a47df3bc8191ea9ac51603bbb872a95167a364320c269f2557911f406/orjson-3.11.9-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "d7cfb33b5f3e695ae7d63feef9d915c37cc3b8f465493dcd4f8e0b4c697a2366",
+          "md5": "66cf2c78a09a01839e764d0076a5400f",
+          "sha256": "011382e2a60fda9d46f1cdee31068cfc52ffe952b587d683ec0463002802a0f4"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp312-cp312-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "66cf2c78a09a01839e764d0076a5400f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 127864,
+        "upload_time": "2026-05-06T15:10:02",
+        "upload_time_iso_8601": "2026-05-06T15:10:02.150878Z",
+        "url": "https://files.pythonhosted.org/packages/d7/cf/b33b5f3e695ae7d63feef9d915c37cc3b8f465493dcd4f8e0b4c697a2366/orjson-3.11.9-cp312-cp312-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "316a6cf69385a58208024fcb8c014e2141b8ce838aba6492b589f8acfff97fab",
+          "md5": "999bf003e29c20ce4f87defe20860e2e",
+          "sha256": "c2d3dc759490128c5c1711a53eeaa8ee1d437fd0038ffd2b6008abf46db3f882"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp312-cp312-manylinux_2_17_i686.manylinux2014_i686.whl",
+        "has_sig": false,
+        "md5_digest": "999bf003e29c20ce4f87defe20860e2e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 135213,
+        "upload_time": "2026-05-06T15:10:03",
+        "upload_time_iso_8601": "2026-05-06T15:10:03.515747Z",
+        "url": "https://files.pythonhosted.org/packages/31/6a/6cf69385a58208024fcb8c014e2141b8ce838aba6492b589f8acfff97fab/orjson-3.11.9-cp312-cp312-manylinux_2_17_i686.manylinux2014_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "e8f80b1bd3e8f2efcdd376af5c8cfd79eaf13f018080c0089c80ebd724e3c7fb",
+          "md5": "c4bf60d2dcf44ee7941a316e1bd36c42",
+          "sha256": "d8ea516b3726d190e1b4297e6f4e7a8650347ae053868a18163b4dd3641d1fff"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp312-cp312-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "c4bf60d2dcf44ee7941a316e1bd36c42",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 145994,
+        "upload_time": "2026-05-06T15:10:05",
+        "upload_time_iso_8601": "2026-05-06T15:10:05.083852Z",
+        "url": "https://files.pythonhosted.org/packages/e8/f8/0b1bd3e8f2efcdd376af5c8cfd79eaf13f018080c0089c80ebd724e3c7fb/orjson-3.11.9-cp312-cp312-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "f359dab79f61044c529d2c81aecdc589b1f833a1c8dec11ba3b1c2498a02ca7e",
+          "md5": "b02fea8ce67ebb05b5dfd61fd484ba46",
+          "sha256": "380cdce7ba24989af81d0a7013d0aaec5d0e2a21734c0e2681b1bc4f141957fe"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp312-cp312-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "b02fea8ce67ebb05b5dfd61fd484ba46",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 132744,
+        "upload_time": "2026-05-06T15:10:06",
+        "upload_time_iso_8601": "2026-05-06T15:10:06.853236Z",
+        "url": "https://files.pythonhosted.org/packages/f3/59/dab79f61044c529d2c81aecdc589b1f833a1c8dec11ba3b1c2498a02ca7e/orjson-3.11.9-cp312-cp312-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "0ea482b7a2fe5d8a67a59ed831b24d59a3d46ea7d207b66e1602d376541d94a6",
+          "md5": "41d2355118f6ef6fe5e20c79c1f16fda",
+          "sha256": "be4fa4f0af7fa18951f7ab3fc2148e223af211bf03f59e1c6034ec3f97f21d61"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "41d2355118f6ef6fe5e20c79c1f16fda",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 134014,
+        "upload_time": "2026-05-06T15:10:08",
+        "upload_time_iso_8601": "2026-05-06T15:10:08.213813Z",
+        "url": "https://files.pythonhosted.org/packages/0e/a4/82b7a2fe5d8a67a59ed831b24d59a3d46ea7d207b66e1602d376541d94a6/orjson-3.11.9-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "50c7375e83a76851b73b2e39f3bcf0e5a19e2b89bad13e5bca97d0b293d27f24",
+          "md5": "7351ed9a197c5adeb1f3e55ce834918b",
+          "sha256": "a8f5f8bc7ce7d59f08d9f99fa510c06496164a24cb5f3d34537dbd9ca30132e2"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "7351ed9a197c5adeb1f3e55ce834918b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 141509,
+        "upload_time": "2026-05-06T15:10:09",
+        "upload_time_iso_8601": "2026-05-06T15:10:09.595993Z",
+        "url": "https://files.pythonhosted.org/packages/50/c7/375e83a76851b73b2e39f3bcf0e5a19e2b89bad13e5bca97d0b293d27f24/orjson-3.11.9-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "7f7c49d5d82a3d3097f641f094f552131f1e2723b0b8cb0fa2874ab65ecfffa6",
+          "md5": "15ca78f6a913a9c8dbdccb47c05bbb8a",
+          "sha256": "4d7fde5501b944f83b3e665e1b31343ff6e154b15560a16b7130ea1e594a4206"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp312-cp312-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "15ca78f6a913a9c8dbdccb47c05bbb8a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 415127,
+        "upload_time": "2026-05-06T15:10:11",
+        "upload_time_iso_8601": "2026-05-06T15:10:11.049667Z",
+        "url": "https://files.pythonhosted.org/packages/7f/7c/49d5d82a3d3097f641f094f552131f1e2723b0b8cb0fa2874ab65ecfffa6/orjson-3.11.9-cp312-cp312-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "3adc7446c538590d55f455647e5f3c61fc33f7108714e7afcffa6a2a033f8350",
+          "md5": "5012098e3e0b05d1e8a5eb7c9dcb40bc",
+          "sha256": "cde1a448023ba7d5bb4c01c5afb48894380b5e4956e0627266526587ef4e535f"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp312-cp312-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "5012098e3e0b05d1e8a5eb7c9dcb40bc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 148025,
+        "upload_time": "2026-05-06T15:10:12",
+        "upload_time_iso_8601": "2026-05-06T15:10:12.842139Z",
+        "url": "https://files.pythonhosted.org/packages/3a/dc/7446c538590d55f455647e5f3c61fc33f7108714e7afcffa6a2a033f8350/orjson-3.11.9-cp312-cp312-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "dfe54d2d8af06f788329b4f78f8cc3679bb395392fcaa1e4d8d3c33e85308fa4",
+          "md5": "4d20be417f39f5bc215b2fa5d5863a18",
+          "sha256": "71e63adb0e1f1ed5d9e168f50a91ceb93ae6420731d222dc7da5c69409aa47aa"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "4d20be417f39f5bc215b2fa5d5863a18",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 136943,
+        "upload_time": "2026-05-06T15:10:14",
+        "upload_time_iso_8601": "2026-05-06T15:10:14.405181Z",
+        "url": "https://files.pythonhosted.org/packages/df/e5/4d2d8af06f788329b4f78f8cc3679bb395392fcaa1e4d8d3c33e85308fa4/orjson-3.11.9-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "53e38db257f6b17af9193bb1130f99d9d108420dc83dc134720563104c46bab0"
+        },
+        "digests": {
+          "blake2b_256": "0669850264ccf6d80f6b174620d30a87f65c9b1490aba33fe6b62798e618cad3",
+          "md5": "ff70ca6496ed53ca4601a59a6bfd2b58",
+          "sha256": "2d057a602cdd19a0ad680417527c45b6961a095081c0f46fe0e03e304aac6470"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp312-cp312-win32.whl",
+        "has_sig": false,
+        "md5_digest": "ff70ca6496ed53ca4601a59a6bfd2b58",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 131606,
+        "upload_time": "2026-05-06T15:10:15",
+        "upload_time_iso_8601": "2026-05-06T15:10:15.791042Z",
+        "url": "https://files.pythonhosted.org/packages/06/69/850264ccf6d80f6b174620d30a87f65c9b1490aba33fe6b62798e618cad3/orjson-3.11.9-cp312-cp312-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "53e38db257f6b17af9193bb1130f99d9d108420dc83dc134720563104c46bab0"
+        },
+        "digests": {
+          "blake2b_256": "b9d5973a43fc9c55e20f2051e9830997649f669be0cb3ca52192087c0143f118",
+          "md5": "c7a1381bad67b0c619f39471566be50e",
+          "sha256": "59e403b1cc5a676da8eaf31f6254801b7341b3e29efa85f92b48d272637e77be"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp312-cp312-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "c7a1381bad67b0c619f39471566be50e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 127101,
+        "upload_time": "2026-05-06T15:10:17",
+        "upload_time_iso_8601": "2026-05-06T15:10:17.129080Z",
+        "url": "https://files.pythonhosted.org/packages/b9/d5/973a43fc9c55e20f2051e9830997649f669be0cb3ca52192087c0143f118/orjson-3.11.9-cp312-cp312-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "53e38db257f6b17af9193bb1130f99d9d108420dc83dc134720563104c46bab0"
+        },
+        "digests": {
+          "blake2b_256": "feae495470f0e4a18f73fa10b7f6b84b464ec4cc5291c4e0c7c2a6c400bef006",
+          "md5": "3926abe820ba31c7169f5d6b78583a92",
+          "sha256": "9af678d6488357948f1f84c6cd1c1d397c014e1ae2f98ae082a44eb48f602624"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp312-cp312-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "3926abe820ba31c7169f5d6b78583a92",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 126736,
+        "upload_time": "2026-05-06T15:10:18",
+        "upload_time_iso_8601": "2026-05-06T15:10:18.645668Z",
+        "url": "https://files.pythonhosted.org/packages/fe/ae/495470f0e4a18f73fa10b7f6b84b464ec4cc5291c4e0c7c2a6c400bef006/orjson-3.11.9-cp312-cp312-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "323393fcc25907235c344ae73122f8a4e01d2d393ef062b4af7d2e2487a32c37",
+          "md5": "70ae209cc17225349102699ca8a76239",
+          "sha256": "4bab1b2d6141fe7b32ae71dac905666ece4f94936efbfb13d55bb7739a3a6021"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp313-cp313-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "70ae209cc17225349102699ca8a76239",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 228458,
+        "upload_time": "2026-05-06T15:10:20",
+        "upload_time_iso_8601": "2026-05-06T15:10:20.079749Z",
+        "url": "https://files.pythonhosted.org/packages/32/33/93fcc25907235c344ae73122f8a4e01d2d393ef062b4af7d2e2487a32c37/orjson-3.11.9-cp313-cp313-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "8f27b1e6dadb3c080313c03fdd8067b85e6a0460c7d8d6a1c3984ef77b904e4d",
+          "md5": "0baad9bb7bd9196b664a0c740bf6c88a",
+          "sha256": "844417969855fc7a41be124aafe83dc424592a7f77cd4501900c67307122b92c"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp313-cp313-macosx_15_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "0baad9bb7bd9196b664a0c740bf6c88a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 128368,
+        "upload_time": "2026-05-06T15:10:21",
+        "upload_time_iso_8601": "2026-05-06T15:10:21.549339Z",
+        "url": "https://files.pythonhosted.org/packages/8f/27/b1e6dadb3c080313c03fdd8067b85e6a0460c7d8d6a1c3984ef77b904e4d/orjson-3.11.9-cp313-cp313-macosx_15_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "210fc9ede0bf052f6b4051e64a7d4fa91b725cccf8321a6a786e86eb03519f00",
+          "md5": "e392bedff73e5c877573934a3ddde4a6",
+          "sha256": "ffe02797b5e9f3a9d8292ddcd289b474ad13e81ad83cd1891a240811f1d2cb81"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "e392bedff73e5c877573934a3ddde4a6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 132070,
+        "upload_time": "2026-05-06T15:10:23",
+        "upload_time_iso_8601": "2026-05-06T15:10:23.371688Z",
+        "url": "https://files.pythonhosted.org/packages/21/0f/c9ede0bf052f6b4051e64a7d4fa91b725cccf8321a6a786e86eb03519f00/orjson-3.11.9-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "fd26d398e28048dc18205bbe812f2c88cb9b40313db2470778e25964796458fe",
+          "md5": "754f113016a45b5481e845c558c26d18",
+          "sha256": "0e4eed3b200023042814d2fc8a5d2e880f13b52e1ed2485e83da4f3962f7dc1a"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp313-cp313-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "754f113016a45b5481e845c558c26d18",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 127892,
+        "upload_time": "2026-05-06T15:10:24",
+        "upload_time_iso_8601": "2026-05-06T15:10:24.714457Z",
+        "url": "https://files.pythonhosted.org/packages/fd/26/d398e28048dc18205bbe812f2c88cb9b40313db2470778e25964796458fe/orjson-3.11.9-cp313-cp313-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "666052b0054c4c700d5aa7fc5b7ca96917400d8f061307778578e67a10e25852",
+          "md5": "f100603696ca68849cc14d2ad5d41dc5",
+          "sha256": "8aff7da9952a5ad1cef8e68017724d96c7b9a66e99e91d6252e1b133d67a7b10"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp313-cp313-manylinux_2_17_i686.manylinux2014_i686.whl",
+        "has_sig": false,
+        "md5_digest": "f100603696ca68849cc14d2ad5d41dc5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 135217,
+        "upload_time": "2026-05-06T15:10:26",
+        "upload_time_iso_8601": "2026-05-06T15:10:26.084062Z",
+        "url": "https://files.pythonhosted.org/packages/66/60/52b0054c4c700d5aa7fc5b7ca96917400d8f061307778578e67a10e25852/orjson-3.11.9-cp313-cp313-manylinux_2_17_i686.manylinux2014_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "d5971e3dc2b2a28b7b2528f403d2fc1d79ec5f39af3bc143ab65d3ec26426385",
+          "md5": "db19c6e120cf9954f61f0d189da9a7dd",
+          "sha256": "4d4e98d6f3b8afed8bc8cd9718ec0cdf46661826beefb53fe8eafb37f2bf0362"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp313-cp313-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "db19c6e120cf9954f61f0d189da9a7dd",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 145980,
+        "upload_time": "2026-05-06T15:10:28",
+        "upload_time_iso_8601": "2026-05-06T15:10:28.062720Z",
+        "url": "https://files.pythonhosted.org/packages/d5/97/1e3dc2b2a28b7b2528f403d2fc1d79ec5f39af3bc143ab65d3ec26426385/orjson-3.11.9-cp313-cp313-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "fc3931fbfe7850f2de32dee7e7e5c09f26d403ab01e440ac96001c6b01ad3c99",
+          "md5": "c5b1fe4cbb5969da9531996cdd7b964b",
+          "sha256": "3a81d52442a7c99b3662333235b3adf96a1715864658b35bb797212be7bddb97"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp313-cp313-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "c5b1fe4cbb5969da9531996cdd7b964b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 132738,
+        "upload_time": "2026-05-06T15:10:29",
+        "upload_time_iso_8601": "2026-05-06T15:10:29.727804Z",
+        "url": "https://files.pythonhosted.org/packages/fc/39/31fbfe7850f2de32dee7e7e5c09f26d403ab01e440ac96001c6b01ad3c99/orjson-3.11.9-cp313-cp313-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "a108dca0082dd2a194acb93e5457e73455388e2e2ca464a2672449a9ddbb679d",
+          "md5": "15ab0c6f839f2e9d8893a06c22d9494e",
+          "sha256": "4e39364e726a8fff737309aff059ff67d8a8c8d5b677be7bb49a8b3e84b7e218"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "15ab0c6f839f2e9d8893a06c22d9494e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 134033,
+        "upload_time": "2026-05-06T15:10:31",
+        "upload_time_iso_8601": "2026-05-06T15:10:31.152768Z",
+        "url": "https://files.pythonhosted.org/packages/a1/08/dca0082dd2a194acb93e5457e73455388e2e2ca464a2672449a9ddbb679d/orjson-3.11.9-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "11d45bdb0626801230139987385554c5d4c42255218ac906525bf4347f22cd95",
+          "md5": "bc919595ab495023a71b4283242af671",
+          "sha256": "4fd66214623f1b17501df9f0543bef0b833979ab5b6ded1e1d123222866aa8c9"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "bc919595ab495023a71b4283242af671",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 141492,
+        "upload_time": "2026-05-06T15:10:32",
+        "upload_time_iso_8601": "2026-05-06T15:10:32.641711Z",
+        "url": "https://files.pythonhosted.org/packages/11/d4/5bdb0626801230139987385554c5d4c42255218ac906525bf4347f22cd95/orjson-3.11.9-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "fa88a21fb53b3ede6703aede6dce4710ed4111e5b201cfa6bbff5e544f9d47d7",
+          "md5": "bdffae378cf5fad50c9d02856a786bf0",
+          "sha256": "8ecc30f10465fa1e0ce13fd01d9e22c316e5053a719a8d915d4545a09a5ff677"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp313-cp313-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "bdffae378cf5fad50c9d02856a786bf0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 415087,
+        "upload_time": "2026-05-06T15:10:34",
+        "upload_time_iso_8601": "2026-05-06T15:10:34.438797Z",
+        "url": "https://files.pythonhosted.org/packages/fa/88/a21fb53b3ede6703aede6dce4710ed4111e5b201cfa6bbff5e544f9d47d7/orjson-3.11.9-cp313-cp313-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "3d571b30daf70f0d8180e9a73cefbfbdd99e4bf19eb020466502b01fba7e0e50",
+          "md5": "23edf5e2f6b0fa5af4c722950f0bfcae",
+          "sha256": "97db4c94a7db398a5bd636273324f0b3fd58b350bbbac8bb380ceb825a9b40f4"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp313-cp313-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "23edf5e2f6b0fa5af4c722950f0bfcae",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 148031,
+        "upload_time": "2026-05-06T15:10:36",
+        "upload_time_iso_8601": "2026-05-06T15:10:36.358919Z",
+        "url": "https://files.pythonhosted.org/packages/3d/57/1b30daf70f0d8180e9a73cefbfbdd99e4bf19eb020466502b01fba7e0e50/orjson-3.11.9-cp313-cp313-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "048345fbb6d962e260807f99441db9613cee868ceda4baceda59b3720a563f97",
+          "md5": "4a9ae3d947167b3c2be94c847c250a8d",
+          "sha256": "9f78cf8fec5bd627f4082b8dfeac7871b43d7f3274904492a43dab39f18a19a0"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "4a9ae3d947167b3c2be94c847c250a8d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 136915,
+        "upload_time": "2026-05-06T15:10:38",
+        "upload_time_iso_8601": "2026-05-06T15:10:38.013772Z",
+        "url": "https://files.pythonhosted.org/packages/04/83/45fbb6d962e260807f99441db9613cee868ceda4baceda59b3720a563f97/orjson-3.11.9-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "53e38db257f6b17af9193bb1130f99d9d108420dc83dc134720563104c46bab0"
+        },
+        "digests": {
+          "blake2b_256": "5fcc2d10025f9056d376e4127ec05a5808b218d46f035fdc08178a5411b34250",
+          "md5": "ab95df6645b84570ca5c44da7d4c6acf",
+          "sha256": "d4087e5c0209a0a8efe4de3303c234b9c44d1174161dcd851e8eea07c7560b32"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp313-cp313-win32.whl",
+        "has_sig": false,
+        "md5_digest": "ab95df6645b84570ca5c44da7d4c6acf",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 131613,
+        "upload_time": "2026-05-06T15:10:39",
+        "upload_time_iso_8601": "2026-05-06T15:10:39.569450Z",
+        "url": "https://files.pythonhosted.org/packages/5f/cc/2d10025f9056d376e4127ec05a5808b218d46f035fdc08178a5411b34250/orjson-3.11.9-cp313-cp313-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "53e38db257f6b17af9193bb1130f99d9d108420dc83dc134720563104c46bab0"
+        },
+        "digests": {
+          "blake2b_256": "67bd2775ff28bfe883b9aa1ff348300542eb2ef1ee18d8ae0e3a49846817a865",
+          "md5": "6605616ef2bd4c8eae99a80321e502b1",
+          "sha256": "051b102c93b4f634e89f3866b07b9a9a98915ada541f4ec30f177067b2694979"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp313-cp313-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "6605616ef2bd4c8eae99a80321e502b1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 127086,
+        "upload_time": "2026-05-06T15:10:41",
+        "upload_time_iso_8601": "2026-05-06T15:10:41.262837Z",
+        "url": "https://files.pythonhosted.org/packages/67/bd/2775ff28bfe883b9aa1ff348300542eb2ef1ee18d8ae0e3a49846817a865/orjson-3.11.9-cp313-cp313-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "53e38db257f6b17af9193bb1130f99d9d108420dc83dc134720563104c46bab0"
+        },
+        "digests": {
+          "blake2b_256": "912bd26799e580939e32a7da9a39531bc9e58e15ca32ffaa6a8cb3e9bb0d22cd",
+          "md5": "4af9f55ee3164d58cbed6cc6dcdee7b7",
+          "sha256": "cce9127885941bd28f080cecf1f1d288336b7e0d812c345b08be88b572796254"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp313-cp313-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "4af9f55ee3164d58cbed6cc6dcdee7b7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 126696,
+        "upload_time": "2026-05-06T15:10:42",
+        "upload_time_iso_8601": "2026-05-06T15:10:42.651341Z",
+        "url": "https://files.pythonhosted.org/packages/91/2b/d26799e580939e32a7da9a39531bc9e58e15ca32ffaa6a8cb3e9bb0d22cd/orjson-3.11.9-cp313-cp313-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "8eeb5da01e356015aee6ecfa1187ced87aef51364e306f5e695dd52719bf0e78",
+          "md5": "74537a67b94b8f515bba16c11152e3dc",
+          "sha256": "b6ef1979adc4bc243523f1a2ba91418030a8e29b0a99cbe7e0e2d6807d4dce6e"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp314-cp314-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "74537a67b94b8f515bba16c11152e3dc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 228465,
+        "upload_time": "2026-05-06T15:10:44",
+        "upload_time_iso_8601": "2026-05-06T15:10:44.097252Z",
+        "url": "https://files.pythonhosted.org/packages/8e/eb/5da01e356015aee6ecfa1187ced87aef51364e306f5e695dd52719bf0e78/orjson-3.11.9-cp314-cp314-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "64623e0e0c14c957133bcd855395c62b55ed4e3b0af23ffea11b032cb1dcbdb1",
+          "md5": "1d1111e064c0a5fa0bae5ac1d65b4f51",
+          "sha256": "f36b7f32c7c0db4a719f1fc5824db4a9c6f8bd1a354debb91faf26ebf3a4c71e"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp314-cp314-macosx_15_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "1d1111e064c0a5fa0bae5ac1d65b4f51",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 128364,
+        "upload_time": "2026-05-06T15:10:45",
+        "upload_time_iso_8601": "2026-05-06T15:10:45.839663Z",
+        "url": "https://files.pythonhosted.org/packages/64/62/3e0e0c14c957133bcd855395c62b55ed4e3b0af23ffea11b032cb1dcbdb1/orjson-3.11.9-cp314-cp314-macosx_15_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "5a5a07d8aa117211a8ed7630bda80c8c0b14d04e0f8dcf99bcf49656e4a710eb",
+          "md5": "b360a440a2b6ae2e68f2b71abc549833",
+          "sha256": "08f4d8ebb44925c794e535b2bebc507cebf32209df81de22ae285fb0d8d66de0"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "b360a440a2b6ae2e68f2b71abc549833",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 132063,
+        "upload_time": "2026-05-06T15:10:47",
+        "upload_time_iso_8601": "2026-05-06T15:10:47.267773Z",
+        "url": "https://files.pythonhosted.org/packages/5a/5a/07d8aa117211a8ed7630bda80c8c0b14d04e0f8dcf99bcf49656e4a710eb/orjson-3.11.9-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "d6ec4acaf21483e18aa945be74a474c74b434f284b549f275a0a39b9f98956e9",
+          "md5": "7efa4de2d3c94cc4482d231609b62feb",
+          "sha256": "6cc7923789694fd58f001cbcac7e47abc13af4d560ebbfcf3b41a8b1a0748124"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp314-cp314-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "7efa4de2d3c94cc4482d231609b62feb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 122356,
+        "upload_time": "2026-05-06T15:10:48",
+        "upload_time_iso_8601": "2026-05-06T15:10:48.765891Z",
+        "url": "https://files.pythonhosted.org/packages/d6/ec/4acaf21483e18aa945be74a474c74b434f284b549f275a0a39b9f98956e9/orjson-3.11.9-cp314-cp314-manylinux_2_17_armv7l.manylinux2014_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "13d85f0555e7638801323b7a75850f92e7dfa891bc84fe27a1ba4449170d1200",
+          "md5": "6997b200a73d2daae2ceffd579878efa",
+          "sha256": "ea5c46eb2d3af39e806b986f4b09d5c2706a1f5afde3cbf7544ce6616127173c"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp314-cp314-manylinux_2_17_i686.manylinux2014_i686.whl",
+        "has_sig": false,
+        "md5_digest": "6997b200a73d2daae2ceffd579878efa",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 129592,
+        "upload_time": "2026-05-06T15:10:50",
+        "upload_time_iso_8601": "2026-05-06T15:10:50.130427Z",
+        "url": "https://files.pythonhosted.org/packages/13/d8/5f0555e7638801323b7a75850f92e7dfa891bc84fe27a1ba4449170d1200/orjson-3.11.9-cp314-cp314-manylinux_2_17_i686.manylinux2014_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "b630ed9860412a3603ceb3c5955bfd72d28b9d0e7ba6ed81add14f83d7114236",
+          "md5": "94ddbb07a977df4a8389d248b437f7bd",
+          "sha256": "f5d89a2ed90731df3be64bab0aa44f78bff39fdc9d71c291f4a8023aa46425b7"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp314-cp314-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "94ddbb07a977df4a8389d248b437f7bd",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 140491,
+        "upload_time": "2026-05-06T15:10:51",
+        "upload_time_iso_8601": "2026-05-06T15:10:51.582202Z",
+        "url": "https://files.pythonhosted.org/packages/b6/30/ed9860412a3603ceb3c5955bfd72d28b9d0e7ba6ed81add14f83d7114236/orjson-3.11.9-cp314-cp314-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "d017adc514dea7ac7c505527febf884934b815d34f0c7b8693c1a8b39c5c4a57",
+          "md5": "3e906b8ae592e7af74215ebf8bbd31fe",
+          "sha256": "25e4aed0312d292c09f61af25bba34e0b2c88546041472b09088c39a4d828af1"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp314-cp314-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "3e906b8ae592e7af74215ebf8bbd31fe",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 127309,
+        "upload_time": "2026-05-06T15:10:53",
+        "upload_time_iso_8601": "2026-05-06T15:10:53.329180Z",
+        "url": "https://files.pythonhosted.org/packages/d0/17/adc514dea7ac7c505527febf884934b815d34f0c7b8693c1a8b39c5c4a57/orjson-3.11.9-cp314-cp314-manylinux_2_17_s390x.manylinux2014_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "763ec0b690253f0b82d86e99949af13533363acfb5432ecb5d53dd5b3bce9c34",
+          "md5": "9ac6bf724d676276cc20e13d2b7b88ce",
+          "sha256": "aaea64f3f467d22e70eeed68bdccb3bc4f83f650446c4a03c59f2cba28a108db"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9ac6bf724d676276cc20e13d2b7b88ce",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 134030,
+        "upload_time": "2026-05-06T15:10:54",
+        "upload_time_iso_8601": "2026-05-06T15:10:54.988411Z",
+        "url": "https://files.pythonhosted.org/packages/76/3e/c0b690253f0b82d86e99949af13533363acfb5432ecb5d53dd5b3bce9c34/orjson-3.11.9-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "c17abc82a0bb25e9faaf92dc4d9ef002732efc09737706af83e346788641d4a7",
+          "md5": "e1dc29b3b182b785859e8531e0cf24b1",
+          "sha256": "a028425d1b440c5d92a6be1e1a020739dfe67ea87d96c6dbe828c1b30041728b"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp314-cp314-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "e1dc29b3b182b785859e8531e0cf24b1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 141482,
+        "upload_time": "2026-05-06T15:10:56",
+        "upload_time_iso_8601": "2026-05-06T15:10:56.663962Z",
+        "url": "https://files.pythonhosted.org/packages/c1/7a/bc82a0bb25e9faaf92dc4d9ef002732efc09737706af83e346788641d4a7/orjson-3.11.9-cp314-cp314-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "0155e69188b939f77d5d32a9833745ace31ea5ccae3ab613a1ec185d3cd2c4fb",
+          "md5": "4e1b3fec7f140e3403868100d8711bf4",
+          "sha256": "5b192c6cf397e4455b11523c5cf2b18ed084c1bbd61b6c0926344d2129481972"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp314-cp314-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "4e1b3fec7f140e3403868100d8711bf4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 415178,
+        "upload_time": "2026-05-06T15:10:58",
+        "upload_time_iso_8601": "2026-05-06T15:10:58.446996Z",
+        "url": "https://files.pythonhosted.org/packages/01/55/e69188b939f77d5d32a9833745ace31ea5ccae3ab613a1ec185d3cd2c4fb/orjson-3.11.9-cp314-cp314-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "2e1ab8a5a7ac527e80b9cb11d51e3f6689b709279183264b9ec5c7bc680bb8b5",
+          "md5": "63b3be98c2f71a4418fb271053ca89f2",
+          "sha256": "ea407d4ccf5891d667d045fecae97a7a1e5e87b3b97f97ae1803c2e741130be0"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp314-cp314-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "63b3be98c2f71a4418fb271053ca89f2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 148089,
+        "upload_time": "2026-05-06T15:11:00",
+        "upload_time_iso_8601": "2026-05-06T15:11:00.441894Z",
+        "url": "https://files.pythonhosted.org/packages/2e/1a/b8a5a7ac527e80b9cb11d51e3f6689b709279183264b9ec5c7bc680bb8b5/orjson-3.11.9-cp314-cp314-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "288a4d616e68837ef98059bb71059b7910b72159b7b7ad2875c8bb81463c1887"
+        },
+        "digests": {
+          "blake2b_256": "974e00503f64204bf859b37213a63927028f30fb6268cd8677fb0a5ad48155e1",
+          "md5": "aff4fe0500951442ab2669bc1cd9c7da",
+          "sha256": "5f63aaf97afd9f6dec5b1a68e1b8da12bfccb4cb9a9a65c3e0b6c847849e7586"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp314-cp314-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "aff4fe0500951442ab2669bc1cd9c7da",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 136921,
+        "upload_time": "2026-05-06T15:11:02",
+        "upload_time_iso_8601": "2026-05-06T15:11:02.176681Z",
+        "url": "https://files.pythonhosted.org/packages/97/4e/00503f64204bf859b37213a63927028f30fb6268cd8677fb0a5ad48155e1/orjson-3.11.9-cp314-cp314-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "53e38db257f6b17af9193bb1130f99d9d108420dc83dc134720563104c46bab0"
+        },
+        "digests": {
+          "blake2b_256": "0dbaa23b82a0a8d0ed7bed4e5f5035aae751cad4ff6a1e8d2ecd14d8860f5929",
+          "md5": "a09903dd6d84a4a1b9a930ba392eca30",
+          "sha256": "e30ab17845bb9fa54ccf67fa4f9f5282652d54faa6d17452f47d0f369d038673"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp314-cp314-win32.whl",
+        "has_sig": false,
+        "md5_digest": "a09903dd6d84a4a1b9a930ba392eca30",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 131638,
+        "upload_time": "2026-05-06T15:11:03",
+        "upload_time_iso_8601": "2026-05-06T15:11:03.696588Z",
+        "url": "https://files.pythonhosted.org/packages/0d/ba/a23b82a0a8d0ed7bed4e5f5035aae751cad4ff6a1e8d2ecd14d8860f5929/orjson-3.11.9-cp314-cp314-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "53e38db257f6b17af9193bb1130f99d9d108420dc83dc134720563104c46bab0"
+        },
+        "digests": {
+          "blake2b_256": "f3c30c6798456bade745c75c452342dabacce5798196483e77e643be1f53877d",
+          "md5": "c13b2aa68890c5839c58fc156bc3900f",
+          "sha256": "32ef5f4283a3be81913947d19608eacb7c6608026851123790cd9cc8982af34b"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp314-cp314-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "c13b2aa68890c5839c58fc156bc3900f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 127078,
+        "upload_time": "2026-05-06T15:11:05",
+        "upload_time_iso_8601": "2026-05-06T15:11:05.123264Z",
+        "url": "https://files.pythonhosted.org/packages/f3/c3/0c6798456bade745c75c452342dabacce5798196483e77e643be1f53877d/orjson-3.11.9-cp314-cp314-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "53e38db257f6b17af9193bb1130f99d9d108420dc83dc134720563104c46bab0"
+        },
+        "digests": {
+          "blake2b_256": "16215a3f1e8913103b703a436a5664238e5b965ec392b555fe68943ea3691e6b",
+          "md5": "bd345fe84039e62a79ff201197e522f6",
+          "sha256": "eebdbdeef0094e4f5aefa20dcd4eb2368ab5e7a3b4edea27f1e7b2892e009cf9"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9-cp314-cp314-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "bd345fe84039e62a79ff201197e522f6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 126687,
+        "upload_time": "2026-05-06T15:11:06",
+        "upload_time_iso_8601": "2026-05-06T15:11:06.602678Z",
+        "url": "https://files.pythonhosted.org/packages/16/21/5a3f1e8913103b703a436a5664238e5b965ec392b555fe68943ea3691e6b/orjson-3.11.9-cp314-cp314-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "7e0c964746fcafbd16f8ff53219ad9f6b412b34f345c75f384ad434ceaadb538",
+          "md5": "9afd115996112a3827a6356af0834a18",
+          "sha256": "4fef17e1f8722c11587a6ef18e35902450221da0028e65dbaaa543619e68e48f"
+        },
+        "downloads": -1,
+        "filename": "orjson-3.11.9.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9afd115996112a3827a6356af0834a18",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.10",
+        "size": 5599163,
+        "upload_time": "2026-05-06T15:11:08",
+        "upload_time_iso_8601": "2026-05-06T15:11:08.309605Z",
+        "url": "https://files.pythonhosted.org/packages/7e/0c/964746fcafbd16f8ff53219ad9f6b412b34f345c75f384ad434ceaadb538/orjson-3.11.9.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "orjson",
+    "version": "3.11.9",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "011382e2a60fda9d46f1cdee31068cfc52ffe952b587d683ec0463002802a0f4",
+      "03db380e3780fa0015ed776a90f20e8e20bb11dde13b216ce19e5718e3dfba62",
+      "051b102c93b4f634e89f3866b07b9a9a98915ada541f4ec30f177067b2694979",
+      "08f4d8ebb44925c794e535b2bebc507cebf32209df81de22ae285fb0d8d66de0",
+      "0b34789fa0da61cf7bef0546b09c738fb195331e017e477096d129e9105ab03d",
+      "0e4eed3b200023042814d2fc8a5d2e880f13b52e1ed2485e83da4f3962f7dc1a",
+      "115ab5f5f4a0f203cc2a5f0fb09aee503a3f771aa08392949ab5ca230c4fbdbd",
+      "135869ef917b8704ea0a94e01620e0c05021c15c52036e4663baffe75e72f8ce",
+      "147302878da387104b66bb4a8b0227d1d487e976ce41a8501916161072ed87b1",
+      "14ed654580c1ed2bc217352ec82f91b047aef82951aa71c7f64e0dcb03c0e180",
+      "16969c9d369c98eb084889c6e4d2d39b77c7eb38ceccf8da2a9fff62ae908980",
+      "19b72ed11572a2ee51a67a903afbe5af504f84ed6f529c0fe44b0ab3fb5cc697",
+      "231742b4a11dad8d5380a435962c57e91b7c37b79be858f4ef1c0df1a259897e",
+      "25e4aed0312d292c09f61af25bba34e0b2c88546041472b09088c39a4d828af1",
+      "26a473dbb4162108b27901492546f83c76fdcea3d0eadff00ae7a07e18dcce09",
+      "277fefe9d76ee17eb14debf399e3533d4d63b5f677a4d3719eb763536af1f4bd",
+      "2d057a602cdd19a0ad680417527c45b6961a095081c0f46fe0e03e304aac6470",
+      "32ef5f4283a3be81913947d19608eacb7c6608026851123790cd9cc8982af34b",
+      "33d7d766701847dc6729846362dc27895d2f2d2251264f9d10e7cb9878194877",
+      "34fd2317602587321faab75ab76c623a0117e80841a6413654f04e47f339a8fb",
+      "3513550321f8c8c811a7c3297b8a630e82dc08e4c10216d07703c997776236cd",
+      "380cdce7ba24989af81d0a7013d0aaec5d0e2a21734c0e2681b1bc4f141957fe",
+      "3a81d52442a7c99b3662333235b3adf96a1715864658b35bb797212be7bddb97",
+      "3ebca4179031ee716ed076ffadc29428e900512f6fccee8614c9983157fcf19c",
+      "48ee05097750de0ff69ed5b7bbcf0732182fd57a24043dcc2a1da780a5ead3a5",
+      "4bab1b2d6141fe7b32ae71dac905666ece4f94936efbfb13d55bb7739a3a6021",
+      "4d4e98d6f3b8afed8bc8cd9718ec0cdf46661826beefb53fe8eafb37f2bf0362",
+      "4d7fde5501b944f83b3e665e1b31343ff6e154b15560a16b7130ea1e594a4206",
+      "4da3c38a2083ca4aaf9c2a36776cce3e9328e6647b10d118948f3cfb4913ffe4",
+      "4e39364e726a8fff737309aff059ff67d8a8c8d5b677be7bb49a8b3e84b7e218",
+      "4fd66214623f1b17501df9f0543bef0b833979ab5b6ded1e1d123222866aa8c9",
+      "4fef17e1f8722c11587a6ef18e35902450221da0028e65dbaaa543619e68e48f",
+      "53b50b0e14084b8f7e29c5ce84c5af0f1160169b30d8a6914231d97d2fe297d4",
+      "57ea77fb70a448ce87d18fca050193202a3da5e54598f6501ca5476fb66cfe02",
+      "59e403b1cc5a676da8eaf31f6254801b7341b3e29efa85f92b48d272637e77be",
+      "5b192c6cf397e4455b11523c5cf2b18ed084c1bbd61b6c0926344d2129481972",
+      "5f63aaf97afd9f6dec5b1a68e1b8da12bfccb4cb9a9a65c3e0b6c847849e7586",
+      "63e0efbc991250c0b3143488fa57d95affcabbfc63c99c48d625dd37779aafe2",
+      "6cc7923789694fd58f001cbcac7e47abc13af4d560ebbfcf3b41a8b1a0748124",
+      "71e63adb0e1f1ed5d9e168f50a91ceb93ae6420731d222dc7da5c69409aa47aa",
+      "71f3db16e69b667b132e0f305a833d5497da302d801508cbb051ed9a9819da47",
+      "844417969855fc7a41be124aafe83dc424592a7f77cd4501900c67307122b92c",
+      "8697ab6a080a5c46edaad50e2bc5bd8c7ca5c66442d24104fa44ec74910a8244",
+      "87e4d4ab280b0c87424d47695bec2182caf8cfc17879ea78dab76680194abc13",
+      "8aff7da9952a5ad1cef8e68017724d96c7b9a66e99e91d6252e1b133d67a7b10",
+      "8ecc30f10465fa1e0ce13fd01d9e22c316e5053a719a8d915d4545a09a5ff677",
+      "97d0d932803c1b164fde11cb542a9efcb1e0f63b184537cca65887147906ff48",
+      "97db4c94a7db398a5bd636273324f0b3fd58b350bbbac8bb380ceb825a9b40f4",
+      "9af678d6488357948f1f84c6cd1c1d397c014e1ae2f98ae082a44eb48f602624",
+      "9ef6fe90aadef185c7b128859f40beb24720b4ecea95379fc9000931179c3a49",
+      "9f78cf8fec5bd627f4082b8dfeac7871b43d7f3274904492a43dab39f18a19a0",
+      "a028425d1b440c5d92a6be1e1a020739dfe67ea87d96c6dbe828c1b30041728b",
+      "a6082706765a95a6680d812e1daf1c0cfe8adec7831b3ff3b625693f3b461b1c",
+      "a8f5f8bc7ce7d59f08d9f99fa510c06496164a24cb5f3d34537dbd9ca30132e2",
+      "aaea64f3f467d22e70eeed68bdccb3bc4f83f650446c4a03c59f2cba28a108db",
+      "ace6c58523302d3b97b6ac5c38a5298a54b473762b6be82726b4265c41029f92",
+      "b3afcf569c15577a9fe64627292daa3e6b3a70f4fb77a5df246a87ec21681b94",
+      "b6ef1979adc4bc243523f1a2ba91418030a8e29b0a99cbe7e0e2d6807d4dce6e",
+      "be4fa4f0af7fa18951f7ab3fc2148e223af211bf03f59e1c6034ec3f97f21d61",
+      "c2d3dc759490128c5c1711a53eeaa8ee1d437fd0038ffd2b6008abf46db3f882",
+      "c5d001196b89fa9cf0a4ab79766cd835b991a166e4b621ba95089edc50c429ff",
+      "cce9127885941bd28f080cecf1f1d288336b7e0d812c345b08be88b572796254",
+      "cde1a448023ba7d5bb4c01c5afb48894380b5e4956e0627266526587ef4e535f",
+      "d4087e5c0209a0a8efe4de3303c234b9c44d1174161dcd851e8eea07c7560b32",
+      "d8ea516b3726d190e1b4297e6f4e7a8650347ae053868a18163b4dd3641d1fff",
+      "e30ab17845bb9fa54ccf67fa4f9f5282652d54faa6d17452f47d0f369d038673",
+      "e5c9b8f28e726e97d97696c826bc7bea5d71cecd63576dba92924a32c1961291",
+      "ea407d4ccf5891d667d045fecae97a7a1e5e87b3b97f97ae1803c2e741130be0",
+      "ea5c46eb2d3af39e806b986f4b09d5c2706a1f5afde3cbf7544ce6616127173c",
+      "eebdbdeef0094e4f5aefa20dcd4eb2368ab5e7a3b4edea27f1e7b2892e009cf9",
+      "f01c4818b3fc9b0da8e096722a84318071eaa118df35f6ed2344da0e73a5444f",
+      "f36b7f32c7c0db4a719f1fc5824db4a9c6f8bd1a354debb91faf26ebf3a4c71e",
+      "f5d89a2ed90731df3be64bab0aa44f78bff39fdc9d71c291f4a8023aa46425b7",
+      "ffe02797b5e9f3a9d8292ddcd289b474ad13e81ad83cd1891a240811f1d2cb81"
+    ],
+    "retrieved_at": "2026-11-28T12:09:57+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": "MPL-2.0 AND (Apache-2.0 OR MIT)",
+      "classifiers_license": [
+        "License :: OSI Approved :: Apache Software License",
+        "License :: OSI Approved :: MIT License",
+        "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)"
+      ],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: Apache Software License",
+        "License :: OSI Approved :: MIT License",
+        "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+        "Operating System :: MacOS",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.15",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Rust",
+        "Typing :: Typed"
+      ],
+      "requires_python": ">=3.10",
+      "project_urls": {
+        "changelog": "https://github.com/ijl/orjson/blob/master/CHANGELOG.md",
+        "documentation": "https://github.com/ijl/orjson",
+        "source": "https://github.com/ijl/orjson"
+      },
+      "home_page": null,
+      "summary": "Fast, correct Python JSON library supporting dataclasses, datetimes, and numpy",
+      "author": null
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "orjson-3.11.9-cp311-cp311-win_amd64.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "orjson-3.11.9-cp311-cp311-win_amd64.whl",
+        "url": "https://files.pythonhosted.org/packages/3f/17/1a1a228183d62d1b77e2c30d210f47dd4768b310ebe1607c63e3c0e3a71e/orjson-3.11.9-cp311-cp311-win_amd64.whl",
+        "packagetype": "bdist_wheel",
+        "size": 127106,
+        "sha256_pypi": "57ea77fb70a448ce87d18fca050193202a3da5e54598f6501ca5476fb66cfe02",
+        "sha256_verified": "57ea77fb70a448ce87d18fca050193202a3da5e54598f6501ca5476fb66cfe02",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "orjson-3.11.9-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/3f/17/1a1a228183d62d1b77e2c30d210f47dd4768b310ebe1607c63e3c0e3a71e/orjson-3.11.9-cp311-cp311-win_amd64.whl",
+      "packagetype": "bdist_wheel",
+      "size": 127106,
+      "sha256_pypi": "57ea77fb70a448ce87d18fca050193202a3da5e54598f6501ca5476fb66cfe02",
+      "sha256_verified": "57ea77fb70a448ce87d18fca050193202a3da5e54598f6501ca5476fb66cfe02",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "orjson-3.11.9-cp311-cp311-win_amd64.whl::orjson-3.11.9.dist-info/licenses/LICENSE-APACHE": {
+        "saved_as": "orjson-3.11.9.dist-info_licenses_LICENSE-APACHE",
+        "sha256": "7cfd738c53d61c79f07e348f622bf7707c9084237054d37fbe07788a75f5881c",
+        "bytes": 11048,
+        "from_artifact": "orjson-3.11.9-cp311-cp311-win_amd64.whl",
+        "artifact_sha256": "57ea77fb70a448ce87d18fca050193202a3da5e54598f6501ca5476fb66cfe02"
+      },
+      "orjson-3.11.9-cp311-cp311-win_amd64.whl::orjson-3.11.9.dist-info/licenses/LICENSE-MIT": {
+        "saved_as": "orjson-3.11.9.dist-info_licenses_LICENSE-MIT",
+        "sha256": "36516aefdc84c5d5a1e7485425913a22dbda69eb1930c5e84d6ae4972b5194b9",
+        "bytes": 1046,
+        "from_artifact": "orjson-3.11.9-cp311-cp311-win_amd64.whl",
+        "artifact_sha256": "57ea77fb70a448ce87d18fca050193202a3da5e54598f6501ca5476fb66cfe02"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

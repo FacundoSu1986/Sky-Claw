@@ -1,0 +1,207 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": "Hiroshi Miura",
+      "author_email": "miurahr@linux.com",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 3 - Alpha",
+        "Environment :: Console",
+        "License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.8",
+        "Topic :: Software Development :: Libraries :: Python Modules"
+      ],
+      "description": "===============\nmultivolumefile\n===============\n\n.. image:: https://coveralls.io/repos/github/miurahr/multivolume/badge.svg?branch=master\n  :target: https://coveralls.io/github/miurahr/multivolume?branch=master\n\n.. image:: https://github.com/miurahr/multivolume/workflows/Run%20Tox%20tests/badge.svg\n  :target: https://github.com/miurahr/multivolume/actions\n\nMultiVolumefile is a python library to provide a file-object wrapping multiple files\nas virtually like as a single file. It inherit io.RawIOBase class and support some of\nits standard methods.\n\nSee API details at `python library reference`_\n\n.. _`python library reference`: https://docs.python.org/3/library/io.html\n\nStatus\n======\n\nmultivolumefile module is under active development and considered as ***Alpha*** state.\nIt is not good idea to use it on production systems, but it may work well in a limited range\nof usage. Please check limitations and passed test cases.\n\n\nInstall\n=======\n\nYou can install it as usual public libraries, you can use pip command\n\n```\npip install multivolumefile\n```\n\nYou are also able to add it to your setup.py/cfg as dependency.\n\nUsages\n------\n\n- For reading multi-volume files, that has names `archive.7z.0001`, `archive.7z.0002` and so on,\n  you can call multivolumefile as follows;\n\n.. code-block::\n\n    with multivolumefile.open('archive.7z', 'rb') as vol:\n        data = vol.read(100)\n        vol.seek(500)\n\n- For writing multi-volue files, that has names `archive.7z.0001`, `archive.7z.0002` and so on,\n  you can call multivolumefile as follows;\n\n\n.. code-block::\n\n    data = b'abcdefg'\n    with multivolumefile.open('archive.7z', 'wb') as vol:\n        size = vol.write(data)\n        vol.seek(0)\n\nyou will see file `archive.7z.001` are written.\n\nLimitations and known issues\n============================\n\n- fileno() is not supported and when call it, you will get RuntimeError exception.\n- There are several non-implemented functions such as truncate() and writeline() that will raise NotimplementedError\n- There are several non-implemented functions such as readlines(), readline() and readall().\n- Text mode is not implemented.\n- ***Caution***: When globbing existent volumes, it glob all files other than 4-digit extensions, it may break your data.\n\n\nContribution\n============\n\nYou are welcome to contribute the project, as usual on github projects, Pull-Requests are always welcome.\n\nLicense\n=======\n\nMultivolume is licensed under GNU Lesser General Public license version 2.1 or later.\n\n=========\nChangeLog\n=========\n\nAll notable changes to this project will be documented in this file.\n\n`Unreleased`_\n=============\n\nAdded\n-----\n\nChanged\n-------\n\nFixed\n-----\n\nDeprecated\n----------\n\nRemoved\n-------\n\nSecurity\n--------\n\n`v0.2.3`_\n=========\n\nAdded\n-----\n* implement readall()\n\nChnaged\n-------\n* lint with black\n\n\n`v0.2.2`_\n=========\n\nAdded\n-----\n\n* Add py.typed file for type hinting.\n\n\n`v0.2.1`_\n=========\n\nAdded\n-----\n\n* Add `name` property that indicate basename of volumes\n* Add `stat()` that return `stat_result` which has as mostly same methods as `os.stat_result` class\n  except for platform dependent methods.\n\n\n`v0.2.0`_\n=========\n\nAdded\n-----\n\n* Type hint information bundled.\n\nFixed\n-----\n\n* Seek() returns current position.\n\nChanged\n-------\n\n* Explanation of unsupported methods an modes in README\n\n`v0.1.4`_\n=========\n\nFixed\n-----\n\n* Fix append mode bug.\n\n`v0.1.3`_\n=========\n\nFixed\n-----\n\n* Fix added volume size become wrong\n\n`v0.1.2`_\n=========\n\nFixed\n-----\n\n* Fix append mode (#1)\n\n`v0.1.1`_\n=========\n\nFixed\n-----\n\n* Fin NotImplementedError when writing boudning of target files\n\n`v0.1.0`_\n=========\n\n* ***API changed***\n\nAdded\n-----\n\n* Add mode 'x', 'xb' and 'xt'\n* Add mode 'a', 'ab' and 'at'\n* Support flush()\n\nChanged\n-------\n\n* Change API: file argument of 'r' and 'rb' now single basename instead of list of files\n\n`v0.0.5`_\n=========\n\n* Support context manager\n* Support read functions.\n\n.. History links\n.. _Unreleased: https://github.com/miurahr/py7zr/compare/v0.2.2...HEAD\n.. _v0.2.2: https://github.com/miurahr/py7zr/compare/v0.2.1...v0.2.2\n.. _v0.2.1: https://github.com/miurahr/py7zr/compare/v0.2.0...v0.2.1\n.. _v0.2.0: https://github.com/miurahr/py7zr/compare/v0.1.4...v0.2.0\n.. _v0.1.4: https://github.com/miurahr/py7zr/compare/v0.1.3...v0.1.4\n.. _v0.1.3: https://github.com/miurahr/py7zr/compare/v0.1.2...v0.1.3\n.. _v0.1.2: https://github.com/miurahr/py7zr/compare/v0.1.1...v0.1.2\n.. _v0.1.1: https://github.com/miurahr/py7zr/compare/v0.1.0...v0.1.1\n.. _v0.1.0: https://github.com/miurahr/py7zr/compare/v0.0.5...v0.1.0\n.. _v0.0.5: https://github.com/miurahr/py7zr/compare/v0.0.1...v0.0.5\n\n\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": "",
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": "https://github.com/miurahr/multivolume",
+      "keywords": "multivolume,file",
+      "license": "LGPL-2.1+",
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": "",
+      "maintainer_email": "",
+      "name": "multivolumefile",
+      "package_url": "https://pypi.org/project/multivolumefile/",
+      "platform": "",
+      "project_url": "https://pypi.org/project/multivolumefile/",
+      "project_urls": {
+        "Homepage": "https://github.com/miurahr/multivolume"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/multivolumefile/0.2.3/",
+      "requires_dist": [
+        "check-manifest ; extra == 'check'",
+        "flake8 ; extra == 'check'",
+        "flake8-black ; extra == 'check'",
+        "readme-renderer ; extra == 'check'",
+        "pygments ; extra == 'check'",
+        "isort (>=5.0.3) ; extra == 'check'",
+        "twine ; extra == 'check'",
+        "pytest ; extra == 'test'",
+        "pytest-cov ; extra == 'test'",
+        "pyannotate ; extra == 'test'",
+        "coverage[toml] (>=5.2) ; extra == 'test'",
+        "coveralls (>=2.1.1) ; extra == 'test'",
+        "hypothesis ; extra == 'test'",
+        "mypy ; extra == 'type'",
+        "mypy-extensions ; extra == 'type'"
+      ],
+      "requires_python": ">=3.6",
+      "summary": "multi volume file wrapper library",
+      "version": "0.2.3",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 10207529,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "miurahr"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": "",
+        "core-metadata": {
+          "sha256": "34e839bab4776d92f210cd96fb0b1d308a6e11bae080c7a9eefa98807193dbc5"
+        },
+        "digests": {
+          "blake2b_256": "2231ec5f46fd4c83185b806aa9c736e228cb780f13990a9cf4da0beb70025fcc",
+          "md5": "227a780898fb5f4202bf445fcc5772d9",
+          "sha256": "237f4353b60af1703087cf7725755a1f6fcaeeea48421e1896940cd1c920d678"
+        },
+        "downloads": -1,
+        "filename": "multivolumefile-0.2.3-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "227a780898fb5f4202bf445fcc5772d9",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.6",
+        "size": 17037,
+        "upload_time": "2021-04-29T12:18:38",
+        "upload_time_iso_8601": "2021-04-29T12:18:38.886271Z",
+        "url": "https://files.pythonhosted.org/packages/22/31/ec5f46fd4c83185b806aa9c736e228cb780f13990a9cf4da0beb70025fcc/multivolumefile-0.2.3-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": "",
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "50f0a7786212b5a4cb9ba05ae84a2bbd11d1d0279523aea0424b6d981d652a14",
+          "md5": "9bcc5c3e6f2046f563904354f0ead4c3",
+          "sha256": "a0648d0aafbc96e59198d5c17e9acad7eb531abea51035d08ce8060dcad709d6"
+        },
+        "downloads": -1,
+        "filename": "multivolumefile-0.2.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "9bcc5c3e6f2046f563904354f0ead4c3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.6",
+        "size": 77984,
+        "upload_time": "2021-04-29T12:18:39",
+        "upload_time_iso_8601": "2021-04-29T12:18:39.882802Z",
+        "url": "https://files.pythonhosted.org/packages/50/f0/a7786212b5a4cb9ba05ae84a2bbd11d1d0279523aea0424b6d981d652a14/multivolumefile-0.2.3.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "multivolumefile",
+    "version": "0.2.3",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "237f4353b60af1703087cf7725755a1f6fcaeeea48421e1896940cd1c920d678",
+      "a0648d0aafbc96e59198d5c17e9acad7eb531abea51035d08ce8060dcad709d6"
+    ],
+    "retrieved_at": "2026-11-28T12:09:56+00:00",
+    "pypi_info": {
+      "license": "LGPL-2.1+",
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)"
+      ],
+      "classifiers_all": [
+        "Development Status :: 3 - Alpha",
+        "Environment :: Console",
+        "License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.8",
+        "Topic :: Software Development :: Libraries :: Python Modules"
+      ],
+      "requires_python": ">=3.6",
+      "project_urls": {
+        "Homepage": "https://github.com/miurahr/multivolume"
+      },
+      "home_page": "https://github.com/miurahr/multivolume",
+      "summary": "multi volume file wrapper library",
+      "author": "miurahr@linux.com"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "multivolumefile-0.2.3-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "multivolumefile-0.2.3-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/22/31/ec5f46fd4c83185b806aa9c736e228cb780f13990a9cf4da0beb70025fcc/multivolumefile-0.2.3-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 17037,
+        "sha256_pypi": "237f4353b60af1703087cf7725755a1f6fcaeeea48421e1896940cd1c920d678",
+        "sha256_verified": "237f4353b60af1703087cf7725755a1f6fcaeeea48421e1896940cd1c920d678",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "multivolumefile-0.2.3-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/22/31/ec5f46fd4c83185b806aa9c736e228cb780f13990a9cf4da0beb70025fcc/multivolumefile-0.2.3-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 17037,
+      "sha256_pypi": "237f4353b60af1703087cf7725755a1f6fcaeeea48421e1896940cd1c920d678",
+      "sha256_verified": "237f4353b60af1703087cf7725755a1f6fcaeeea48421e1896940cd1c920d678",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "multivolumefile-0.2.3-py3-none-any.whl::multivolumefile-0.2.3.dist-info/LICENSE": {
+        "saved_as": "multivolumefile-0.2.3.dist-info_LICENSE",
+        "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551",
+        "bytes": 26530,
+        "from_artifact": "multivolumefile-0.2.3-py3-none-any.whl",
+        "artifact_sha256": "237f4353b60af1703087cf7725755a1f6fcaeeea48421e1896940cd1c920d678"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

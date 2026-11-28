@@ -1,0 +1,41 @@
+[
+  {
+    "component": "font-ebgaramond",
+    "repo": "octaviopardo/EBGaramond12",
+    "path": "fonts/ttf/EBGaramond-Regular.ttf",
+    "ref": "master",
+    "html_url": "https://github.com/octaviopardo/EBGaramond12/blob/master/fonts/ttf/EBGaramond-Regular.ttf",
+    "bytes": 627304,
+    "sha256": "2028dc06d3c130b4761693481436a32a8e35ed500bf58c25c53de004106125b8",
+    "family": "EB Garamond",
+    "version": "Version 1.002; ttfautohint (v1.8.4.16-eb64)",
+    "copyright": "Copyright 2017 The EB Garamond Project Authors (https://github.com/octaviopardo/EBGaramond12)",
+    "rfname": null
+  },
+  {
+    "component": "font-ebgaramond",
+    "repo": "octaviopardo/EBGaramond12",
+    "path": "fonts/ttf/EBGaramond-Italic.ttf",
+    "ref": "master",
+    "html_url": "https://github.com/octaviopardo/EBGaramond12/blob/master/fonts/ttf/EBGaramond-Italic.ttf",
+    "bytes": 602136,
+    "sha256": "d4ad1d0a9390d26d6d3f176117a1d121441edb8c8632bfca52cfad084b9059cb",
+    "family": "EB Garamond",
+    "version": "Version 1.001; ttfautohint (v1.8.4.16-eb64)",
+    "copyright": "Copyright 2017 The EB Garamond Project Authors (https://github.com/octaviopardo/EBGaramond12)",
+    "rfname": null
+  },
+  {
+    "component": "font-splinesansmono",
+    "repo": "SorkinType/SplineSansMono",
+    "path": "fonts/ttf/SplineSansMono-Regular.ttf",
+    "ref": "main",
+    "html_url": "https://github.com/SorkinType/SplineSansMono/blob/main/fonts/ttf/SplineSansMono-Regular.ttf",
+    "bytes": 74816,
+    "sha256": "79384820b543bd4f52dff46c2da4ddca4bb5131ee3bcba4a6d17a5609351a098",
+    "family": "Spline Sans Mono",
+    "version": "Version 1.004; ttfautohint (v1.8.4.7-5d5b)",
+    "copyright": "Copyright 2022 The Spline Sans Mono Project Authors (https://github.com/SorkinType/SplineSansMono)",
+    "rfname": null
+  }
+]

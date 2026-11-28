@@ -1,0 +1,209 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": "Trent Mick",
+      "author_email": "trentm@gmail.com",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.9",
+        "Topic :: Software Development :: Documentation",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Topic :: Text Processing :: Filters",
+        "Topic :: Text Processing :: Markup :: HTML"
+      ],
+      "description": "markdown2: A fast and complete Python implementation of Markdown.\n\nMarkdown is a text-to-HTML filter; it translates an easy-to-read /\neasy-to-write structured text format into HTML.  Markdown's text\nformat is most similar to that of plain text email, and supports\nfeatures such as headers, *emphasis*, code blocks, blockquotes, and\nlinks.  -- http://daringfireball.net/projects/markdown/\n\nThis is a fast and complete Python implementation of the Markdown\nspec. See http://github.com/trentm/python-markdown2 for more info.\n\n\n",
+      "description_content_type": null,
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": "https://github.com/trentm/python-markdown2",
+      "keywords": null,
+      "license": "MIT",
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": "Trent Mick",
+      "maintainer_email": "trentm@gmail.com",
+      "name": "markdown2",
+      "package_url": "https://pypi.org/project/markdown2/",
+      "platform": "any",
+      "project_url": "https://pypi.org/project/markdown2/",
+      "project_urls": {
+        "Homepage": "https://github.com/trentm/python-markdown2"
+      },
+      "provides_extra": [
+        "all",
+        "code-syntax-highlighting",
+        "latex",
+        "wavedrom"
+      ],
+      "release_url": "https://pypi.org/project/markdown2/2.5.5/",
+      "requires_dist": [
+        "pygments>=2.7.3; extra == \"all\"",
+        "wavedrom; extra == \"all\"",
+        "latex2mathml; python_version >= \"3.8.1\" and extra == \"all\"",
+        "pygments>=2.7.3; extra == \"code-syntax-highlighting\"",
+        "latex2mathml; python_version >= \"3.8.1\" and extra == \"latex\"",
+        "wavedrom; extra == \"wavedrom\""
+      ],
+      "requires_python": "<4,>=3.9",
+      "summary": "A fast and complete Python implementation of Markdown",
+      "version": "2.5.5",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 34758940,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "trentm"
+        },
+        {
+          "role": "Maintainer",
+          "user": "nicholasserra"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": "",
+        "core-metadata": {
+          "sha256": "6e7fc0af171930b9347d2d66e19e5f7f10afa009345aa196a1a2253f4257cb72"
+        },
+        "digests": {
+          "blake2b_256": "43af4b3891eb0a49d6cfd5cbf3e9bf514c943afc2b0f13e2c57cc57cd88ecc21",
+          "md5": "ac3b45b117f1b23a5adf9ae66abe3bc9",
+          "sha256": "be798587e09d1f52d2e4d96a649c4b82a778c75f9929aad52a2c95747fa26941"
+        },
+        "downloads": -1,
+        "filename": "markdown2-2.5.5-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "ac3b45b117f1b23a5adf9ae66abe3bc9",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": "<4,>=3.9",
+        "size": 56250,
+        "upload_time": "2026-03-02T20:46:52",
+        "upload_time_iso_8601": "2026-03-02T20:46:52.032236Z",
+        "url": "https://files.pythonhosted.org/packages/43/af/4b3891eb0a49d6cfd5cbf3e9bf514c943afc2b0f13e2c57cc57cd88ecc21/markdown2-2.5.5-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": "",
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "e4ae07d4a5fcaa5509221287d289323d75ac8eda5a5a4ac9de2accf7bbcc2b88",
+          "md5": "81a628175ca4ec7ffb9428e0609d4fe3",
+          "sha256": "001547e68f6e7fcf0f1cb83f7e82f48aa7d48b2c6a321f0cd20a853a8a2d1664"
+        },
+        "downloads": -1,
+        "filename": "markdown2-2.5.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "81a628175ca4ec7ffb9428e0609d4fe3",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": "<4,>=3.9",
+        "size": 157249,
+        "upload_time": "2026-03-02T20:46:53",
+        "upload_time_iso_8601": "2026-03-02T20:46:53.411360Z",
+        "url": "https://files.pythonhosted.org/packages/e4/ae/07d4a5fcaa5509221287d289323d75ac8eda5a5a4ac9de2accf7bbcc2b88/markdown2-2.5.5.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "markdown2",
+    "version": "2.5.5",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "001547e68f6e7fcf0f1cb83f7e82f48aa7d48b2c6a321f0cd20a853a8a2d1664",
+      "be798587e09d1f52d2e4d96a649c4b82a778c75f9929aad52a2c95747fa26941"
+    ],
+    "retrieved_at": "2026-11-28T12:09:56+00:00",
+    "pypi_info": {
+      "license": "MIT",
+      "license_expression": null,
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.9",
+        "Topic :: Software Development :: Documentation",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Topic :: Text Processing :: Filters",
+        "Topic :: Text Processing :: Markup :: HTML"
+      ],
+      "requires_python": "<4,>=3.9",
+      "project_urls": {
+        "Homepage": "https://github.com/trentm/python-markdown2"
+      },
+      "home_page": "https://github.com/trentm/python-markdown2",
+      "summary": "A fast and complete Python implementation of Markdown",
+      "author": "trentm@gmail.com"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "markdown2-2.5.5-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "markdown2-2.5.5-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/43/af/4b3891eb0a49d6cfd5cbf3e9bf514c943afc2b0f13e2c57cc57cd88ecc21/markdown2-2.5.5-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 56250,
+        "sha256_pypi": "be798587e09d1f52d2e4d96a649c4b82a778c75f9929aad52a2c95747fa26941",
+        "sha256_verified": "be798587e09d1f52d2e4d96a649c4b82a778c75f9929aad52a2c95747fa26941",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "markdown2-2.5.5-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/43/af/4b3891eb0a49d6cfd5cbf3e9bf514c943afc2b0f13e2c57cc57cd88ecc21/markdown2-2.5.5-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 56250,
+      "sha256_pypi": "be798587e09d1f52d2e4d96a649c4b82a778c75f9929aad52a2c95747fa26941",
+      "sha256_verified": "be798587e09d1f52d2e4d96a649c4b82a778c75f9929aad52a2c95747fa26941",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "markdown2-2.5.5-py3-none-any.whl::markdown2-2.5.5.dist-info/LICENSE.txt": {
+        "saved_as": "markdown2-2.5.5.dist-info_LICENSE.txt",
+        "sha256": "f8c7c4d554409cf621b8d653dbfffb719745fd36f5c49b8305258649b403ef9c",
+        "bytes": 2313,
+        "from_artifact": "markdown2-2.5.5-py3-none-any.whl",
+        "artifact_sha256": "be798587e09d1f52d2e4d96a649c4b82a778c75f9929aad52a2c95747fa26941"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

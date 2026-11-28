@@ -1,0 +1,193 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": "Lumír Balhar",
+      "author_email": "lbalhar@redhat.com",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9"
+      ],
+      "description": "# lxml_html_clean\n\n## Motivation\n\nThis project was initially a part of [lxml](https://github.com/lxml/lxml). Because HTML cleaner is designed as blocklist-based, many reports about possible security vulnerabilities were filed for lxml and that make the project problematic for security-sensitive environments. Therefore we decided to extract the problematic part to a separate project.\n\n**Important**: the HTML Cleaner in ``lxml_html_clean`` is **not** considered appropriate **for security sensitive environments**. See e.g. [nh3](https://pypi.org/project/nh3/) for an alternative.\n\nThis project uses functions from Python's `urllib.parse` for URL parsing which **do not validate inputs**. For more information on potential security risks, refer to the [URL parsing security](https://docs.python.org/3/library/urllib.parse.html#url-parsing-security) documentation. A maliciously crafted URL could potentially bypass the allowed hosts check in `Cleaner`.\n\n## Installation\n\nYou can install this project directly via `pip install lxml_html_clean` or as an extra of lxml\nvia `pip install lxml[html_clean]`. Both ways install this project together with lxml itself.\n\n## Security\n\nFor discussions regarding security-related issues or any sensitive reports, please contact us privately.\nYou can reach out to lbalhar(at)redhat.com or frenzy.madness(at)gmail.com to ensure your concerns\nare addressed confidentially and securely.\n\n## Documentation\n\n[https://lxml-html-clean.readthedocs.io/](https://lxml-html-clean.readthedocs.io/)\n\n## License\n\nBSD-3-Clause\n",
+      "description_content_type": "text/markdown",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": [
+        "License-File"
+      ],
+      "home_page": "https://github.com/fedora-python/lxml_html_clean/",
+      "keywords": null,
+      "license": "BSD-3-Clause",
+      "license_expression": null,
+      "license_files": [
+        "LICENSE.txt"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "lxml-html-clean",
+      "package_url": "https://pypi.org/project/lxml-html-clean/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/lxml-html-clean/",
+      "project_urls": {
+        "Documentation": "https://lxml-html-clean.readthedocs.io/",
+        "Homepage": "https://github.com/fedora-python/lxml_html_clean/"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/lxml-html-clean/0.4.5/",
+      "requires_dist": [
+        "lxml>=6.1.1"
+      ],
+      "requires_python": null,
+      "summary": "HTML cleaner from lxml project",
+      "version": "0.4.5",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 44198753,
+    "ownership": {
+      "organization": "fedora",
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "frenzymadness"
+        },
+        {
+          "role": "Owner",
+          "user": "hroncok"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "06bc1b778a8554c7af6ceaf5d52815cc5c98cb08d57fff7eec4a3d715b2e7972"
+        },
+        "digests": {
+          "blake2b_256": "6abd6e2b76a6c5dee10397db9c929f0c5066766ec1036046f0335b7ca7ca08b8",
+          "md5": "f90eabadc4b157042c676cf89e3575bb",
+          "sha256": "c76fcadd1e5bfb9b8bafc2200d51e4e78eb0dad67f56881c21dfb6484c7e7746"
+        },
+        "downloads": -1,
+        "filename": "lxml_html_clean-0.4.5-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "f90eabadc4b157042c676cf89e3575bb",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": null,
+        "size": 14573,
+        "upload_time": "2026-05-20T12:17:52",
+        "upload_time_iso_8601": "2026-05-20T12:17:52.215336Z",
+        "url": "https://files.pythonhosted.org/packages/6a/bd/6e2b76a6c5dee10397db9c929f0c5066766ec1036046f0335b7ca7ca08b8/lxml_html_clean-0.4.5-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "0a63195dfdde380a84df309e3bccf4384b034b745dba43426886f7ae623b4fba",
+          "md5": "a0ed690a6001d8f702a74dd6c23f42dd",
+          "sha256": "e2a4c7d5beedd17cd7b484d848a0571e54baa239a4f9df5546e3acba7f990560"
+        },
+        "downloads": -1,
+        "filename": "lxml_html_clean-0.4.5.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a0ed690a6001d8f702a74dd6c23f42dd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": null,
+        "size": 24142,
+        "upload_time": "2026-05-20T12:17:53",
+        "upload_time_iso_8601": "2026-05-20T12:17:53.574028Z",
+        "url": "https://files.pythonhosted.org/packages/0a/63/195dfdde380a84df309e3bccf4384b034b745dba43426886f7ae623b4fba/lxml_html_clean-0.4.5.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "lxml-html-clean",
+    "version": "0.4.5",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "c76fcadd1e5bfb9b8bafc2200d51e4e78eb0dad67f56881c21dfb6484c7e7746",
+      "e2a4c7d5beedd17cd7b484d848a0571e54baa239a4f9df5546e3acba7f990560"
+    ],
+    "retrieved_at": "2026-11-28T12:09:56+00:00",
+    "pypi_info": {
+      "license": "BSD-3-Clause",
+      "license_expression": null,
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9"
+      ],
+      "requires_python": null,
+      "project_urls": {
+        "Documentation": "https://lxml-html-clean.readthedocs.io/",
+        "Homepage": "https://github.com/fedora-python/lxml_html_clean/"
+      },
+      "home_page": "https://github.com/fedora-python/lxml_html_clean/",
+      "summary": "HTML cleaner from lxml project",
+      "author": "lbalhar@redhat.com"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "lxml_html_clean-0.4.5-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "lxml_html_clean-0.4.5-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/6a/bd/6e2b76a6c5dee10397db9c929f0c5066766ec1036046f0335b7ca7ca08b8/lxml_html_clean-0.4.5-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 14573,
+        "sha256_pypi": "c76fcadd1e5bfb9b8bafc2200d51e4e78eb0dad67f56881c21dfb6484c7e7746",
+        "sha256_verified": "c76fcadd1e5bfb9b8bafc2200d51e4e78eb0dad67f56881c21dfb6484c7e7746",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "lxml_html_clean-0.4.5-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/6a/bd/6e2b76a6c5dee10397db9c929f0c5066766ec1036046f0335b7ca7ca08b8/lxml_html_clean-0.4.5-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 14573,
+      "sha256_pypi": "c76fcadd1e5bfb9b8bafc2200d51e4e78eb0dad67f56881c21dfb6484c7e7746",
+      "sha256_verified": "c76fcadd1e5bfb9b8bafc2200d51e4e78eb0dad67f56881c21dfb6484c7e7746",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "lxml_html_clean-0.4.5-py3-none-any.whl::lxml_html_clean-0.4.5.dist-info/licenses/LICENSE.txt": {
+        "saved_as": "lxml_html_clean-0.4.5.dist-info_licenses_LICENSE.txt",
+        "sha256": "69edb445c1335a8312d4c09271847e9956d84f0d9f724d125340cc3fad767b2a",
+        "bytes": 1488,
+        "from_artifact": "lxml_html_clean-0.4.5-py3-none-any.whl",
+        "artifact_sha256": "c76fcadd1e5bfb9b8bafc2200d51e4e78eb0dad67f56881c21dfb6484c7e7746"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

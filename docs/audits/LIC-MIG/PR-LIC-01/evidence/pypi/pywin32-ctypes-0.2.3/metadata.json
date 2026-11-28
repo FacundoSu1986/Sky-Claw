@@ -1,0 +1,183 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": "Enthought Inc.",
+      "author_email": "info@enthough.com",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.6",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9"
+      ],
+      "description": "\n.. image:: https://readthedocs.org/projects/pywin32-ctypes/badge/?version=master\n   :target: http://pywin32-ctypes.readthedocs.org/en/latest/?badge=master\n   :alt: Documentation Status\n\nA reimplementation of pywin32 that is pure python. The default\nbehaviour will try to use cffi (>= 1.3.0), if available, and fall back\nto using ctypes. Please note that there is no need to have a compiler\navailable on installation or at runtime.\n\nUsage\n=====\n\nExample::\n\n  # Equivalent to 'import win32api' from pywin32.\n  from win32ctypes.pywin32 import win32api\n\n  win32api.LoadLibraryEx(sys.executable, 0, win32api.LOAD_LIBRARY_AS_DATAFILE)\n\n.. note::\n\n   Currently pywin32ctypes implements only a very small subset\n   of pywin32, for internal needs at Enthought. We do welcome\n   additional features and PRs, though.\n\nDevelopment setup\n=================\n\nThe following should be good enough::\n\n  pip install -r test_requirements.txt\n  python install -e .\n\n.. note::\n\n   - While pywin32-ctypes should regularly be tested on windows, you can also\n     develop/test on unix by using wine\n\nChange Log\n==========\n\nVersion 0.2.3\n-------------\n\n- Do not use loal_module in backend selection code (#131, #132)\n- Add pywin32.pywintypes.Time (#122)\n\nVersion 0.2.2\n-------------\n\n- Use ctypes.set_last_error to avoid race conditions (#122)\n\nVersion 0.2.1\n-------------\n\n- Use faulthandler when testing and fix discovered errors (#115, #117).\n- Fix support for None username in credentials to be consistent in all backends (#99).\n- Test also on cp38, cp39, cp310, cp311 and use cp38 for linking (#114, #107, #100).\n- Add support for CredEnumerate extending code from @markb-EE (#110, #109, #111)\n- Remove support for older python versions < cp36 (#104, #120).\n\nVersion 0.2.0\n-------------\n\n- Fix syntax error when installing in python 3.7 (#81).\n- Support testing on python 3.7 (#82).\n- Support testing on python 3.3 and python 3.4 (#77).\n- Do not use 2to3 (#75).\n- Support lazy wrapping of win32 functions (#67).\n- Add CRED_PERSIST constants (#79 contributed by @tivnet).\n\nVersion 0.1.2\n-------------\n\n(bugfix release)\n\n- Fix implementation for the deprecated api (#64).\n\nVersion 0.1.1\n-------------\n\n(bugfix release)\n\n- Update Manifest.in entries (#63)\n- fix VERSION path in Manifest.in (#62 contributed by @MinchinWeb)\n\n\nVersion 0.1.0\n-------------\n\n- Update tests and provide better compatibility with pywin32 for\n  Resource functions\n- Fix: Python 3.5 and 3.6 support (#52).\n- API additions to allow pywin32-ctypes to work with pyinstaller (#46\n  and #57 contributed by @virtuald).\n- Fix: do not update the global copy of the windows dlls (#42)\n- Add documentation and setup automatic builds in ReadTheDocs (#3, #36).\n- Add cffi backend to be used when available (#31).\n- Fix: EnumResourceTypes and EnumResourceNames would only return ints\n  (#21, #30).\n- Restructure package layout to split core wrapping modules from\n  pywin32 emulation (#15, #17).\n\nVersion 0.0.1\n-------------\n\n7/04/2014\n\n- Python 2.6 support (#13)\n- Python 3 support (#12)\n- Basic maintenance work (#11, #7)\n- Fix error raising to be pywin32 compatible (#8)\n- Package rename mini_pywin32 -> pywin32-ctypes\n- Add travis-ci integration using wine! (#2)\n- Support basic library and resource loading (#1)\n- mini_pywin32 is born\n",
+      "description_content_type": null,
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": "https://github.com/enthought/pywin32-ctypes",
+      "keywords": null,
+      "license": "BSD-3-Clause",
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "pywin32-ctypes",
+      "package_url": "https://pypi.org/project/pywin32-ctypes/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/pywin32-ctypes/",
+      "project_urls": {
+        "Homepage": "https://github.com/enthought/pywin32-ctypes"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/pywin32-ctypes/0.2.3/",
+      "requires_dist": null,
+      "requires_python": ">=3.6",
+      "summary": "A (partial) reimplementation of pywin32 using ctypes/cffi",
+      "version": "0.2.3",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 24564247,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "enthought"
+        },
+        {
+          "role": "Maintainer",
+          "user": "itziakos"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": "",
+        "core-metadata": {
+          "sha256": "1e3767d3faff4d5b9c347160883831098d1f25acf4306b02c9acdcc6bfb5883b"
+        },
+        "digests": {
+          "blake2b_256": "de3d8161f7711c017e01ac9f008dfddd9410dff3674334c233bde66e7ba65bbf",
+          "md5": "f74cca211e6c4a5e9b4d9b98b7c4b75a",
+          "sha256": "8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8"
+        },
+        "downloads": -1,
+        "filename": "pywin32_ctypes-0.2.3-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "f74cca211e6c4a5e9b4d9b98b7c4b75a",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.6",
+        "size": 30756,
+        "upload_time": "2024-08-14T10:15:33",
+        "upload_time_iso_8601": "2024-08-14T10:15:33.187242Z",
+        "url": "https://files.pythonhosted.org/packages/de/3d/8161f7711c017e01ac9f008dfddd9410dff3674334c233bde66e7ba65bbf/pywin32_ctypes-0.2.3-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": "",
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "859f01a1a99704853cb63f253eea009390c88e7131c67e66a0a02099a8c917cb",
+          "md5": "72ff6fc4dd47dde10c9f8fc5ed61457c",
+          "sha256": "d162dc04946d704503b2edc4d55f3dba5c1d539ead017afa00142c38b9885755"
+        },
+        "downloads": -1,
+        "filename": "pywin32-ctypes-0.2.3.tar.gz",
+        "has_sig": false,
+        "md5_digest": "72ff6fc4dd47dde10c9f8fc5ed61457c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.6",
+        "size": 29471,
+        "upload_time": "2024-08-14T10:15:34",
+        "upload_time_iso_8601": "2024-08-14T10:15:34.626878Z",
+        "url": "https://files.pythonhosted.org/packages/85/9f/01a1a99704853cb63f253eea009390c88e7131c67e66a0a02099a8c917cb/pywin32-ctypes-0.2.3.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "pywin32-ctypes",
+    "version": "0.2.3",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8",
+      "d162dc04946d704503b2edc4d55f3dba5c1d539ead017afa00142c38b9885755"
+    ],
+    "retrieved_at": "2026-11-28T12:09:59+00:00",
+    "pypi_info": {
+      "license": "BSD-3-Clause",
+      "license_expression": null,
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.6",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9"
+      ],
+      "requires_python": ">=3.6",
+      "project_urls": {
+        "Homepage": "https://github.com/enthought/pywin32-ctypes"
+      },
+      "home_page": "https://github.com/enthought/pywin32-ctypes",
+      "summary": "A (partial) reimplementation of pywin32 using ctypes/cffi",
+      "author": "info@enthough.com"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "pywin32_ctypes-0.2.3-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "pywin32_ctypes-0.2.3-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/de/3d/8161f7711c017e01ac9f008dfddd9410dff3674334c233bde66e7ba65bbf/pywin32_ctypes-0.2.3-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 30756,
+        "sha256_pypi": "8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8",
+        "sha256_verified": "8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "pywin32_ctypes-0.2.3-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/de/3d/8161f7711c017e01ac9f008dfddd9410dff3674334c233bde66e7ba65bbf/pywin32_ctypes-0.2.3-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 30756,
+      "sha256_pypi": "8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8",
+      "sha256_verified": "8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "pywin32_ctypes-0.2.3-py3-none-any.whl::pywin32_ctypes-0.2.3.dist-info/LICENSE.txt": {
+        "saved_as": "pywin32_ctypes-0.2.3.dist-info_LICENSE.txt",
+        "sha256": "dfa83b3e2709adfcdb838d9ad55823ca674abb780e60563d9dd9544ccbf785e9",
+        "bytes": 1644,
+        "from_artifact": "pywin32_ctypes-0.2.3-py3-none-any.whl",
+        "artifact_sha256": "8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

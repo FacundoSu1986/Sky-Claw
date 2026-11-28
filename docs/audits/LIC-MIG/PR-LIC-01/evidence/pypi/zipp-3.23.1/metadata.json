@@ -1,0 +1,203 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "\"Jason R. Coombs\" <jaraco@jaraco.com>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only"
+      ],
+      "description": ".. image:: https://img.shields.io/pypi/v/zipp.svg\n   :target: https://pypi.org/project/zipp\n\n.. image:: https://img.shields.io/pypi/pyversions/zipp.svg\n\n.. image:: https://github.com/jaraco/zipp/actions/workflows/main.yml/badge.svg\n   :target: https://github.com/jaraco/zipp/actions?query=workflow%3A%22tests%22\n   :alt: tests\n\n.. image:: https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json\n    :target: https://github.com/astral-sh/ruff\n    :alt: Ruff\n\n.. image:: https://readthedocs.org/projects/zipp/badge/?version=latest\n..    :target: https://zipp.readthedocs.io/en/latest/?badge=latest\n\n.. image:: https://img.shields.io/badge/skeleton-2025-informational\n   :target: https://blog.jaraco.com/skeleton\n\n.. image:: https://tidelift.com/badges/package/pypi/zipp\n   :target: https://tidelift.com/subscription/pkg/pypi-zipp?utm_source=pypi-zipp&utm_medium=readme\n\n\nA pathlib-compatible Zipfile object wrapper. Official backport of the standard library\n`Path object <https://docs.python.org/3.8/library/zipfile.html#path-objects>`_.\n\n\nCompatibility\n=============\n\nNew features are introduced in this third-party library and later merged\ninto CPython. The following table indicates which versions of this library\nwere contributed to different versions in the standard library:\n\n.. list-table::\n   :header-rows: 1\n\n   * - zipp\n     - stdlib\n   * - 3.21\n     - 3.15\n   * - 3.18\n     - 3.13\n   * - 3.16\n     - 3.12\n   * - 3.5\n     - 3.11\n   * - 3.2\n     - 3.10\n   * - 3.3 ??\n     - 3.9\n   * - 1.0\n     - 3.8\n\n\nUsage\n=====\n\nUse ``zipp.Path`` in place of ``zipfile.Path`` on any Python.\n\nFor Enterprise\n==============\n\nAvailable as part of the Tidelift Subscription.\n\nThis project and the maintainers of thousands of other packages are working with Tidelift to deliver one enterprise subscription that covers all of the open source you use.\n\n`Learn more <https://tidelift.com/subscription/pkg/pypi-zipp?utm_source=pypi-zipp&utm_medium=referral&utm_campaign=github>`_.\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": [
+        "License-File"
+      ],
+      "home_page": null,
+      "keywords": null,
+      "license": null,
+      "license_expression": "MIT",
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "zipp",
+      "package_url": "https://pypi.org/project/zipp/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/zipp/",
+      "project_urls": {
+        "Source": "https://github.com/jaraco/zipp"
+      },
+      "provides_extra": [
+        "test",
+        "doc",
+        "check",
+        "cover",
+        "enabler",
+        "type"
+      ],
+      "release_url": "https://pypi.org/project/zipp/3.23.1/",
+      "requires_dist": [
+        "pytest!=8.1.*,>=6; extra == \"test\"",
+        "jaraco.itertools; extra == \"test\"",
+        "jaraco.functools; extra == \"test\"",
+        "more_itertools; extra == \"test\"",
+        "big-O; extra == \"test\"",
+        "pytest-ignore-flaky; extra == \"test\"",
+        "jaraco.test; extra == \"test\"",
+        "sphinx>=3.5; extra == \"doc\"",
+        "jaraco.packaging>=9.3; extra == \"doc\"",
+        "rst.linker>=1.9; extra == \"doc\"",
+        "furo; extra == \"doc\"",
+        "sphinx-lint; extra == \"doc\"",
+        "jaraco.tidelift>=1.4; extra == \"doc\"",
+        "pytest-checkdocs>=2.4; extra == \"check\"",
+        "pytest-ruff>=0.2.1; sys_platform != \"cygwin\" and extra == \"check\"",
+        "pytest-cov; extra == \"cover\"",
+        "pytest-enabler>=2.2; extra == \"enabler\"",
+        "pytest-mypy; extra == \"type\""
+      ],
+      "requires_python": ">=3.9",
+      "summary": "Backport of pathlib-compatible object wrapper for zip files",
+      "version": "3.23.1",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 42556759,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "jaraco"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "420bddc234961fbdcb5abdfc42e317e0a706917a9ca163f815621e17bf4347af"
+        },
+        "digests": {
+          "blake2b_256": "088a0861bec20485572fbddf3dfba2910e38fe249796cb73ecdeb74e07eeb8d3",
+          "md5": "e2b7aa7846d564d4f927ff798c01817b",
+          "sha256": "0b3596c50a5c700c9cb40ba8d86d9f2cc4807e9bedb06bcdf7fac85633e444dc"
+        },
+        "downloads": -1,
+        "filename": "zipp-3.23.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "e2b7aa7846d564d4f927ff798c01817b",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.9",
+        "size": 10378,
+        "upload_time": "2026-04-13T23:21:45",
+        "upload_time_iso_8601": "2026-04-13T23:21:45.386171Z",
+        "url": "https://files.pythonhosted.org/packages/08/8a/0861bec20485572fbddf3dfba2910e38fe249796cb73ecdeb74e07eeb8d3/zipp-3.23.1-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "3021093488dfc7cc8964ded15ab726fad40f25fd3d788fd741cc1c5a17d78ee8",
+          "md5": "0b36eb9caf1c042f285aaee3a06467ca",
+          "sha256": "32120e378d32cd9714ad503c1d024619063ec28aad2248dc6672ad13edfa5110"
+        },
+        "downloads": -1,
+        "filename": "zipp-3.23.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0b36eb9caf1c042f285aaee3a06467ca",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.9",
+        "size": 25965,
+        "upload_time": "2026-04-13T23:21:46",
+        "upload_time_iso_8601": "2026-04-13T23:21:46.600996Z",
+        "url": "https://files.pythonhosted.org/packages/30/21/093488dfc7cc8964ded15ab726fad40f25fd3d788fd741cc1c5a17d78ee8/zipp-3.23.1.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "zipp",
+    "version": "3.23.1",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "0b3596c50a5c700c9cb40ba8d86d9f2cc4807e9bedb06bcdf7fac85633e444dc",
+      "32120e378d32cd9714ad503c1d024619063ec28aad2248dc6672ad13edfa5110"
+    ],
+    "retrieved_at": "2026-11-28T12:10:00+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": "MIT",
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only"
+      ],
+      "requires_python": ">=3.9",
+      "project_urls": {
+        "Source": "https://github.com/jaraco/zipp"
+      },
+      "home_page": null,
+      "summary": "Backport of pathlib-compatible object wrapper for zip files",
+      "author": "\"Jason R. Coombs\" <jaraco@jaraco.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "zipp-3.23.1-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "zipp-3.23.1-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/08/8a/0861bec20485572fbddf3dfba2910e38fe249796cb73ecdeb74e07eeb8d3/zipp-3.23.1-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 10378,
+        "sha256_pypi": "0b3596c50a5c700c9cb40ba8d86d9f2cc4807e9bedb06bcdf7fac85633e444dc",
+        "sha256_verified": "0b3596c50a5c700c9cb40ba8d86d9f2cc4807e9bedb06bcdf7fac85633e444dc",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "zipp-3.23.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/08/8a/0861bec20485572fbddf3dfba2910e38fe249796cb73ecdeb74e07eeb8d3/zipp-3.23.1-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 10378,
+      "sha256_pypi": "0b3596c50a5c700c9cb40ba8d86d9f2cc4807e9bedb06bcdf7fac85633e444dc",
+      "sha256_verified": "0b3596c50a5c700c9cb40ba8d86d9f2cc4807e9bedb06bcdf7fac85633e444dc",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "zipp-3.23.1-py3-none-any.whl::zipp-3.23.1.dist-info/licenses/LICENSE": {
+        "saved_as": "zipp-3.23.1.dist-info_licenses_LICENSE",
+        "sha256": "9755a18519666e5f0f4cae3daad3d7012bcae48a600b31237d75e9fe134e6683",
+        "bytes": 1076,
+        "from_artifact": "zipp-3.23.1-py3-none-any.whl",
+        "artifact_sha256": "0b3596c50a5c700c9cb40ba8d86d9f2cc4807e9bedb06bcdf7fac85633e444dc"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

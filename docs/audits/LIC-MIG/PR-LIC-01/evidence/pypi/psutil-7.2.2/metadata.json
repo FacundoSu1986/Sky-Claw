@@ -1,0 +1,784 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": "Giampaolo Rodola",
+      "author_email": "g.rodola@gmail.com",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Environment :: Console",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Information Technology",
+        "Intended Audience :: System Administrators",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: Microsoft :: Windows :: Windows 10",
+        "Operating System :: Microsoft :: Windows :: Windows 11",
+        "Operating System :: Microsoft :: Windows :: Windows 7",
+        "Operating System :: Microsoft :: Windows :: Windows 8",
+        "Operating System :: Microsoft :: Windows :: Windows 8.1",
+        "Operating System :: Microsoft :: Windows :: Windows Server 2003",
+        "Operating System :: Microsoft :: Windows :: Windows Server 2008",
+        "Operating System :: Microsoft :: Windows :: Windows Vista",
+        "Operating System :: OS Independent",
+        "Operating System :: POSIX",
+        "Operating System :: POSIX :: AIX",
+        "Operating System :: POSIX :: BSD",
+        "Operating System :: POSIX :: BSD :: FreeBSD",
+        "Operating System :: POSIX :: BSD :: NetBSD",
+        "Operating System :: POSIX :: BSD :: OpenBSD",
+        "Operating System :: POSIX :: Linux",
+        "Operating System :: POSIX :: SunOS/Solaris",
+        "Programming Language :: C",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Topic :: Software Development :: Libraries",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Topic :: System :: Benchmark",
+        "Topic :: System :: Hardware",
+        "Topic :: System :: Monitoring",
+        "Topic :: System :: Networking",
+        "Topic :: System :: Networking :: Monitoring",
+        "Topic :: System :: Networking :: Monitoring :: Hardware Watchdog",
+        "Topic :: System :: Operating System",
+        "Topic :: System :: Systems Administration",
+        "Topic :: Utilities"
+      ],
+      "description": "|  |downloads| |stars| |forks| |contributors| |packages|\n|  |version| |license| |stackoverflow| |twitter| |tidelift|\n|  |github-actions-wheels| |github-actions-bsd|\n\n.. |downloads| image:: https://img.shields.io/pypi/dm/psutil.svg\n    :target: https://clickpy.clickhouse.com/dashboard/psutil\n    :alt: Downloads\n\n.. |stars| image:: https://img.shields.io/github/stars/giampaolo/psutil.svg\n    :target: https://github.com/giampaolo/psutil/stargazers\n    :alt: Github stars\n\n.. |forks| image:: https://img.shields.io/github/forks/giampaolo/psutil.svg\n    :target: https://github.com/giampaolo/psutil/network/members\n    :alt: Github forks\n\n.. |contributors| image:: https://img.shields.io/github/contributors/giampaolo/psutil.svg\n    :target: https://github.com/giampaolo/psutil/graphs/contributors\n    :alt: Contributors\n\n.. |stackoverflow| image:: https://img.shields.io/badge/stackoverflow-Ask%20questions-blue.svg\n    :target: https://stackoverflow.com/questions/tagged/psutil\n    :alt: Stackoverflow\n\n.. |github-actions-wheels| image:: https://img.shields.io/github/actions/workflow/status/giampaolo/psutil/.github/workflows/build.yml.svg?label=Linux%2C%20macOS%2C%20Windows\n    :target: https://github.com/giampaolo/psutil/actions?query=workflow%3Abuild\n    :alt: Linux, macOS, Windows\n\n.. |github-actions-bsd| image:: https://img.shields.io/github/actions/workflow/status/giampaolo/psutil/.github/workflows/bsd.yml.svg?label=FreeBSD,%20NetBSD,%20OpenBSD\n    :target: https://github.com/giampaolo/psutil/actions?query=workflow%3Absd-tests\n    :alt: FreeBSD, NetBSD, OpenBSD\n\n.. |version| image:: https://img.shields.io/pypi/v/psutil.svg?label=pypi\n    :target: https://pypi.org/project/psutil\n    :alt: Latest version\n\n.. |packages| image:: https://repology.org/badge/tiny-repos/python:psutil.svg\n    :target: https://repology.org/metapackage/python:psutil/versions\n    :alt: Binary packages\n\n.. |license| image:: https://img.shields.io/pypi/l/psutil.svg\n    :target: https://github.com/giampaolo/psutil/blob/master/LICENSE\n    :alt: License\n\n.. |twitter| image:: https://img.shields.io/twitter/follow/grodola?style=flat\n    :target: https://twitter.com/grodola\n    :alt: Twitter Follow\n\n.. |tidelift| image:: https://tidelift.com/badges/github/giampaolo/psutil?style=flat\n    :target: https://tidelift.com/subscription/pkg/pypi-psutil?utm_source=pypi-psutil&utm_medium=referral&utm_campaign=readme\n    :alt: Tidelift\n\n-----\n\nQuick links\n===========\n\n- `Home page <https://github.com/giampaolo/psutil>`_\n- `Install <https://github.com/giampaolo/psutil/blob/master/INSTALL.rst>`_\n- `Documentation <http://psutil.readthedocs.io>`_\n- `Download <https://pypi.org/project/psutil/#files>`_\n- `Forum <http://groups.google.com/group/psutil/topics>`_\n- `StackOverflow <https://stackoverflow.com/questions/tagged/psutil>`_\n- `Blog <https://gmpy.dev/tags/psutil>`_\n- `What's new <https://github.com/giampaolo/psutil/blob/master/HISTORY.rst>`_\n\n\nSummary\n=======\n\npsutil (process and system utilities) is a cross-platform library for\nretrieving information on **running processes** and **system utilization**\n(CPU, memory, disks, network, sensors) in Python.\nIt is useful mainly for **system monitoring**, **profiling and limiting process\nresources** and **management of running processes**.\nIt implements many functionalities offered by classic UNIX command line tools\nsuch as *ps, top, iotop, lsof, netstat, ifconfig, free* and others.\npsutil currently supports the following platforms:\n\n- **Linux**\n- **Windows**\n- **macOS**\n- **FreeBSD, OpenBSD**, **NetBSD**\n- **Sun Solaris**\n- **AIX**\n\nSupported Python versions are cPython 3.6+ and `PyPy <https://pypy.org/>`__.\nLatest psutil version supporting Python 2.7 is\n`psutil 6.1.1 <https://pypi.org/project/psutil/6.1.1/>`__.\n\nExample usages\n==============\n\nThis represents pretty much the whole psutil API.\n\nCPU\n---\n\n.. code-block:: python\n\n    >>> import psutil\n    >>>\n    >>> psutil.cpu_times()\n    scputimes(user=3961.46, nice=169.729, system=2150.659, idle=16900.540, iowait=629.59, irq=0.0, softirq=19.42, steal=0.0, guest=0, guest_nice=0.0)\n    >>>\n    >>> for x in range(3):\n    ...     psutil.cpu_percent(interval=1)\n    ...\n    4.0\n    5.9\n    3.8\n    >>>\n    >>> for x in range(3):\n    ...     psutil.cpu_percent(interval=1, percpu=True)\n    ...\n    [4.0, 6.9, 3.7, 9.2]\n    [7.0, 8.5, 2.4, 2.1]\n    [1.2, 9.0, 9.9, 7.2]\n    >>>\n    >>> for x in range(3):\n    ...     psutil.cpu_times_percent(interval=1, percpu=False)\n    ...\n    scputimes(user=1.5, nice=0.0, system=0.5, idle=96.5, iowait=1.5, irq=0.0, softirq=0.0, steal=0.0, guest=0.0, guest_nice=0.0)\n    scputimes(user=1.0, nice=0.0, system=0.0, idle=99.0, iowait=0.0, irq=0.0, softirq=0.0, steal=0.0, guest=0.0, guest_nice=0.0)\n    scputimes(user=2.0, nice=0.0, system=0.0, idle=98.0, iowait=0.0, irq=0.0, softirq=0.0, steal=0.0, guest=0.0, guest_nice=0.0)\n    >>>\n    >>> psutil.cpu_count()\n    4\n    >>> psutil.cpu_count(logical=False)\n    2\n    >>>\n    >>> psutil.cpu_stats()\n    scpustats(ctx_switches=20455687, interrupts=6598984, soft_interrupts=2134212, syscalls=0)\n    >>>\n    >>> psutil.cpu_freq()\n    scpufreq(current=931.42925, min=800.0, max=3500.0)\n    >>>\n    >>> psutil.getloadavg()  # also on Windows (emulated)\n    (3.14, 3.89, 4.67)\n\nMemory\n------\n\n.. code-block:: python\n\n    >>> psutil.virtual_memory()\n    svmem(total=10367352832, available=6472179712, percent=37.6, used=8186245120, free=2181107712, active=4748992512, inactive=2758115328, buffers=790724608, cached=3500347392, shared=787554304)\n    >>> psutil.swap_memory()\n    sswap(total=2097147904, used=296128512, free=1801019392, percent=14.1, sin=304193536, sout=677842944)\n    >>>\n\nDisks\n-----\n\n.. code-block:: python\n\n    >>> psutil.disk_partitions()\n    [sdiskpart(device='/dev/sda1', mountpoint='/', fstype='ext4', opts='rw,nosuid'),\n     sdiskpart(device='/dev/sda2', mountpoint='/home', fstype='ext', opts='rw')]\n    >>>\n    >>> psutil.disk_usage('/')\n    sdiskusage(total=21378641920, used=4809781248, free=15482871808, percent=22.5)\n    >>>\n    >>> psutil.disk_io_counters(perdisk=False)\n    sdiskio(read_count=719566, write_count=1082197, read_bytes=18626220032, write_bytes=24081764352, read_time=5023392, write_time=63199568, read_merged_count=619166, write_merged_count=812396, busy_time=4523412)\n    >>>\n\nNetwork\n-------\n\n.. code-block:: python\n\n    >>> psutil.net_io_counters(pernic=True)\n    {'eth0': netio(bytes_sent=485291293, bytes_recv=6004858642, packets_sent=3251564, packets_recv=4787798, errin=0, errout=0, dropin=0, dropout=0),\n     'lo': netio(bytes_sent=2838627, bytes_recv=2838627, packets_sent=30567, packets_recv=30567, errin=0, errout=0, dropin=0, dropout=0)}\n    >>>\n    >>> psutil.net_connections(kind='tcp')\n    [sconn(fd=115, family=<AddressFamily.AF_INET: 2>, type=<SocketType.SOCK_STREAM: 1>, laddr=addr(ip='10.0.0.1', port=48776), raddr=addr(ip='93.186.135.91', port=80), status='ESTABLISHED', pid=1254),\n     sconn(fd=117, family=<AddressFamily.AF_INET: 2>, type=<SocketType.SOCK_STREAM: 1>, laddr=addr(ip='10.0.0.1', port=43761), raddr=addr(ip='72.14.234.100', port=80), status='CLOSING', pid=2987),\n     ...]\n    >>>\n    >>> psutil.net_if_addrs()\n    {'lo': [snicaddr(family=<AddressFamily.AF_INET: 2>, address='127.0.0.1', netmask='255.0.0.0', broadcast='127.0.0.1', ptp=None),\n            snicaddr(family=<AddressFamily.AF_INET6: 10>, address='::1', netmask='ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff', broadcast=None, ptp=None),\n            snicaddr(family=<AddressFamily.AF_LINK: 17>, address='00:00:00:00:00:00', netmask=None, broadcast='00:00:00:00:00:00', ptp=None)],\n     'wlan0': [snicaddr(family=<AddressFamily.AF_INET: 2>, address='192.168.1.3', netmask='255.255.255.0', broadcast='192.168.1.255', ptp=None),\n               snicaddr(family=<AddressFamily.AF_INET6: 10>, address='fe80::c685:8ff:fe45:641%wlan0', netmask='ffff:ffff:ffff:ffff::', broadcast=None, ptp=None),\n               snicaddr(family=<AddressFamily.AF_LINK: 17>, address='c4:85:08:45:06:41', netmask=None, broadcast='ff:ff:ff:ff:ff:ff', ptp=None)]}\n    >>>\n    >>> psutil.net_if_stats()\n    {'lo': snicstats(isup=True, duplex=<NicDuplex.NIC_DUPLEX_UNKNOWN: 0>, speed=0, mtu=65536, flags='up,loopback,running'),\n     'wlan0': snicstats(isup=True, duplex=<NicDuplex.NIC_DUPLEX_FULL: 2>, speed=100, mtu=1500, flags='up,broadcast,running,multicast')}\n    >>>\n\nSensors\n-------\n\n.. code-block:: python\n\n    >>> import psutil\n    >>> psutil.sensors_temperatures()\n    {'acpitz': [shwtemp(label='', current=47.0, high=103.0, critical=103.0)],\n     'asus': [shwtemp(label='', current=47.0, high=None, critical=None)],\n     'coretemp': [shwtemp(label='Physical id 0', current=52.0, high=100.0, critical=100.0),\n                  shwtemp(label='Core 0', current=45.0, high=100.0, critical=100.0)]}\n    >>>\n    >>> psutil.sensors_fans()\n    {'asus': [sfan(label='cpu_fan', current=3200)]}\n    >>>\n    >>> psutil.sensors_battery()\n    sbattery(percent=93, secsleft=16628, power_plugged=False)\n    >>>\n\nOther system info\n-----------------\n\n.. code-block:: python\n\n    >>> import psutil\n    >>> psutil.users()\n    [suser(name='giampaolo', terminal='pts/2', host='localhost', started=1340737536.0, pid=1352),\n     suser(name='giampaolo', terminal='pts/3', host='localhost', started=1340737792.0, pid=1788)]\n    >>>\n    >>> psutil.boot_time()\n    1365519115.0\n    >>>\n\nProcess management\n------------------\n\n.. code-block:: python\n\n    >>> import psutil\n    >>> psutil.pids()\n    [1, 2, 3, 4, 5, 6, 7, 46, 48, 50, 51, 178, 182, 222, 223, 224, 268, 1215,\n     1216, 1220, 1221, 1243, 1244, 1301, 1601, 2237, 2355, 2637, 2774, 3932,\n     4176, 4177, 4185, 4187, 4189, 4225, 4243, 4245, 4263, 4282, 4306, 4311,\n     4312, 4313, 4314, 4337, 4339, 4357, 4358, 4363, 4383, 4395, 4408, 4433,\n     4443, 4445, 4446, 5167, 5234, 5235, 5252, 5318, 5424, 5644, 6987, 7054,\n     7055, 7071]\n    >>>\n    >>> p = psutil.Process(7055)\n    >>> p\n    psutil.Process(pid=7055, name='python3', status='running', started='09:04:44')\n    >>> p.pid\n    7055\n    >>> p.name()\n    'python3'\n    >>> p.exe()\n    '/usr/bin/python3'\n    >>> p.cwd()\n    '/home/giampaolo'\n    >>> p.cmdline()\n    ['/usr/bin/python3', 'main.py']\n    >>>\n    >>> p.ppid()\n    7054\n    >>> p.parent()\n    psutil.Process(pid=4699, name='bash', status='sleeping', started='09:06:44')\n    >>> p.parents()\n    [psutil.Process(pid=4699, name='bash', started='09:06:44'),\n     psutil.Process(pid=4689, name='gnome-terminal-server', status='sleeping', started='0:06:44'),\n     psutil.Process(pid=1, name='systemd', status='sleeping', started='05:56:55')]\n    >>> p.children(recursive=True)\n    [psutil.Process(pid=29835, name='python3', status='sleeping', started='11:45:38'),\n     psutil.Process(pid=29836, name='python3', status='waking', started='11:43:39')]\n    >>>\n    >>> p.status()\n    'running'\n    >>> p.create_time()\n    1267551141.5019531\n    >>> p.terminal()\n    '/dev/pts/0'\n    >>>\n    >>> p.username()\n    'giampaolo'\n    >>> p.uids()\n    puids(real=1000, effective=1000, saved=1000)\n    >>> p.gids()\n    pgids(real=1000, effective=1000, saved=1000)\n    >>>\n    >>> p.cpu_times()\n    pcputimes(user=1.02, system=0.31, children_user=0.32, children_system=0.1, iowait=0.0)\n    >>> p.cpu_percent(interval=1.0)\n    12.1\n    >>> p.cpu_affinity()\n    [0, 1, 2, 3]\n    >>> p.cpu_affinity([0, 1])  # set\n    >>> p.cpu_num()\n    1\n    >>>\n    >>> p.memory_info()\n    pmem(rss=10915840, vms=67608576, shared=3313664, text=2310144, lib=0, data=7262208, dirty=0)\n    >>> p.memory_full_info()  # \"real\" USS memory usage (Linux, macOS, Win only)\n    pfullmem(rss=10199040, vms=52133888, shared=3887104, text=2867200, lib=0, data=5967872, dirty=0, uss=6545408, pss=6872064, swap=0)\n    >>> p.memory_percent()\n    0.7823\n    >>> p.memory_maps()\n    [pmmap_grouped(path='/lib/x8664-linux-gnu/libutil-2.15.so', rss=32768, size=2125824, pss=32768, shared_clean=0, shared_dirty=0, private_clean=20480, private_dirty=12288, referenced=32768, anonymous=12288, swap=0),\n     pmmap_grouped(path='/lib/x8664-linux-gnu/libc-2.15.so', rss=3821568, size=3842048, pss=3821568, shared_clean=0, shared_dirty=0, private_clean=0, private_dirty=3821568, referenced=3575808, anonymous=3821568, swap=0),\n     pmmap_grouped(path='[heap]',  rss=32768, size=139264, pss=32768, shared_clean=0, shared_dirty=0, private_clean=0, private_dirty=32768, referenced=32768, anonymous=32768, swap=0),\n     pmmap_grouped(path='[stack]', rss=2465792, size=2494464, pss=2465792, shared_clean=0, shared_dirty=0, private_clean=0, private_dirty=2465792, referenced=2277376, anonymous=2465792, swap=0),\n     ...]\n    >>>\n    >>> p.io_counters()\n    pio(read_count=478001, write_count=59371, read_bytes=700416, write_bytes=69632, read_chars=456232, write_chars=517543)\n    >>>\n    >>> p.open_files()\n    [popenfile(path='/home/giampaolo/monit.py', fd=3, position=0, mode='r', flags=32768),\n     popenfile(path='/var/log/monit.log', fd=4, position=235542, mode='a', flags=33793)]\n    >>>\n    >>> p.net_connections(kind='tcp')\n    [pconn(fd=115, family=<AddressFamily.AF_INET: 2>, type=<SocketType.SOCK_STREAM: 1>, laddr=addr(ip='10.0.0.1', port=48776), raddr=addr(ip='93.186.135.91', port=80), status='ESTABLISHED'),\n     pconn(fd=117, family=<AddressFamily.AF_INET: 2>, type=<SocketType.SOCK_STREAM: 1>, laddr=addr(ip='10.0.0.1', port=43761), raddr=addr(ip='72.14.234.100', port=80), status='CLOSING')]\n    >>>\n    >>> p.threads()\n    [pthread(id=5234, user_time=22.5, system_time=9.2891),\n     pthread(id=5237, user_time=0.0707, system_time=1.1)]\n    >>>\n    >>> p.num_threads()\n    4\n    >>> p.num_fds()\n    8\n    >>> p.num_ctx_switches()\n    pctxsw(voluntary=78, involuntary=19)\n    >>>\n    >>> p.nice()\n    0\n    >>> p.nice(10)  # set\n    >>>\n    >>> p.ionice(psutil.IOPRIO_CLASS_IDLE)  # IO priority (Win and Linux only)\n    >>> p.ionice()\n    pionice(ioclass=<IOPriority.IOPRIO_CLASS_IDLE: 3>, value=0)\n    >>>\n    >>> p.rlimit(psutil.RLIMIT_NOFILE, (5, 5))  # set resource limits (Linux only)\n    >>> p.rlimit(psutil.RLIMIT_NOFILE)\n    (5, 5)\n    >>>\n    >>> p.environ()\n    {'LC_PAPER': 'it_IT.UTF-8', 'SHELL': '/bin/bash', 'GREP_OPTIONS': '--color=auto',\n    'XDG_CONFIG_DIRS': '/etc/xdg/xdg-ubuntu:/usr/share/upstart/xdg:/etc/xdg',\n     ...}\n    >>>\n    >>> p.as_dict()\n    {'status': 'running', 'num_ctx_switches': pctxsw(voluntary=63, involuntary=1), 'pid': 5457, ...}\n    >>> p.is_running()\n    True\n    >>> p.suspend()\n    >>> p.resume()\n    >>>\n    >>> p.terminate()\n    >>> p.kill()\n    >>> p.wait(timeout=3)\n    <Exitcode.EX_OK: 0>\n    >>>\n    >>> psutil.test()\n    USER         PID %CPU %MEM     VSZ     RSS TTY        START    TIME  COMMAND\n    root           1  0.0  0.0   24584    2240            Jun17   00:00  init\n    root           2  0.0  0.0       0       0            Jun17   00:00  kthreadd\n    ...\n    giampaolo  31475  0.0  0.0   20760    3024 /dev/pts/0 Jun19   00:00  python2.4\n    giampaolo  31721  0.0  2.2  773060  181896            00:04   10:30  chrome\n    root       31763  0.0  0.0       0       0            00:05   00:00  kworker/0:1\n    >>>\n\nFurther process APIs\n--------------------\n\n.. code-block:: python\n\n    >>> import psutil\n    >>> for proc in psutil.process_iter(['pid', 'name']):\n    ...     print(proc.info)\n    ...\n    {'pid': 1, 'name': 'systemd'}\n    {'pid': 2, 'name': 'kthreadd'}\n    {'pid': 3, 'name': 'ksoftirqd/0'}\n    ...\n    >>>\n    >>> psutil.pid_exists(3)\n    True\n    >>>\n    >>> def on_terminate(proc):\n    ...     print(\"process {} terminated\".format(proc))\n    ...\n    >>> # waits for multiple processes to terminate\n    >>> gone, alive = psutil.wait_procs(procs_list, timeout=3, callback=on_terminate)\n    >>>\n\nHeap info\n---------\n\n.. code-block:: python\n\n    >>> import psutil\n    >>> psutil.heap_info()\n    pheap(heap_used=5177792, mmap_used=819200)\n    >>> psutil.heap_trim()\n\nSee also `psleak <https://github.com/giampaolo/psleak>`__\n\nWindows services\n----------------\n\n.. code-block:: python\n\n    >>> list(psutil.win_service_iter())\n    [<WindowsService(name='AeLookupSvc', display_name='Application Experience') at 38850096>,\n     <WindowsService(name='ALG', display_name='Application Layer Gateway Service') at 38850128>,\n     <WindowsService(name='APNMCP', display_name='Ask Update Service') at 38850160>,\n     <WindowsService(name='AppIDSvc', display_name='Application Identity') at 38850192>,\n     ...]\n    >>> s = psutil.win_service_get('alg')\n    >>> s.as_dict()\n    {'binpath': 'C:\\\\Windows\\\\System32\\\\alg.exe',\n     'description': 'Provides support for 3rd party protocol plug-ins for Internet Connection Sharing',\n     'display_name': 'Application Layer Gateway Service',\n     'name': 'alg',\n     'pid': None,\n     'start_type': 'manual',\n     'status': 'stopped',\n     'username': 'NT AUTHORITY\\\\LocalService'}\n\nProjects using psutil\n=====================\n\nHere's some I find particularly interesting:\n\n- https://github.com/giampaolo/psleak\n- https://github.com/google/grr\n- https://github.com/facebook/osquery/\n- https://github.com/nicolargo/glances\n- https://github.com/aristocratos/bpytop\n- https://github.com/Jahaja/psdash\n- https://github.com/ajenti/ajenti\n- https://github.com/home-assistant/home-assistant/\n\nPortings\n========\n\n- Go: https://github.com/shirou/gopsutil\n- C: https://github.com/hamon-in/cpslib\n- Rust: https://github.com/rust-psutil/rust-psutil\n- Nim: https://github.com/johnscillieri/psutil-nim\n\n\n\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": [
+        "Author",
+        "Author-Email",
+        "Classifier",
+        "Description",
+        "Description-Content-Type",
+        "Home-Page",
+        "Keywords",
+        "License",
+        "License-File",
+        "Platform",
+        "Provides-Extra",
+        "Requires-Python",
+        "Summary"
+      ],
+      "home_page": "https://github.com/giampaolo/psutil",
+      "keywords": "ps, top, kill, free, lsof, netstat, nice, tty, ionice, uptime, taskmgr, process, df, iotop, iostat, ifconfig, taskset, who, pidof, pmap, smem, pstree, monitoring, ulimit, prlimit, smem, performance, metrics, agent, observability",
+      "license": "BSD-3-Clause",
+      "license_expression": null,
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "psutil",
+      "package_url": "https://pypi.org/project/psutil/",
+      "platform": "Platform Independent",
+      "project_url": "https://pypi.org/project/psutil/",
+      "project_urls": {
+        "Homepage": "https://github.com/giampaolo/psutil"
+      },
+      "provides_extra": [
+        "dev",
+        "test"
+      ],
+      "release_url": "https://pypi.org/project/psutil/7.2.2/",
+      "requires_dist": [
+        "psleak; extra == \"dev\"",
+        "pytest; extra == \"dev\"",
+        "pytest-instafail; extra == \"dev\"",
+        "pytest-xdist; extra == \"dev\"",
+        "setuptools; extra == \"dev\"",
+        "pywin32; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == \"dev\"",
+        "wheel; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == \"dev\"",
+        "wmi; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == \"dev\"",
+        "abi3audit; extra == \"dev\"",
+        "black; extra == \"dev\"",
+        "check-manifest; extra == \"dev\"",
+        "coverage; extra == \"dev\"",
+        "packaging; extra == \"dev\"",
+        "pylint; extra == \"dev\"",
+        "pyperf; extra == \"dev\"",
+        "pypinfo; extra == \"dev\"",
+        "pytest-cov; extra == \"dev\"",
+        "requests; extra == \"dev\"",
+        "rstcheck; extra == \"dev\"",
+        "ruff; extra == \"dev\"",
+        "sphinx; extra == \"dev\"",
+        "sphinx_rtd_theme; extra == \"dev\"",
+        "toml-sort; extra == \"dev\"",
+        "twine; extra == \"dev\"",
+        "validate-pyproject[all]; extra == \"dev\"",
+        "virtualenv; extra == \"dev\"",
+        "vulture; extra == \"dev\"",
+        "wheel; extra == \"dev\"",
+        "colorama; os_name == \"nt\" and extra == \"dev\"",
+        "pyreadline3; os_name == \"nt\" and extra == \"dev\"",
+        "psleak; extra == \"test\"",
+        "pytest; extra == \"test\"",
+        "pytest-instafail; extra == \"test\"",
+        "pytest-xdist; extra == \"test\"",
+        "setuptools; extra == \"test\"",
+        "pywin32; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == \"test\"",
+        "wheel; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == \"test\"",
+        "wmi; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == \"test\""
+      ],
+      "requires_python": ">=3.6",
+      "summary": "Cross-platform lib for process and system monitoring.",
+      "version": "7.2.2",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 33876542,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "billiejoex"
+        },
+        {
+          "role": "Owner",
+          "user": "giampaolo.rodola"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "510303b5ee24fa738aea8e2be19727ed26a33a9cf2e1c45d116e62cb55064d19"
+        },
+        "digests": {
+          "blake2b_256": "5108510cbdb69c25a96f4ae523f733cdc963ae654904e8db864c07585ef99875",
+          "md5": "6d6c68458477db71083d3655ec3f18a9",
+          "sha256": "2edccc433cbfa046b980b0df0171cd25bcaeb3a68fe9022db0979e7aa74a826b"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp313-cp313t-macosx_10_13_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "6d6c68458477db71083d3655ec3f18a9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.6",
+        "size": 130595,
+        "upload_time": "2026-01-28T18:14:57",
+        "upload_time_iso_8601": "2026-01-28T18:14:57.293384Z",
+        "url": "https://files.pythonhosted.org/packages/51/08/510cbdb69c25a96f4ae523f733cdc963ae654904e8db864c07585ef99875/psutil-7.2.2-cp313-cp313t-macosx_10_13_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "510303b5ee24fa738aea8e2be19727ed26a33a9cf2e1c45d116e62cb55064d19"
+        },
+        "digests": {
+          "blake2b_256": "d6f597baea3fe7a5a9af7436301f85490905379b1c6f2dd51fe3ecf24b4c5fbf",
+          "md5": "380d9ace49206f778b6bce3eaca14474",
+          "sha256": "e78c8603dcd9a04c7364f1a3e670cea95d51ee865e4efb3556a3a63adef958ea"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp313-cp313t-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "380d9ace49206f778b6bce3eaca14474",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.6",
+        "size": 131082,
+        "upload_time": "2026-01-28T18:14:59",
+        "upload_time_iso_8601": "2026-01-28T18:14:59.732473Z",
+        "url": "https://files.pythonhosted.org/packages/d6/f5/97baea3fe7a5a9af7436301f85490905379b1c6f2dd51fe3ecf24b4c5fbf/psutil-7.2.2-cp313-cp313t-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "510303b5ee24fa738aea8e2be19727ed26a33a9cf2e1c45d116e62cb55064d19"
+        },
+        "digests": {
+          "blake2b_256": "37d6246513fbf9fa174af531f28412297dd05241d97a75911ac8febefa1a53c6",
+          "md5": "a65aff021780d111143fd7354a36b504",
+          "sha256": "1a571f2330c966c62aeda00dd24620425d4b0cc86881c89861fbc04549e5dc63"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp313-cp313t-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "a65aff021780d111143fd7354a36b504",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.6",
+        "size": 181476,
+        "upload_time": "2026-01-28T18:15:01",
+        "upload_time_iso_8601": "2026-01-28T18:15:01.884385Z",
+        "url": "https://files.pythonhosted.org/packages/37/d6/246513fbf9fa174af531f28412297dd05241d97a75911ac8febefa1a53c6/psutil-7.2.2-cp313-cp313t-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "510303b5ee24fa738aea8e2be19727ed26a33a9cf2e1c45d116e62cb55064d19"
+        },
+        "digests": {
+          "blake2b_256": "b8b59182c9af3836cca61696dabe4fd1304e17bc56cb62f17439e1154f225dd3",
+          "md5": "cf8ee1368435bf0b42ce032f3234b45b",
+          "sha256": "917e891983ca3c1887b4ef36447b1e0873e70c933afc831c6b6da078ba474312"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp313-cp313t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "cf8ee1368435bf0b42ce032f3234b45b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.6",
+        "size": 184062,
+        "upload_time": "2026-01-28T18:15:04",
+        "upload_time_iso_8601": "2026-01-28T18:15:04.436652Z",
+        "url": "https://files.pythonhosted.org/packages/b8/b5/9182c9af3836cca61696dabe4fd1304e17bc56cb62f17439e1154f225dd3/psutil-7.2.2-cp313-cp313t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eec3ff501da1fc32231bf81399f0a480c0b229a0580ee5298cdbb35ab6552103"
+        },
+        "digests": {
+          "blake2b_256": "16ba0756dca669f5a9300d0cbcbfae9a4c30e446dfc7440ffe43ded5724bfd93",
+          "md5": "4bd9479ffaa617c1192bb54876c41189",
+          "sha256": "ab486563df44c17f5173621c7b198955bd6b613fb87c71c161f827d3fb149a9b"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp313-cp313t-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "4bd9479ffaa617c1192bb54876c41189",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.6",
+        "size": 139893,
+        "upload_time": "2026-01-28T18:15:06",
+        "upload_time_iso_8601": "2026-01-28T18:15:06.378402Z",
+        "url": "https://files.pythonhosted.org/packages/16/ba/0756dca669f5a9300d0cbcbfae9a4c30e446dfc7440ffe43ded5724bfd93/psutil-7.2.2-cp313-cp313t-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eec3ff501da1fc32231bf81399f0a480c0b229a0580ee5298cdbb35ab6552103"
+        },
+        "digests": {
+          "blake2b_256": "1c618fa0e26f33623b49949346de05ec1ddaad02ed8ba64af45f40a147dbfa97",
+          "md5": "751bf4743c88653d925cbcc5d5c23ebe",
+          "sha256": "ae0aefdd8796a7737eccea863f80f81e468a1e4cf14d926bd9b6f5f2d5f90ca9"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp313-cp313t-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "751bf4743c88653d925cbcc5d5c23ebe",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.6",
+        "size": 135589,
+        "upload_time": "2026-01-28T18:15:08",
+        "upload_time_iso_8601": "2026-01-28T18:15:08.030483Z",
+        "url": "https://files.pythonhosted.org/packages/1c/61/8fa0e26f33623b49949346de05ec1ddaad02ed8ba64af45f40a147dbfa97/psutil-7.2.2-cp313-cp313t-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "510303b5ee24fa738aea8e2be19727ed26a33a9cf2e1c45d116e62cb55064d19"
+        },
+        "digests": {
+          "blake2b_256": "8169ef179ab5ca24f32acc1dac0c247fd6a13b501fd5534dbae0e05a1c48b66d",
+          "md5": "4bf84e3887dfd38dc959715accba3190",
+          "sha256": "eed63d3b4d62449571547b60578c5b2c4bcccc5387148db46e0c2313dad0ee00"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp314-cp314t-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "4bf84e3887dfd38dc959715accba3190",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.6",
+        "size": 130664,
+        "upload_time": "2026-01-28T18:15:09",
+        "upload_time_iso_8601": "2026-01-28T18:15:09.469111Z",
+        "url": "https://files.pythonhosted.org/packages/81/69/ef179ab5ca24f32acc1dac0c247fd6a13b501fd5534dbae0e05a1c48b66d/psutil-7.2.2-cp314-cp314t-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "510303b5ee24fa738aea8e2be19727ed26a33a9cf2e1c45d116e62cb55064d19"
+        },
+        "digests": {
+          "blake2b_256": "7b64665248b557a236d3fa9efc378d60d95ef56dd0a490c2cd37dafc7660d4a9",
+          "md5": "4a63f53de0e8952be8e2c7667024cd16",
+          "sha256": "7b6d09433a10592ce39b13d7be5a54fbac1d1228ed29abc880fb23df7cb694c9"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp314-cp314t-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "4a63f53de0e8952be8e2c7667024cd16",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.6",
+        "size": 131087,
+        "upload_time": "2026-01-28T18:15:11",
+        "upload_time_iso_8601": "2026-01-28T18:15:11.724542Z",
+        "url": "https://files.pythonhosted.org/packages/7b/64/665248b557a236d3fa9efc378d60d95ef56dd0a490c2cd37dafc7660d4a9/psutil-7.2.2-cp314-cp314t-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "510303b5ee24fa738aea8e2be19727ed26a33a9cf2e1c45d116e62cb55064d19"
+        },
+        "digests": {
+          "blake2b_256": "d52ee6782744700d6759ebce3043dcfa661fb61e2fb752b91cdeae9af12c2178",
+          "md5": "7d8abddc896d1c0a5402c33db577a0bd",
+          "sha256": "1fa4ecf83bcdf6e6c8f4449aff98eefb5d0604bf88cb883d7da3d8d2d909546a"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp314-cp314t-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "7d8abddc896d1c0a5402c33db577a0bd",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.6",
+        "size": 182383,
+        "upload_time": "2026-01-28T18:15:13",
+        "upload_time_iso_8601": "2026-01-28T18:15:13.445010Z",
+        "url": "https://files.pythonhosted.org/packages/d5/2e/e6782744700d6759ebce3043dcfa661fb61e2fb752b91cdeae9af12c2178/psutil-7.2.2-cp314-cp314t-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "510303b5ee24fa738aea8e2be19727ed26a33a9cf2e1c45d116e62cb55064d19"
+        },
+        "digests": {
+          "blake2b_256": "57490a41cefd10cb7505cdc04dab3eacf24c0c2cb158a998b8c7b1d27ee2c1f5",
+          "md5": "c49f0ec609408cf245b16d35557657c0",
+          "sha256": "e452c464a02e7dc7822a05d25db4cde564444a67e58539a00f929c51eddda0cf"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "c49f0ec609408cf245b16d35557657c0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.6",
+        "size": 185210,
+        "upload_time": "2026-01-28T18:15:16",
+        "upload_time_iso_8601": "2026-01-28T18:15:16.002782Z",
+        "url": "https://files.pythonhosted.org/packages/57/49/0a41cefd10cb7505cdc04dab3eacf24c0c2cb158a998b8c7b1d27ee2c1f5/psutil-7.2.2-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eec3ff501da1fc32231bf81399f0a480c0b229a0580ee5298cdbb35ab6552103"
+        },
+        "digests": {
+          "blake2b_256": "dd2cff9bfb544f283ba5f83ba725a3c5fec6d6b10b8f27ac1dc641c473dc390d",
+          "md5": "9b36745aefa2ce3a948c713d5cc2034a",
+          "sha256": "c7663d4e37f13e884d13994247449e9f8f574bc4655d509c3b95e9ec9e2b9dc1"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp314-cp314t-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "9b36745aefa2ce3a948c713d5cc2034a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.6",
+        "size": 141228,
+        "upload_time": "2026-01-28T18:15:18",
+        "upload_time_iso_8601": "2026-01-28T18:15:18.385158Z",
+        "url": "https://files.pythonhosted.org/packages/dd/2c/ff9bfb544f283ba5f83ba725a3c5fec6d6b10b8f27ac1dc641c473dc390d/psutil-7.2.2-cp314-cp314t-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eec3ff501da1fc32231bf81399f0a480c0b229a0580ee5298cdbb35ab6552103"
+        },
+        "digests": {
+          "blake2b_256": "f2fcf8d9c31db14fcec13748d373e668bc3bed94d9077dbc17fb0eebc073233c",
+          "md5": "7c92710cb62c39686a58f4b9daae836d",
+          "sha256": "11fe5a4f613759764e79c65cf11ebdf26e33d6dd34336f8a337aa2996d71c841"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp314-cp314t-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "7c92710cb62c39686a58f4b9daae836d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.6",
+        "size": 136284,
+        "upload_time": "2026-01-28T18:15:19",
+        "upload_time_iso_8601": "2026-01-28T18:15:19.912153Z",
+        "url": "https://files.pythonhosted.org/packages/f2/fc/f8d9c31db14fcec13748d373e668bc3bed94d9077dbc17fb0eebc073233c/psutil-7.2.2-cp314-cp314t-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "525f8ba78523cf7bc3759d62a105e7c57fd679ea702402b9449fb0746aa0217f"
+        },
+        "digests": {
+          "blake2b_256": "e7365ee6e05c9bd427237b11b3937ad82bb8ad2752d72c6969314590dd0c2f6e",
+          "md5": "934cb1e9f3104d357f022df9501e18dd",
+          "sha256": "ed0cace939114f62738d808fdcecd4c869222507e266e574799e9c0faa17d486"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp36-abi3-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "934cb1e9f3104d357f022df9501e18dd",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": ">=3.6",
+        "size": 129090,
+        "upload_time": "2026-01-28T18:15:22",
+        "upload_time_iso_8601": "2026-01-28T18:15:22.168660Z",
+        "url": "https://files.pythonhosted.org/packages/e7/36/5ee6e05c9bd427237b11b3937ad82bb8ad2752d72c6969314590dd0c2f6e/psutil-7.2.2-cp36-abi3-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "525f8ba78523cf7bc3759d62a105e7c57fd679ea702402b9449fb0746aa0217f"
+        },
+        "digests": {
+          "blake2b_256": "80c4f5af4c1ca8c1eeb2e92ccca14ce8effdeec651d5ab6053c589b074eda6e1",
+          "md5": "a17b3cbf9718fea225435c88973243c9",
+          "sha256": "1a7b04c10f32cc88ab39cbf606e117fd74721c831c98a27dc04578deb0c16979"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp36-abi3-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "a17b3cbf9718fea225435c88973243c9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": ">=3.6",
+        "size": 129859,
+        "upload_time": "2026-01-28T18:15:23",
+        "upload_time_iso_8601": "2026-01-28T18:15:23.795403Z",
+        "url": "https://files.pythonhosted.org/packages/80/c4/f5af4c1ca8c1eeb2e92ccca14ce8effdeec651d5ab6053c589b074eda6e1/psutil-7.2.2-cp36-abi3-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "525f8ba78523cf7bc3759d62a105e7c57fd679ea702402b9449fb0746aa0217f"
+        },
+        "digests": {
+          "blake2b_256": "b5705d8df3b09e25bce090399cf48e452d25c935ab72dad19406c77f4e828045",
+          "md5": "440ab2614aa8abfc2e274c27da288929",
+          "sha256": "076a2d2f923fd4821644f5ba89f059523da90dc9014e85f8e45a5774ca5bc6f9"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "440ab2614aa8abfc2e274c27da288929",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": ">=3.6",
+        "size": 155560,
+        "upload_time": "2026-01-28T18:15:25",
+        "upload_time_iso_8601": "2026-01-28T18:15:25.976610Z",
+        "url": "https://files.pythonhosted.org/packages/b5/70/5d8df3b09e25bce090399cf48e452d25c935ab72dad19406c77f4e828045/psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "525f8ba78523cf7bc3759d62a105e7c57fd679ea702402b9449fb0746aa0217f"
+        },
+        "digests": {
+          "blake2b_256": "636537648c0c158dc222aba51c089eb3bdfa238e621674dc42d48706e639204f",
+          "md5": "af782b2c9c2e569b22664e340fbc0526",
+          "sha256": "b0726cecd84f9474419d67252add4ac0cd9811b04d61123054b9fb6f57df6e9e"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp36-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "af782b2c9c2e569b22664e340fbc0526",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": ">=3.6",
+        "size": 156997,
+        "upload_time": "2026-01-28T18:15:27",
+        "upload_time_iso_8601": "2026-01-28T18:15:27.794675Z",
+        "url": "https://files.pythonhosted.org/packages/63/65/37648c0c158dc222aba51c089eb3bdfa238e621674dc42d48706e639204f/psutil-7.2.2-cp36-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "525f8ba78523cf7bc3759d62a105e7c57fd679ea702402b9449fb0746aa0217f"
+        },
+        "digests": {
+          "blake2b_256": "8e13125093eadae863ce03c6ffdbae9929430d116a246ef69866dad94da3bfbc",
+          "md5": "69d4a0bfd9e9611ba829b270203c675b",
+          "sha256": "fd04ef36b4a6d599bbdb225dd1d3f51e00105f6d48a28f006da7f9822f2606d8"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp36-abi3-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "69d4a0bfd9e9611ba829b270203c675b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": ">=3.6",
+        "size": 148972,
+        "upload_time": "2026-01-28T18:15:29",
+        "upload_time_iso_8601": "2026-01-28T18:15:29.342891Z",
+        "url": "https://files.pythonhosted.org/packages/8e/13/125093eadae863ce03c6ffdbae9929430d116a246ef69866dad94da3bfbc/psutil-7.2.2-cp36-abi3-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "525f8ba78523cf7bc3759d62a105e7c57fd679ea702402b9449fb0746aa0217f"
+        },
+        "digests": {
+          "blake2b_256": "04780acd37ca84ce3ddffaa92ef0f571e073faa6d8ff1f0559ab1272188ea2be",
+          "md5": "1c1ea237fadf0b93182dbbc12683e991",
+          "sha256": "b58fabe35e80b264a4e3bb23e6b96f9e45a3df7fb7eed419ac0e5947c61e47cc"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp36-abi3-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "1c1ea237fadf0b93182dbbc12683e991",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": ">=3.6",
+        "size": 148266,
+        "upload_time": "2026-01-28T18:15:31",
+        "upload_time_iso_8601": "2026-01-28T18:15:31.597126Z",
+        "url": "https://files.pythonhosted.org/packages/04/78/0acd37ca84ce3ddffaa92ef0f571e073faa6d8ff1f0559ab1272188ea2be/psutil-7.2.2-cp36-abi3-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "a263a40220d921d9cb963fc636d34f817aa2eb72c2696e3e3465d088cdb1976b"
+        },
+        "digests": {
+          "blake2b_256": "b490e2159492b5426be0c1fef7acba807a03511f97c5f86b3caeda6ad92351a7",
+          "md5": "a8df6ec640e62acc69dd49f6fe543ca5",
+          "sha256": "eb7e81434c8d223ec4a219b5fc1c47d0417b12be7ea866e24fb5ad6e84b3d988"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp37-abi3-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "a8df6ec640e62acc69dd49f6fe543ca5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp37",
+        "requires_python": ">=3.6",
+        "size": 137737,
+        "upload_time": "2026-01-28T18:15:33",
+        "upload_time_iso_8601": "2026-01-28T18:15:33.849193Z",
+        "url": "https://files.pythonhosted.org/packages/b4/90/e2159492b5426be0c1fef7acba807a03511f97c5f86b3caeda6ad92351a7/psutil-7.2.2-cp37-abi3-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eec3ff501da1fc32231bf81399f0a480c0b229a0580ee5298cdbb35ab6552103"
+        },
+        "digests": {
+          "blake2b_256": "8cc77bb2e321574b10df20cbde462a94e2b71d05f9bbda251ef27d104668306a",
+          "md5": "a4709c9c8bc7ebfd346382e8ac5d8267",
+          "sha256": "8c233660f575a5a89e6d4cb65d9f938126312bca76d8fe087b947b3a1aaac9ee"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2-cp37-abi3-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "a4709c9c8bc7ebfd346382e8ac5d8267",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp37",
+        "requires_python": ">=3.6",
+        "size": 134617,
+        "upload_time": "2026-01-28T18:15:36",
+        "upload_time_iso_8601": "2026-01-28T18:15:36.514806Z",
+        "url": "https://files.pythonhosted.org/packages/8c/c7/7bb2e321574b10df20cbde462a94e2b71d05f9bbda251ef27d104668306a/psutil-7.2.2-cp37-abi3-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "aac6d1ddf4abb55e93cebc4f2ed8b5d6dbad109ecb8d63748dd2b20ab5e57ebe",
+          "md5": "a1c5c30f68a927053be09592d1a4be53",
+          "sha256": "0746f5f8d406af344fd547f1c8daa5f5c33dbc293bb8d6a16d80b4bb88f59372"
+        },
+        "downloads": -1,
+        "filename": "psutil-7.2.2.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a1c5c30f68a927053be09592d1a4be53",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.6",
+        "size": 493740,
+        "upload_time": "2026-01-28T18:14:54",
+        "upload_time_iso_8601": "2026-01-28T18:14:54.428400Z",
+        "url": "https://files.pythonhosted.org/packages/aa/c6/d1ddf4abb55e93cebc4f2ed8b5d6dbad109ecb8d63748dd2b20ab5e57ebe/psutil-7.2.2.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "psutil",
+    "version": "7.2.2",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "0746f5f8d406af344fd547f1c8daa5f5c33dbc293bb8d6a16d80b4bb88f59372",
+      "076a2d2f923fd4821644f5ba89f059523da90dc9014e85f8e45a5774ca5bc6f9",
+      "11fe5a4f613759764e79c65cf11ebdf26e33d6dd34336f8a337aa2996d71c841",
+      "1a571f2330c966c62aeda00dd24620425d4b0cc86881c89861fbc04549e5dc63",
+      "1a7b04c10f32cc88ab39cbf606e117fd74721c831c98a27dc04578deb0c16979",
+      "1fa4ecf83bcdf6e6c8f4449aff98eefb5d0604bf88cb883d7da3d8d2d909546a",
+      "2edccc433cbfa046b980b0df0171cd25bcaeb3a68fe9022db0979e7aa74a826b",
+      "7b6d09433a10592ce39b13d7be5a54fbac1d1228ed29abc880fb23df7cb694c9",
+      "8c233660f575a5a89e6d4cb65d9f938126312bca76d8fe087b947b3a1aaac9ee",
+      "917e891983ca3c1887b4ef36447b1e0873e70c933afc831c6b6da078ba474312",
+      "ab486563df44c17f5173621c7b198955bd6b613fb87c71c161f827d3fb149a9b",
+      "ae0aefdd8796a7737eccea863f80f81e468a1e4cf14d926bd9b6f5f2d5f90ca9",
+      "b0726cecd84f9474419d67252add4ac0cd9811b04d61123054b9fb6f57df6e9e",
+      "b58fabe35e80b264a4e3bb23e6b96f9e45a3df7fb7eed419ac0e5947c61e47cc",
+      "c7663d4e37f13e884d13994247449e9f8f574bc4655d509c3b95e9ec9e2b9dc1",
+      "e452c464a02e7dc7822a05d25db4cde564444a67e58539a00f929c51eddda0cf",
+      "e78c8603dcd9a04c7364f1a3e670cea95d51ee865e4efb3556a3a63adef958ea",
+      "eb7e81434c8d223ec4a219b5fc1c47d0417b12be7ea866e24fb5ad6e84b3d988",
+      "ed0cace939114f62738d808fdcecd4c869222507e266e574799e9c0faa17d486",
+      "eed63d3b4d62449571547b60578c5b2c4bcccc5387148db46e0c2313dad0ee00",
+      "fd04ef36b4a6d599bbdb225dd1d3f51e00105f6d48a28f006da7f9822f2606d8"
+    ],
+    "retrieved_at": "2026-11-28T12:09:58+00:00",
+    "pypi_info": {
+      "license": "BSD-3-Clause",
+      "license_expression": null,
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Environment :: Console",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Information Technology",
+        "Intended Audience :: System Administrators",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: Microsoft :: Windows :: Windows 10",
+        "Operating System :: Microsoft :: Windows :: Windows 11",
+        "Operating System :: Microsoft :: Windows :: Windows 7",
+        "Operating System :: Microsoft :: Windows :: Windows 8",
+        "Operating System :: Microsoft :: Windows :: Windows 8.1",
+        "Operating System :: Microsoft :: Windows :: Windows Server 2003",
+        "Operating System :: Microsoft :: Windows :: Windows Server 2008",
+        "Operating System :: Microsoft :: Windows :: Windows Vista",
+        "Operating System :: OS Independent",
+        "Operating System :: POSIX",
+        "Operating System :: POSIX :: AIX",
+        "Operating System :: POSIX :: BSD",
+        "Operating System :: POSIX :: BSD :: FreeBSD",
+        "Operating System :: POSIX :: BSD :: NetBSD",
+        "Operating System :: POSIX :: BSD :: OpenBSD",
+        "Operating System :: POSIX :: Linux",
+        "Operating System :: POSIX :: SunOS/Solaris",
+        "Programming Language :: C",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Topic :: Software Development :: Libraries",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Topic :: System :: Benchmark",
+        "Topic :: System :: Hardware",
+        "Topic :: System :: Monitoring",
+        "Topic :: System :: Networking",
+        "Topic :: System :: Networking :: Monitoring",
+        "Topic :: System :: Networking :: Monitoring :: Hardware Watchdog",
+        "Topic :: System :: Operating System",
+        "Topic :: System :: Systems Administration",
+        "Topic :: Utilities"
+      ],
+      "requires_python": ">=3.6",
+      "project_urls": {
+        "Homepage": "https://github.com/giampaolo/psutil"
+      },
+      "home_page": "https://github.com/giampaolo/psutil",
+      "summary": "Cross-platform lib for process and system monitoring.",
+      "author": "g.rodola@gmail.com"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "psutil-7.2.2-cp313-cp313t-win_amd64.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "psutil-7.2.2-cp313-cp313t-win_amd64.whl",
+        "url": "https://files.pythonhosted.org/packages/16/ba/0756dca669f5a9300d0cbcbfae9a4c30e446dfc7440ffe43ded5724bfd93/psutil-7.2.2-cp313-cp313t-win_amd64.whl",
+        "packagetype": "bdist_wheel",
+        "size": 139893,
+        "sha256_pypi": "ab486563df44c17f5173621c7b198955bd6b613fb87c71c161f827d3fb149a9b",
+        "sha256_verified": "ab486563df44c17f5173621c7b198955bd6b613fb87c71c161f827d3fb149a9b",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "psutil-7.2.2-cp313-cp313t-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/16/ba/0756dca669f5a9300d0cbcbfae9a4c30e446dfc7440ffe43ded5724bfd93/psutil-7.2.2-cp313-cp313t-win_amd64.whl",
+      "packagetype": "bdist_wheel",
+      "size": 139893,
+      "sha256_pypi": "ab486563df44c17f5173621c7b198955bd6b613fb87c71c161f827d3fb149a9b",
+      "sha256_verified": "ab486563df44c17f5173621c7b198955bd6b613fb87c71c161f827d3fb149a9b",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "psutil-7.2.2-cp313-cp313t-win_amd64.whl::psutil-7.2.2.dist-info/licenses/LICENSE": {
+        "saved_as": "psutil-7.2.2.dist-info_licenses_LICENSE",
+        "sha256": "c7adc4d5d1337a548b967421f1fbe258b93033a0417708fd6f4e38f8ecbceb80",
+        "bytes": 1577,
+        "from_artifact": "psutil-7.2.2-cp313-cp313t-win_amd64.whl",
+        "artifact_sha256": "ab486563df44c17f5173621c7b198955bd6b613fb87c71c161f827d3fb149a9b"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

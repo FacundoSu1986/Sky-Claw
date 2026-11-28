@@ -1,0 +1,185 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": "Ero Carrera",
+      "author_email": "ero.carrera@gmail.com",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Science/Research",
+        "Natural Language :: English",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python",
+        "Topic :: Software Development :: Libraries :: Python Modules"
+      ],
+      "description": "pefile, Portable Executable reader module\n\nAll the PE file basic structures are available with their default names as\nattributes of the instance returned.\n\nProcessed elements such as the import table are made available with lowercase\nnames, to differentiate them from the upper case basic structure names.\n\npefile has been tested against many edge cases such as corrupted and malformed\nPEs as well as malware, which often attempts to abuse the format way beyond its\nstandard use. To the best of my knowledge most of the abuse is handled\ngracefully.\n\nCopyright (c) 2005-2024 Ero Carrera <ero.carrera@gmail.com>\n",
+      "description_content_type": null,
+      "docs_url": null,
+      "download_url": "https://github.com/erocarrera/pefile/releases/download/v2024.8.26/pefile-2024.8.26.tar.gz",
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": "https://github.com/erocarrera/pefile",
+      "keywords": "pe, exe, dll, pefile, pecoff",
+      "license": "MIT",
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "pefile",
+      "package_url": "https://pypi.org/project/pefile/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/pefile/",
+      "project_urls": {
+        "Download": "https://github.com/erocarrera/pefile/releases/download/v2024.8.26/pefile-2024.8.26.tar.gz",
+        "Homepage": "https://github.com/erocarrera/pefile"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/pefile/2024.8.26/",
+      "requires_dist": null,
+      "requires_python": ">=3.6.0",
+      "summary": "Python PE parsing module",
+      "version": "2024.8.26",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 33950607,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "ero"
+        },
+        {
+          "role": "Maintainer",
+          "user": "rmast"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": "",
+        "core-metadata": {
+          "sha256": "8ad83a5f8659e8da6eeaabf2dafa0eebb8c05832a3def16a5db4dd0d52e72474"
+        },
+        "digests": {
+          "blake2b_256": "541612b82f791c7f50ddec566873d5bdd245baa1491bac11d15ffb98aecc8f8b",
+          "md5": "b6c7d2bd569fe4c2f471febc9c911f05",
+          "sha256": "76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f"
+        },
+        "downloads": -1,
+        "filename": "pefile-2024.8.26-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "b6c7d2bd569fe4c2f471febc9c911f05",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.6.0",
+        "size": 74766,
+        "upload_time": "2024-08-26T21:01:02",
+        "upload_time_iso_8601": "2024-08-26T21:01:02.632515Z",
+        "url": "https://files.pythonhosted.org/packages/54/16/12b82f791c7f50ddec566873d5bdd245baa1491bac11d15ffb98aecc8f8b/pefile-2024.8.26-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": "",
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "034f2750f7f6f025a1507cd3b7218691671eecfd0bbebebe8b39aa0fe1d360b8",
+          "md5": "f511b370db4c80137aadf457a905fa53",
+          "sha256": "3ff6c5d8b43e8c37bb6e6dd5085658d658a7a0bdcd20b6a07b1fcfc1c4e9d632"
+        },
+        "downloads": -1,
+        "filename": "pefile-2024.8.26.tar.gz",
+        "has_sig": false,
+        "md5_digest": "f511b370db4c80137aadf457a905fa53",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.6.0",
+        "size": 76008,
+        "upload_time": "2024-08-26T20:58:38",
+        "upload_time_iso_8601": "2024-08-26T20:58:38.155962Z",
+        "url": "https://files.pythonhosted.org/packages/03/4f/2750f7f6f025a1507cd3b7218691671eecfd0bbebebe8b39aa0fe1d360b8/pefile-2024.8.26.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "pefile",
+    "version": "2024.8.26",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "3ff6c5d8b43e8c37bb6e6dd5085658d658a7a0bdcd20b6a07b1fcfc1c4e9d632",
+      "76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f"
+    ],
+    "retrieved_at": "2026-11-28T12:09:57+00:00",
+    "pypi_info": {
+      "license": "MIT",
+      "license_expression": null,
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Science/Research",
+        "Natural Language :: English",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python",
+        "Topic :: Software Development :: Libraries :: Python Modules"
+      ],
+      "requires_python": ">=3.6.0",
+      "project_urls": {
+        "Download": "https://github.com/erocarrera/pefile/releases/download/v2024.8.26/pefile-2024.8.26.tar.gz",
+        "Homepage": "https://github.com/erocarrera/pefile"
+      },
+      "home_page": "https://github.com/erocarrera/pefile",
+      "summary": "Python PE parsing module",
+      "author": "ero.carrera@gmail.com"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "pefile-2024.8.26-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "pefile-2024.8.26-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/54/16/12b82f791c7f50ddec566873d5bdd245baa1491bac11d15ffb98aecc8f8b/pefile-2024.8.26-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 74766,
+        "sha256_pypi": "76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f",
+        "sha256_verified": "76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "pefile-2024.8.26-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/54/16/12b82f791c7f50ddec566873d5bdd245baa1491bac11d15ffb98aecc8f8b/pefile-2024.8.26-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 74766,
+      "sha256_pypi": "76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f",
+      "sha256_verified": "76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "pefile-2024.8.26-py3-none-any.whl::pefile-2024.8.26.dist-info/LICENSE": {
+        "saved_as": "pefile-2024.8.26.dist-info_LICENSE",
+        "sha256": "b44409c067c6da52bfb54bb6624fb11a7b52157c3a13ae1400232f8196e86ad3",
+        "bytes": 1083,
+        "from_artifact": "pefile-2024.8.26-py3-none-any.whl",
+        "artifact_sha256": "76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

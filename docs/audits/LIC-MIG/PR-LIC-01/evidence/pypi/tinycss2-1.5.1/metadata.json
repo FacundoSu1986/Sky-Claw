@@ -1,0 +1,222 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "Simon Sapin <simon.sapin@exyr.org>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: BSD License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Topic :: Text Processing"
+      ],
+      "description": "tinycss2 is a low-level CSS parser and generator written in Python: it can\nparse strings, return objects representing tokens and blocks, and generate CSS\nstrings corresponding to these objects.\n\nBased on the CSS Syntax Level 3 specification, tinycss2 knows the grammar of\nCSS but doesn't know specific rules, properties or values supported in various\nCSS modules.\n\n* Free software: BSD license\n* For Python 3.10+, tested on CPython and PyPy\n* Documentation: https://doc.courtbouillon.org/tinycss2\n* Changelog: https://github.com/Kozea/tinycss2/releases\n* Code, issues, tests: https://github.com/Kozea/tinycss2\n* Code of conduct: https://www.courtbouillon.org/code-of-conduct\n* Professional support: https://www.courtbouillon.org\n* Donation: https://opencollective.com/courtbouillon\n\ntinycss2 has been created and developed by Kozea (https://kozea.fr).\nProfessional support, maintenance and community management is provided by\nCourtBouillon (https://www.courtbouillon.org).\n\nCopyrights are retained by their contributors, no copyright assignment is\nrequired to contribute to tinycss2. Unless explicitly stated otherwise, any\ncontribution intentionally submitted for inclusion is licensed under the BSD\n3-clause license, without any additional terms or conditions. For full\nauthorship information, see the version control history.\n\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": "css, parser",
+      "license": null,
+      "license_expression": null,
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": "CourtBouillon <contact@courtbouillon.org>",
+      "name": "tinycss2",
+      "package_url": "https://pypi.org/project/tinycss2/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/tinycss2/",
+      "project_urls": {
+        "Changelog": "https://github.com/Kozea/tinycss2/releases",
+        "Code": "https://github.com/Kozea/tinycss2/",
+        "Documentation": "https://doc.courtbouillon.org/tinycss2/",
+        "Donation": "https://opencollective.com/courtbouillon",
+        "Homepage": "https://www.courtbouillon.org/tinycss2",
+        "Issues": "https://github.com/Kozea/tinycss2/issues"
+      },
+      "provides_extra": [
+        "doc",
+        "test"
+      ],
+      "release_url": "https://pypi.org/project/tinycss2/1.5.1/",
+      "requires_dist": [
+        "webencodings>=0.4",
+        "sphinx; extra == \"doc\"",
+        "furo; extra == \"doc\"",
+        "pytest; extra == \"test\"",
+        "ruff; extra == \"test\""
+      ],
+      "requires_python": ">=3.10",
+      "summary": "A tiny CSS parser",
+      "version": "1.5.1",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 32568346,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "gentooboontoo"
+        },
+        {
+          "role": "Owner",
+          "user": "liZe"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "97a184ce0b479d613e7bb4bbc693067ae4c04e5665fd78e8381252f855bcab59"
+        },
+        "digests": {
+          "blake2b_256": "6045c7b5c3168458db837e8ceab06dc77824e18202679d0463f0e8f002143a97",
+          "md5": "47916c4f1afe1448c4a0f52d4fe27ba7",
+          "sha256": "3415ba0f5839c062696996998176c4a3751d18b7edaaeeb658c9ce21ec150661"
+        },
+        "downloads": -1,
+        "filename": "tinycss2-1.5.1-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "47916c4f1afe1448c4a0f52d4fe27ba7",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.10",
+        "size": 28404,
+        "upload_time": "2025-11-23T10:29:08",
+        "upload_time_iso_8601": "2025-11-23T10:29:08.676338Z",
+        "url": "https://files.pythonhosted.org/packages/60/45/c7b5c3168458db837e8ceab06dc77824e18202679d0463f0e8f002143a97/tinycss2-1.5.1-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "a3ae2ca4913e5c0f09781d75482874c3a95db9105462a92ddd303c7d285d3df2",
+          "md5": "003d9f446bddb3dfc76d0f3db0f38fea",
+          "sha256": "d339d2b616ba90ccce58da8495a78f46e55d4d25f9fd71dfd526f07e7d53f957"
+        },
+        "downloads": -1,
+        "filename": "tinycss2-1.5.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "003d9f446bddb3dfc76d0f3db0f38fea",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.10",
+        "size": 88195,
+        "upload_time": "2025-11-23T10:29:10",
+        "upload_time_iso_8601": "2025-11-23T10:29:10.082039Z",
+        "url": "https://files.pythonhosted.org/packages/a3/ae/2ca4913e5c0f09781d75482874c3a95db9105462a92ddd303c7d285d3df2/tinycss2-1.5.1.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "tinycss2",
+    "version": "1.5.1",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "3415ba0f5839c062696996998176c4a3751d18b7edaaeeb658c9ce21ec150661",
+      "d339d2b616ba90ccce58da8495a78f46e55d4d25f9fd71dfd526f07e7d53f957"
+    ],
+    "retrieved_at": "2026-11-28T12:09:59+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: BSD License"
+      ],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: BSD License",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Topic :: Text Processing"
+      ],
+      "requires_python": ">=3.10",
+      "project_urls": {
+        "Changelog": "https://github.com/Kozea/tinycss2/releases",
+        "Code": "https://github.com/Kozea/tinycss2/",
+        "Documentation": "https://doc.courtbouillon.org/tinycss2/",
+        "Donation": "https://opencollective.com/courtbouillon",
+        "Homepage": "https://www.courtbouillon.org/tinycss2",
+        "Issues": "https://github.com/Kozea/tinycss2/issues"
+      },
+      "home_page": null,
+      "summary": "A tiny CSS parser",
+      "author": "Simon Sapin <simon.sapin@exyr.org>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "tinycss2-1.5.1-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "tinycss2-1.5.1-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/60/45/c7b5c3168458db837e8ceab06dc77824e18202679d0463f0e8f002143a97/tinycss2-1.5.1-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 28404,
+        "sha256_pypi": "3415ba0f5839c062696996998176c4a3751d18b7edaaeeb658c9ce21ec150661",
+        "sha256_verified": "3415ba0f5839c062696996998176c4a3751d18b7edaaeeb658c9ce21ec150661",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "tinycss2-1.5.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/60/45/c7b5c3168458db837e8ceab06dc77824e18202679d0463f0e8f002143a97/tinycss2-1.5.1-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 28404,
+      "sha256_pypi": "3415ba0f5839c062696996998176c4a3751d18b7edaaeeb658c9ce21ec150661",
+      "sha256_verified": "3415ba0f5839c062696996998176c4a3751d18b7edaaeeb658c9ce21ec150661",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "tinycss2-1.5.1-py3-none-any.whl::tinycss2-1.5.1.dist-info/licenses/LICENSE": {
+        "saved_as": "tinycss2-1.5.1.dist-info_licenses_LICENSE",
+        "sha256": "6b94acee20ec9f2709333134f3ba70322535fb420af0ce8c1455d9cbe297f1d5",
+        "bytes": 1534,
+        "from_artifact": "tinycss2-1.5.1-py3-none-any.whl",
+        "artifact_sha256": "3415ba0f5839c062696996998176c4a3751d18b7edaaeeb658c9ce21ec150661"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

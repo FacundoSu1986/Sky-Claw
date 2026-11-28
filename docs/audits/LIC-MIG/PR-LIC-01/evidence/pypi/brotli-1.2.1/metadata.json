@@ -1,0 +1,3742 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": "The Brotli Authors",
+      "author_email": null,
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 4 - Beta",
+        "Environment :: Console",
+        "Intended Audience :: Developers",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: C",
+        "Programming Language :: C++",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 2",
+        "Programming Language :: Python :: 2.7",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.3",
+        "Programming Language :: Python :: 3.4",
+        "Programming Language :: Python :: 3.5",
+        "Programming Language :: Unix Shell",
+        "Topic :: Software Development :: Libraries",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Topic :: System :: Archiving",
+        "Topic :: System :: Archiving :: Compression",
+        "Topic :: Text Processing :: Fonts",
+        "Topic :: Utilities"
+      ],
+      "description": "<p align=\"center\">\n  <img src=\"https://github.com/google/brotli/actions/workflows/build_test.yml/badge.svg\" alt=\"GitHub Actions Build Status\" href=\"https://github.com/google/brotli/actions?query=branch%3Amaster\">\n  <img src=\"https://oss-fuzz-build-logs.storage.googleapis.com/badges/brotli.svg\" alt=\"Fuzzing Status\" href=\"https://oss-fuzz-build-logs.storage.googleapis.com/index.html#brotli\">\n</p>\n<p align=\"center\"><img src=\"https://brotli.org/brotli.svg\" alt=\"Brotli\" width=\"64\"></p>\n\n### Introduction\n\nBrotli is a generic-purpose lossless compression algorithm that compresses data\nusing a combination of a modern variant of the LZ77 algorithm, Huffman coding\nand 2nd order context modeling, with a compression ratio comparable to the best\ncurrently available general-purpose compression methods. It is similar in speed\nwith deflate but offers more dense compression.\n\nThe specification of the Brotli Compressed Data Format is defined in\n[RFC 7932](https://datatracker.ietf.org/doc/html/rfc7932).\n\nBrotli is open-sourced under the MIT License, see the LICENSE file.\n\n> **Please note:** brotli is a \"stream\" format; it does not contain\n> meta-information, like checksums or uncompressed data length. It is possible\n> to modify \"raw\" ranges of the compressed stream and the decoder will not\n> notice that.\n\n### Installation\n\nIn most Linux distributions, installing `brotli` is just a matter of using\nthe package management system. For example in Debian-based distributions:\n`apt install brotli` will install `brotli`. On MacOS, you can use\n[Homebrew](https://brew.sh/): `brew install brotli`.\n\n[![brotli packaging status](https://repology.org/badge/vertical-allrepos/brotli.svg?exclude_unsupported=1&columns=3&exclude_sources=modules,site&header=brotli%20packaging%20status)](https://repology.org/project/brotli/versions)\n\nOf course you can also build brotli from sources.\n\n### Build instructions\n\n#### Vcpkg\n\nYou can download and install brotli using the\n[vcpkg](https://github.com/Microsoft/vcpkg/) dependency manager:\n\n    git clone https://github.com/Microsoft/vcpkg.git\n    cd vcpkg\n    ./bootstrap-vcpkg.sh\n    ./vcpkg integrate install\n    ./vcpkg install brotli\n\nThe brotli port in vcpkg is kept up to date by Microsoft team members and\ncommunity contributors. If the version is out of date, please [create an issue\nor pull request](https://github.com/Microsoft/vcpkg) on the vcpkg repository.\n\n#### Bazel\n\nSee [Bazel](https://www.bazel.build/)\n\n#### CMake\n\nThe basic commands to build and install brotli are:\n\n    $ mkdir out && cd out\n    $ cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=./installed ..\n    $ cmake --build . --config Release --target install\n\nYou can use other [CMake](https://cmake.org/) configuration.\n\n#### Python\n\nTo install the latest release of the Python module, run the following:\n\n    $ pip install brotli\n\nTo install the tip-of-the-tree version, run:\n\n    $ pip install --upgrade git+https://github.com/google/brotli\n\nSee the [Python readme](python/README.md) for more details on installing\nfrom source, development, and testing.\n\n### Contributing\n\nWe glad to answer/library related questions in\n[brotli mailing list](https://groups.google.com/g/brotli).\n\nRegular issues / feature requests should be reported in\n[issue tracker](https://github.com/google/brotli/issues).\n\nFor reporting vulnerability please read [SECURITY](SECURITY.md).\n\nFor contributing changes please read [CONTRIBUTING](CONTRIBUTING.md).\n\n### Benchmarks\n* [Squash Compression Benchmark](https://quixdb.github.io/squash-benchmark/) / [Unstable Squash Compression Benchmark](https://quixdb.github.io/squash-benchmark/unstable/)\n* [Large Text Compression Benchmark](https://mattmahoney.net/dc/text.html)\n* [Lzturbo Benchmark](https://sites.google.com/site/powturbo/home/benchmark)\n\n### Related projects\n> **Disclaimer:** Brotli authors take no responsibility for the third party projects mentioned in this section.\n\nIndependent [decoder](https://github.com/madler/brotli) implementation\nby Mark Adler, based entirely on format specification.\n\nJavaScript port of brotli [decoder](https://github.com/devongovett/brotli.js).\nCould be used directly via `npm install brotli`\n\nHand ported [decoder / encoder](https://github.com/dominikhlbg/BrotliHaxe)\nin haxe by Dominik Homberger.\nOutput source code: JavaScript, PHP, Python, Java and C#\n\n7Zip [plugin](https://github.com/mcmilk/7-Zip-Zstd)\n\nDart compression framework with\n[fast FFI-based Brotli implementation](https://pub.dev/documentation/es_compression/latest/brotli/)\nwith ready-to-use prebuilt binaries for Win/Linux/Mac\n\n\n",
+      "description_content_type": "text/markdown",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": "https://github.com/google/brotli",
+      "keywords": null,
+      "license": "MIT",
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "brotli",
+      "package_url": "https://pypi.org/project/brotli/",
+      "platform": "Posix",
+      "project_url": "https://pypi.org/project/brotli/",
+      "project_urls": {
+        "Homepage": "https://github.com/google/brotli"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/brotli/1.2.1/",
+      "requires_dist": null,
+      "requires_python": null,
+      "summary": "Python bindings for the Brotli compression library",
+      "version": "1.2.1",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 42596206,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "google_opensource"
+        },
+        {
+          "role": "Maintainer",
+          "user": "anthrotype"
+        },
+        {
+          "role": "Maintainer",
+          "user": "eustas"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "452b263e76573bf3589f1695321a6535404e57609d27193b6a0b64329b9c09c9"
+        },
+        "digests": {
+          "blake2b_256": "30a22eb5c0b320f23d9d841529057807ed94077e2973dce04f0109f435860c38",
+          "md5": "f8a20085b3635102b5af5adec085706a",
+          "sha256": "09b560859a04d112d206639c7e444161ee2f413098aa6de11d43daf3ce883d24"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp27-cp27m-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "f8a20085b3635102b5af5adec085706a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "requires_python": null,
+        "size": 439681,
+        "upload_time": "2026-10-22T13:57:11",
+        "upload_time_iso_8601": "2026-10-22T13:57:11.170043Z",
+        "url": "https://files.pythonhosted.org/packages/30/a2/2eb5c0b320f23d9d841529057807ed94077e2973dce04f0109f435860c38/brotli-1.2.1-cp27-cp27m-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "452b263e76573bf3589f1695321a6535404e57609d27193b6a0b64329b9c09c9"
+        },
+        "digests": {
+          "blake2b_256": "3f5d26eed6efd0aa401350864f3db12a5c2d3fbeaec6e201e14ae45987ee3479",
+          "md5": "0b12f3473765dc33e04d2806fbf18532",
+          "sha256": "66f171af80744c06f6b4e5b01fe6e40c70cc4e17570888746a281422fed83fc0"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp27-cp27m-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "0b12f3473765dc33e04d2806fbf18532",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "requires_python": null,
+        "size": 1074267,
+        "upload_time": "2026-10-22T13:57:12",
+        "upload_time_iso_8601": "2026-10-22T13:57:12.807180Z",
+        "url": "https://files.pythonhosted.org/packages/3f/5d/26eed6efd0aa401350864f3db12a5c2d3fbeaec6e201e14ae45987ee3479/brotli-1.2.1-cp27-cp27m-manylinux1_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "452b263e76573bf3589f1695321a6535404e57609d27193b6a0b64329b9c09c9"
+        },
+        "digests": {
+          "blake2b_256": "d8253d60f90f0c2417e4ac16c46d5ffe20a9dba867e03cb553d57d981bf07f22",
+          "md5": "3827884e7ee9fc9bb9561255e246401b",
+          "sha256": "bfb2d71edaaa0c6e0e51c52328154c635aec3ee6ea6a29271fbac1a8bc157c12"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp27-cp27m-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3827884e7ee9fc9bb9561255e246401b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "requires_python": null,
+        "size": 1237854,
+        "upload_time": "2026-10-22T13:57:14",
+        "upload_time_iso_8601": "2026-10-22T13:57:14.628185Z",
+        "url": "https://files.pythonhosted.org/packages/d8/25/3d60f90f0c2417e4ac16c46d5ffe20a9dba867e03cb553d57d981bf07f22/brotli-1.2.1-cp27-cp27m-manylinux1_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "452b263e76573bf3589f1695321a6535404e57609d27193b6a0b64329b9c09c9"
+        },
+        "digests": {
+          "blake2b_256": "80b2e834bcec501e2ced17be67be521aac42c0af21d53a1d38267637ebcd7c6f",
+          "md5": "13b781cdde24595b045846956a54ee3e",
+          "sha256": "b0ee9e74480cb7393288ac2ed837e132200bfedd620e765e6db3a3192c9b5b9a"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp27-cp27mu-manylinux1_i686.whl",
+        "has_sig": false,
+        "md5_digest": "13b781cdde24595b045846956a54ee3e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "requires_python": null,
+        "size": 1074276,
+        "upload_time": "2026-10-22T13:57:19",
+        "upload_time_iso_8601": "2026-10-22T13:57:19.905283Z",
+        "url": "https://files.pythonhosted.org/packages/80/b2/e834bcec501e2ced17be67be521aac42c0af21d53a1d38267637ebcd7c6f/brotli-1.2.1-cp27-cp27mu-manylinux1_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "452b263e76573bf3589f1695321a6535404e57609d27193b6a0b64329b9c09c9"
+        },
+        "digests": {
+          "blake2b_256": "cfe8f5c2f312ad603798754c95c7c89151900da53f445aea26462dfdd314b6ce",
+          "md5": "8a41d460c10f69604173a221e981814e",
+          "sha256": "1f5d8c6e68555b82692f8180ee646cd1752aa9ab98daf68769a7c56a6e8d7af7"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp27-cp27mu-manylinux1_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "8a41d460c10f69604173a221e981814e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "requires_python": null,
+        "size": 1237853,
+        "upload_time": "2026-10-22T13:57:21",
+        "upload_time_iso_8601": "2026-10-22T13:57:21.353360Z",
+        "url": "https://files.pythonhosted.org/packages/cf/e8/f5c2f312ad603798754c95c7c89151900da53f445aea26462dfdd314b6ce/brotli-1.2.1-cp27-cp27mu-manylinux1_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "e9a24eb3efb05cd6e2e7b3d404bdbd56c8d24bc416e199f9f5eafcaae5ddb9df"
+        },
+        "digests": {
+          "blake2b_256": "6d89139a2dd5de925b5a39752f07d64915cc06eea31406e1454dd4928733441b",
+          "md5": "ef1cbdf34852c3f24f69fee066ee859e",
+          "sha256": "f9e9f04e5cb640cf7bbf6fdd4e3970e821138df320ae85cad81b4efc2f5cc802"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp27-cp27m-win32.whl",
+        "has_sig": false,
+        "md5_digest": "ef1cbdf34852c3f24f69fee066ee859e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "requires_python": null,
+        "size": 355264,
+        "upload_time": "2026-10-22T13:57:16",
+        "upload_time_iso_8601": "2026-10-22T13:57:16.561645Z",
+        "url": "https://files.pythonhosted.org/packages/6d/89/139a2dd5de925b5a39752f07d64915cc06eea31406e1454dd4928733441b/brotli-1.2.1-cp27-cp27m-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "e9a24eb3efb05cd6e2e7b3d404bdbd56c8d24bc416e199f9f5eafcaae5ddb9df"
+        },
+        "digests": {
+          "blake2b_256": "28739eec5016c9b1ee9c9ec601eb517c46f8a0dc1dfc471c47be110fe067c056",
+          "md5": "f46de6c3f7b609097a1575d272c0d7d8",
+          "sha256": "49de36a626557629db1f9b1eb57e7d88f3815a42373ff7f9d8b87c1da120687e"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp27-cp27m-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "f46de6c3f7b609097a1575d272c0d7d8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp27",
+        "requires_python": null,
+        "size": 364637,
+        "upload_time": "2026-10-22T13:57:17",
+        "upload_time_iso_8601": "2026-10-22T13:57:17.907141Z",
+        "url": "https://files.pythonhosted.org/packages/28/73/9eec5016c9b1ee9c9ec601eb517c46f8a0dc1dfc471c47be110fe067c056/brotli-1.2.1-cp27-cp27m-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "b671ef20f95e1138d5faadbf0064af9e7a6f615ff406a662cd782054f052cf80",
+          "md5": "e26ae258769c5d9391f52059ce46f62f",
+          "sha256": "103b4762941760ae245d8d0d50e3ee4a7e034fcd786f122d177f76d6afc90c63"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp310-cp310-macosx_10_9_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "e26ae258769c5d9391f52059ce46f62f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": null,
+        "size": 863179,
+        "upload_time": "2026-10-22T13:57:22",
+        "upload_time_iso_8601": "2026-10-22T13:57:22.794293Z",
+        "url": "https://files.pythonhosted.org/packages/b6/71/ef20f95e1138d5faadbf0064af9e7a6f615ff406a662cd782054f052cf80/brotli-1.2.1-cp310-cp310-macosx_10_9_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "9dec7ef47e525d99fa6a67ed762798f38fe1b375386fb50987814481f1bd2f83",
+          "md5": "ef10d0c054bf59f2e37c55239d2ce3d5",
+          "sha256": "24a3f765167e6ecac3d85a9fe3da857a068097cf44abc08bd67c5681d8251bca"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp310-cp310-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "ef10d0c054bf59f2e37c55239d2ce3d5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": null,
+        "size": 443284,
+        "upload_time": "2026-10-22T13:57:24",
+        "upload_time_iso_8601": "2026-10-22T13:57:24.161123Z",
+        "url": "https://files.pythonhosted.org/packages/9d/ec/7ef47e525d99fa6a67ed762798f38fe1b375386fb50987814481f1bd2f83/brotli-1.2.1-cp310-cp310-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "f3b93a55627553faa60b2b92df8f33355c3fdd5e857f40806f5ac8c576f39865",
+          "md5": "2bb8057084dd7bda2eb786869d3acfc0",
+          "sha256": "ff02e697d947f518e9e99f2b25698045a5ddffa95049c4d95b5a8cf3618d9008"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp310-cp310-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl",
+        "has_sig": false,
+        "md5_digest": "2bb8057084dd7bda2eb786869d3acfc0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": null,
+        "size": 1247183,
+        "upload_time": "2026-10-22T13:57:25",
+        "upload_time_iso_8601": "2026-10-22T13:57:25.241000Z",
+        "url": "https://files.pythonhosted.org/packages/f3/b9/3a55627553faa60b2b92df8f33355c3fdd5e857f40806f5ac8c576f39865/brotli-1.2.1-cp310-cp310-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "ec2c39ad000c7920efd4e1ceeacb7c9342a89f703cf68cbb85755c0dde812cd7",
+          "md5": "908f55af8e519d91d4f804c740c51e27",
+          "sha256": "a26384540c88b7c157899c2a08ff34c180a83ec1de97064d80c68bf8141af2f4"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "908f55af8e519d91d4f804c740c51e27",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": null,
+        "size": 1407663,
+        "upload_time": "2026-10-22T13:57:26",
+        "upload_time_iso_8601": "2026-10-22T13:57:26.420601Z",
+        "url": "https://files.pythonhosted.org/packages/ec/2c/39ad000c7920efd4e1ceeacb7c9342a89f703cf68cbb85755c0dde812cd7/brotli-1.2.1-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "beaf88497ee0d2ac06a7426f7bf817af71646eacd68accb997307039727f96bf",
+          "md5": "9850f80cba1e4b5859f196963477d35e",
+          "sha256": "5c77d41984e388c9f393da124394af941ef757fb33bb6f1eb72e8167fc557489"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp310-cp310-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "9850f80cba1e4b5859f196963477d35e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": null,
+        "size": 1429193,
+        "upload_time": "2026-10-22T13:57:27",
+        "upload_time_iso_8601": "2026-10-22T13:57:27.813262Z",
+        "url": "https://files.pythonhosted.org/packages/be/af/88497ee0d2ac06a7426f7bf817af71646eacd68accb997307039727f96bf/brotli-1.2.1-cp310-cp310-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "aaf68965fda7552aaa285804b9e07c6eac7c475d25fd1de8696103bf8e192bfb",
+          "md5": "1b8f2fc00c828b9a806058000b605a31",
+          "sha256": "f760d9a9c441bfc87eee720ddb0946d3e19995b20983ae14038e033f1664efcb"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "1b8f2fc00c828b9a806058000b605a31",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": null,
+        "size": 1425229,
+        "upload_time": "2026-10-22T13:57:28",
+        "upload_time_iso_8601": "2026-10-22T13:57:28.987816Z",
+        "url": "https://files.pythonhosted.org/packages/aa/f6/8965fda7552aaa285804b9e07c6eac7c475d25fd1de8696103bf8e192bfb/brotli-1.2.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "ef7ac73435a0970c7273c5f76f007d5aa0e96bd961091141db747bf77058d48f",
+          "md5": "fba8d1af936490657c6b6f4502773814",
+          "sha256": "a34be674fe74b35a67ce768cbb86b9350caa22c4b04f2eb0d868d9c01f6539d1"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp310-cp310-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "fba8d1af936490657c6b6f4502773814",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": null,
+        "size": 1489631,
+        "upload_time": "2026-10-22T13:57:30",
+        "upload_time_iso_8601": "2026-10-22T13:57:30.197181Z",
+        "url": "https://files.pythonhosted.org/packages/ef/7a/c73435a0970c7273c5f76f007d5aa0e96bd961091141db747bf77058d48f/brotli-1.2.1-cp310-cp310-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "6a3f9e0f2086800932caccae8cb252ec370e42ef5f1e5e13968544ae11f0f378",
+          "md5": "ef4eef03e189ef388635688bba74b86d",
+          "sha256": "78c9b5c2cceaeb158d56d03ba9336b3d310c64da6d304296ba39b6c00b8840c1"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp310-cp310-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "ef4eef03e189ef388635688bba74b86d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": null,
+        "size": 1282328,
+        "upload_time": "2026-10-22T13:57:31",
+        "upload_time_iso_8601": "2026-10-22T13:57:31.313999Z",
+        "url": "https://files.pythonhosted.org/packages/6a/3f/9e0f2086800932caccae8cb252ec370e42ef5f1e5e13968544ae11f0f378/brotli-1.2.1-cp310-cp310-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "d36becb8c46efe5d231c1e27803d1fff464c17ab6277203a8111d8974c0e48ec",
+          "md5": "d32de48602ff366bdb9a7cca512e1b5f",
+          "sha256": "a151eca7da2b04b6bed1f70138b50f5634704b98ee3ee63046316d7661f21b75"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp310-cp310-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "d32de48602ff366bdb9a7cca512e1b5f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": null,
+        "size": 1598151,
+        "upload_time": "2026-10-22T13:57:32",
+        "upload_time_iso_8601": "2026-10-22T13:57:32.684978Z",
+        "url": "https://files.pythonhosted.org/packages/d3/6b/ecb8c46efe5d231c1e27803d1fff464c17ab6277203a8111d8974c0e48ec/brotli-1.2.1-cp310-cp310-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "683cbe2303e8bb1e4c4992d89c453af5aa9c04ba87262d4e1b65ebb54e00e9fb",
+          "md5": "fb7431e59bc4f580ee49848ab234895a",
+          "sha256": "1624ca7006d2776cc8f0313e62d63aef9d3720b66f0d24e4439f5d754488e001"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp310-cp310-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "fb7431e59bc4f580ee49848ab234895a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": null,
+        "size": 1493266,
+        "upload_time": "2026-10-22T13:57:33",
+        "upload_time_iso_8601": "2026-10-22T13:57:33.865294Z",
+        "url": "https://files.pythonhosted.org/packages/68/3c/be2303e8bb1e4c4992d89c453af5aa9c04ba87262d4e1b65ebb54e00e9fb/brotli-1.2.1-cp310-cp310-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "215c52875703ae2feb6fd0ee1b24d7ec06b61c4de783f1d300216f95a927748a",
+          "md5": "3f6e804a816335c3261b0ef0d1db8096",
+          "sha256": "390f5e174ac2296dafd047d0785591e61194ff3df11ad43abd2fddb0e750eff5"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp310-cp310-win32.whl",
+        "has_sig": false,
+        "md5_digest": "3f6e804a816335c3261b0ef0d1db8096",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": null,
+        "size": 333104,
+        "upload_time": "2026-10-22T13:57:35",
+        "upload_time_iso_8601": "2026-10-22T13:57:35.040012Z",
+        "url": "https://files.pythonhosted.org/packages/21/5c/52875703ae2feb6fd0ee1b24d7ec06b61c4de783f1d300216f95a927748a/brotli-1.2.1-cp310-cp310-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "dfa2f08530dd6155467944cb86883b19979bed548475193b95200a2ecf8bea95",
+          "md5": "936f09c4fa89de63deb33d3a4d612c05",
+          "sha256": "228abf241b39925450ea5046cbd8bc88ae1b91cd229037b0e194409df4ef2f4a"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp310-cp310-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "936f09c4fa89de63deb33d3a4d612c05",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": null,
+        "size": 370958,
+        "upload_time": "2026-10-22T13:57:36",
+        "upload_time_iso_8601": "2026-10-22T13:57:36.087410Z",
+        "url": "https://files.pythonhosted.org/packages/df/a2/f08530dd6155467944cb86883b19979bed548475193b95200a2ecf8bea95/brotli-1.2.1-cp310-cp310-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "cece6dd82d3da2bac19da4931a146cc7deed2225b2997b6a2717de669b4cbf47",
+          "md5": "6c7142f34ab2e9aeb13bf1bd93477814",
+          "sha256": "509ee1058937d80d88b33aa893ca46e1925779d928181916bd60bda3a8738687"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp310-cp310-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "6c7142f34ab2e9aeb13bf1bd93477814",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": null,
+        "size": 380840,
+        "upload_time": "2026-10-22T13:57:37",
+        "upload_time_iso_8601": "2026-10-22T13:57:37.265090Z",
+        "url": "https://files.pythonhosted.org/packages/ce/ce/6dd82d3da2bac19da4931a146cc7deed2225b2997b6a2717de669b4cbf47/brotli-1.2.1-cp310-cp310-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "63f5213512faee9562f069cc0d228a8dce8097d5517e15fdf48b8f05d53e6b55",
+          "md5": "263474448787f98d3284b89771db1f8f",
+          "sha256": "970a3dbce807a3f5c2b8232036052bade01e4bc92ade37d73ea3750418307fa1"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp311-cp311-macosx_10_9_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "263474448787f98d3284b89771db1f8f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": null,
+        "size": 863168,
+        "upload_time": "2026-10-22T13:57:38",
+        "upload_time_iso_8601": "2026-10-22T13:57:38.570769Z",
+        "url": "https://files.pythonhosted.org/packages/63/f5/213512faee9562f069cc0d228a8dce8097d5517e15fdf48b8f05d53e6b55/brotli-1.2.1-cp311-cp311-macosx_10_9_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "3e5a7b31d12915cbd1b7bdf5a0ba290159290d7af5904bda55a17770cae89f00",
+          "md5": "a62e314172f84f7863a558155d65ea82",
+          "sha256": "59ec359a56f44277ad424fb4b7cf1a0ae2fd855b35ba8f15dcfbcabb3fb51aeb"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp311-cp311-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "a62e314172f84f7863a558155d65ea82",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": null,
+        "size": 443278,
+        "upload_time": "2026-10-22T13:57:40",
+        "upload_time_iso_8601": "2026-10-22T13:57:40.157259Z",
+        "url": "https://files.pythonhosted.org/packages/3e/5a/7b31d12915cbd1b7bdf5a0ba290159290d7af5904bda55a17770cae89f00/brotli-1.2.1-cp311-cp311-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "66f349499c9b368dcd65d6bb64c799ff790ae8ecca28011b40a884c3473be3d9",
+          "md5": "76683da424de28affa1f67d5d574723f",
+          "sha256": "f51bca8fcac4266519533698c316f3d23340768a8e57c4796c9f6e0a4f353807"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp311-cp311-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl",
+        "has_sig": false,
+        "md5_digest": "76683da424de28affa1f67d5d574723f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": null,
+        "size": 1248964,
+        "upload_time": "2026-10-22T13:57:41",
+        "upload_time_iso_8601": "2026-10-22T13:57:41.327962Z",
+        "url": "https://files.pythonhosted.org/packages/66/f3/49499c9b368dcd65d6bb64c799ff790ae8ecca28011b40a884c3473be3d9/brotli-1.2.1-cp311-cp311-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "3bf7d98bcbc94b10c17bfc109157612b58481a383003e7df90925ff4d7534aaa",
+          "md5": "0c694ce689e5420b7c5a1a83b02d836a",
+          "sha256": "b0faa0b9af9367748388345d5b12f6add2a9cf896481e72910e88fbfe14ecd54"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "0c694ce689e5420b7c5a1a83b02d836a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": null,
+        "size": 1409293,
+        "upload_time": "2026-10-22T13:57:42",
+        "upload_time_iso_8601": "2026-10-22T13:57:42.500293Z",
+        "url": "https://files.pythonhosted.org/packages/3b/f7/d98bcbc94b10c17bfc109157612b58481a383003e7df90925ff4d7534aaa/brotli-1.2.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "95d6910649b3ea76e50885a2f67f238d0aedc5d435627b24150cef2792c3c81b",
+          "md5": "d35bf1a044b340ba866fbfca83ac0905",
+          "sha256": "eaa5178a4c1fe619eff9cbe93b57919d426332e219870301d4ef5fc09a522ae9"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp311-cp311-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "d35bf1a044b340ba866fbfca83ac0905",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": null,
+        "size": 1430285,
+        "upload_time": "2026-10-22T13:57:43",
+        "upload_time_iso_8601": "2026-10-22T13:57:43.725501Z",
+        "url": "https://files.pythonhosted.org/packages/95/d6/910649b3ea76e50885a2f67f238d0aedc5d435627b24150cef2792c3c81b/brotli-1.2.1-cp311-cp311-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "717ec1d314406ce47a39180fc66114681d9ac10c2c667e14e4dc1a5e5089f4fb",
+          "md5": "b2cebcc655f1801ff70acfd2ace26b50",
+          "sha256": "6b3c3d5794212a54434b4856f808f7bdf7ad48eacadaadb5b2346fc9a639365a"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "b2cebcc655f1801ff70acfd2ace26b50",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": null,
+        "size": 1426895,
+        "upload_time": "2026-10-22T13:57:44",
+        "upload_time_iso_8601": "2026-10-22T13:57:44.984855Z",
+        "url": "https://files.pythonhosted.org/packages/71/7e/c1d314406ce47a39180fc66114681d9ac10c2c667e14e4dc1a5e5089f4fb/brotli-1.2.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "8120cee575e524f9908b406fec81a2505127f65efaa8447655d3061be941e4a0",
+          "md5": "1800b12c3bbecdfea063da4f6f5126ae",
+          "sha256": "2df1678c2c25db2f669c613fe8b4e587d0dd24c6acf7746bad13d6e87e4b051d"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "1800b12c3bbecdfea063da4f6f5126ae",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": null,
+        "size": 1491281,
+        "upload_time": "2026-10-22T13:57:46",
+        "upload_time_iso_8601": "2026-10-22T13:57:46.218956Z",
+        "url": "https://files.pythonhosted.org/packages/81/20/cee575e524f9908b406fec81a2505127f65efaa8447655d3061be941e4a0/brotli-1.2.1-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "58166b86ed3e2e475b9d8418d1e88bc1719197934df74f7b5142f9db5a86b4dd",
+          "md5": "8330dfc9634ec073eecab06f28f0835a",
+          "sha256": "c4b68ce579b05c66bb18a16356a4f713bebac2446ee498dd8bb1ecab3da77b89"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp311-cp311-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "8330dfc9634ec073eecab06f28f0835a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": null,
+        "size": 1283748,
+        "upload_time": "2026-10-22T13:57:47",
+        "upload_time_iso_8601": "2026-10-22T13:57:47.398679Z",
+        "url": "https://files.pythonhosted.org/packages/58/16/6b86ed3e2e475b9d8418d1e88bc1719197934df74f7b5142f9db5a86b4dd/brotli-1.2.1-cp311-cp311-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "1ebaca87fec021a63ad4f7f5e01d456c8b0d63defb11862feff6f22fd6238507",
+          "md5": "a69f319e845e65ae681c29ff8fb6e034",
+          "sha256": "f34405292fca45cd77419005c1ea35ba1c03eaff9042afe76d6fe189fe474669"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp311-cp311-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "a69f319e845e65ae681c29ff8fb6e034",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": null,
+        "size": 1599415,
+        "upload_time": "2026-10-22T13:57:48",
+        "upload_time_iso_8601": "2026-10-22T13:57:48.577192Z",
+        "url": "https://files.pythonhosted.org/packages/1e/ba/ca87fec021a63ad4f7f5e01d456c8b0d63defb11862feff6f22fd6238507/brotli-1.2.1-cp311-cp311-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "cafe6cdf401cc44a2c32d280cb58f032c071f15afd939c2f8579b0a28449065c",
+          "md5": "07e5ee4c3c7e0b38670f149b6101eae2",
+          "sha256": "4d47a9f0ba5ee608f3f3a9c942dcd244443068ae5b0d90183dd396dea02236e4"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "07e5ee4c3c7e0b38670f149b6101eae2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": null,
+        "size": 1494419,
+        "upload_time": "2026-10-22T13:57:49",
+        "upload_time_iso_8601": "2026-10-22T13:57:49.783810Z",
+        "url": "https://files.pythonhosted.org/packages/ca/fe/6cdf401cc44a2c32d280cb58f032c071f15afd939c2f8579b0a28449065c/brotli-1.2.1-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "67d41c409823928a1417b98d627d6ccf4a43a9dcbfcd448b2982fe3ae75149cc",
+          "md5": "4440d92494ae499f88beda57489d4af3",
+          "sha256": "23f0d23995100458d17f3bf5ce1e959fe46df894b472063a74266f7adeb2e72e"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp311-cp311-win32.whl",
+        "has_sig": false,
+        "md5_digest": "4440d92494ae499f88beda57489d4af3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": null,
+        "size": 333103,
+        "upload_time": "2026-10-22T13:57:50",
+        "upload_time_iso_8601": "2026-10-22T13:57:50.962426Z",
+        "url": "https://files.pythonhosted.org/packages/67/d4/1c409823928a1417b98d627d6ccf4a43a9dcbfcd448b2982fe3ae75149cc/brotli-1.2.1-cp311-cp311-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "f46d1001898f9e6666027f5357f846d8d7b80e743a3e49703d128cf8ed91abe8",
+          "md5": "b0ceecc4d6dc0a73d7f7c336ff41b5ec",
+          "sha256": "7248c282d7d6aef4ae89363da5fc3df7b9250eb04b252622955296eb5d0ea82f"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp311-cp311-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "b0ceecc4d6dc0a73d7f7c336ff41b5ec",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": null,
+        "size": 371026,
+        "upload_time": "2026-10-22T13:57:51",
+        "upload_time_iso_8601": "2026-10-22T13:57:51.898931Z",
+        "url": "https://files.pythonhosted.org/packages/f4/6d/1001898f9e6666027f5357f846d8d7b80e743a3e49703d128cf8ed91abe8/brotli-1.2.1-cp311-cp311-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "104dcad8c72798bf22e442a01a3ce0049c69c5aef7255fb4f3bbca2b5f62ce64",
+          "md5": "171e507907426eaffa06335ff07a0010",
+          "sha256": "f5fbda9703bce94a976e1a6bbdbbe0af25fb613a593a56091991359928b66c05"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp311-cp311-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "171e507907426eaffa06335ff07a0010",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": null,
+        "size": 380835,
+        "upload_time": "2026-10-22T13:57:52",
+        "upload_time_iso_8601": "2026-10-22T13:57:52.990261Z",
+        "url": "https://files.pythonhosted.org/packages/10/4d/cad8c72798bf22e442a01a3ce0049c69c5aef7255fb4f3bbca2b5f62ce64/brotli-1.2.1-cp311-cp311-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "345ddcf82117cbb506cfe0b75a00c34f2f7e850e5d933d80c0e50e2a191f1fee",
+          "md5": "3271085f3e11a679dbdeac3b4d728e19",
+          "sha256": "3975fb11f63e212b87a087e4a910187b522c6969a4989ca362d6f85f9dc36acd"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp312-cp312-macosx_10_13_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "3271085f3e11a679dbdeac3b4d728e19",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": null,
+        "size": 861663,
+        "upload_time": "2026-10-22T13:57:54",
+        "upload_time_iso_8601": "2026-10-22T13:57:54.196101Z",
+        "url": "https://files.pythonhosted.org/packages/34/5d/dcf82117cbb506cfe0b75a00c34f2f7e850e5d933d80c0e50e2a191f1fee/brotli-1.2.1-cp312-cp312-macosx_10_13_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "98c359d6445882214a47eab34e763aacc8dce18c4e7f9c5e2d9c95df9a7f7a3d",
+          "md5": "23f9e0e84a1daae86f05f4b33656baed",
+          "sha256": "de499e2492c8106a5e163d3cf5b6726e2797f9234cfbc6055fbb5f9d8f198f39"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp312-cp312-macosx_10_13_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "23f9e0e84a1daae86f05f4b33656baed",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": null,
+        "size": 442271,
+        "upload_time": "2026-10-22T13:57:55",
+        "upload_time_iso_8601": "2026-10-22T13:57:55.284933Z",
+        "url": "https://files.pythonhosted.org/packages/98/c3/59d6445882214a47eab34e763aacc8dce18c4e7f9c5e2d9c95df9a7f7a3d/brotli-1.2.1-cp312-cp312-macosx_10_13_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "877b55b0c895c17dbe747b63e442d2c3a163cc838d116bf5560414a13cc284c9",
+          "md5": "ee85fccd3bb13f90f2be6ded5f72bbec",
+          "sha256": "1f65a91f3576949793b8720b12a47e7ea06debc970a2da6d54ff8458053e2109"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp312-cp312-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl",
+        "has_sig": false,
+        "md5_digest": "ee85fccd3bb13f90f2be6ded5f72bbec",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": null,
+        "size": 1242808,
+        "upload_time": "2026-10-22T13:57:56",
+        "upload_time_iso_8601": "2026-10-22T13:57:56.675684Z",
+        "url": "https://files.pythonhosted.org/packages/87/7b/55b0c895c17dbe747b63e442d2c3a163cc838d116bf5560414a13cc284c9/brotli-1.2.1-cp312-cp312-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "7a75d8f2a81748b60733e8b03afd4bc1b70d3fb74a235b3b13dff0b2978e7f87",
+          "md5": "a0b6bac1ae0027d80078f60612b41b78",
+          "sha256": "875975f91870682cca4371260522ad3f22d636e845b5c5355c52bc045c0f75c8"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "a0b6bac1ae0027d80078f60612b41b78",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": null,
+        "size": 1402417,
+        "upload_time": "2026-10-22T13:57:57",
+        "upload_time_iso_8601": "2026-10-22T13:57:57.827466Z",
+        "url": "https://files.pythonhosted.org/packages/7a/75/d8f2a81748b60733e8b03afd4bc1b70d3fb74a235b3b13dff0b2978e7f87/brotli-1.2.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "e6b27addcc2c4965d0946e38a416b60af89700d54141845447f03fe4bff0293c",
+          "md5": "bf58ca4a6236c021a9ce619e965638ea",
+          "sha256": "c3f667dc60a875b12a5ecd7828062ccd97c0fb79c4adc6c8699d23d5ff2af7e1"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp312-cp312-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "bf58ca4a6236c021a9ce619e965638ea",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": null,
+        "size": 1424422,
+        "upload_time": "2026-10-22T13:57:59",
+        "upload_time_iso_8601": "2026-10-22T13:57:59.285125Z",
+        "url": "https://files.pythonhosted.org/packages/e6/b2/7addcc2c4965d0946e38a416b60af89700d54141845447f03fe4bff0293c/brotli-1.2.1-cp312-cp312-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "b6ccb0b5b6b1ff4544bec3a702d5ad2e0badf22db296d16277a6ee59dabaffdc",
+          "md5": "9c34f706715d50100eaf7dedd00d7624",
+          "sha256": "4b9dd0173ca5e01d1eb307d3c184fe8c09bdc168ede560889b1018d216d38c61"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9c34f706715d50100eaf7dedd00d7624",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": null,
+        "size": 1420478,
+        "upload_time": "2026-10-22T13:58:00",
+        "upload_time_iso_8601": "2026-10-22T13:58:00.484584Z",
+        "url": "https://files.pythonhosted.org/packages/b6/cc/b0b5b6b1ff4544bec3a702d5ad2e0badf22db296d16277a6ee59dabaffdc/brotli-1.2.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "42dd1d9bdb8aa35c14ba45ce208768eb977810446b7537d9d418c2bcaae2ed20",
+          "md5": "ab9488dbd55a5f45c41414edd96332b1",
+          "sha256": "9307679936e86d7773eadfa444a4a4ee80f6f45230e93379875f4a6897a09a2b"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "ab9488dbd55a5f45c41414edd96332b1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": null,
+        "size": 1485966,
+        "upload_time": "2026-10-22T13:58:01",
+        "upload_time_iso_8601": "2026-10-22T13:58:01.715249Z",
+        "url": "https://files.pythonhosted.org/packages/42/dd/1d9bdb8aa35c14ba45ce208768eb977810446b7537d9d418c2bcaae2ed20/brotli-1.2.1-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "4d8e86e64fc403888244e090a7a3d9fb35f6d6bb2219e789fc88064065464a3c",
+          "md5": "44bc25bf01fa4ed0e3e18348bd249fd6",
+          "sha256": "fb5df75d1b1c42d997adbb39eac61f2cdb48efa26304a0cb9c0b757c9bc20732"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp312-cp312-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "44bc25bf01fa4ed0e3e18348bd249fd6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": null,
+        "size": 1279161,
+        "upload_time": "2026-10-22T13:58:02",
+        "upload_time_iso_8601": "2026-10-22T13:58:02.933423Z",
+        "url": "https://files.pythonhosted.org/packages/4d/8e/86e64fc403888244e090a7a3d9fb35f6d6bb2219e789fc88064065464a3c/brotli-1.2.1-cp312-cp312-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "efbacbfa7d264d4cec16d5951071f1d04028e7024119c65a7bd909e77cafc9e6",
+          "md5": "2551d28a66c1bafe3f6efbe7385d24d8",
+          "sha256": "d6ef0035b6ae338a46951c144081c61fb044f4c1eb6d20acc5ba6277f666a4c0"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp312-cp312-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "2551d28a66c1bafe3f6efbe7385d24d8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": null,
+        "size": 1594070,
+        "upload_time": "2026-10-22T13:58:04",
+        "upload_time_iso_8601": "2026-10-22T13:58:04.421696Z",
+        "url": "https://files.pythonhosted.org/packages/ef/ba/cbfa7d264d4cec16d5951071f1d04028e7024119c65a7bd909e77cafc9e6/brotli-1.2.1-cp312-cp312-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "4d4d7abc13404dde1665d2fe3cde3385e06d5f81aed0242c23979acc3f552afd",
+          "md5": "41ed752ff9e63c3315bc7b169b5c7970",
+          "sha256": "338856ae9ff63af4fc3dbbd6184a7276a6ae83df2243562e86e5ee5cf980cce7"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "41ed752ff9e63c3315bc7b169b5c7970",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": null,
+        "size": 1489507,
+        "upload_time": "2026-10-22T13:58:05",
+        "upload_time_iso_8601": "2026-10-22T13:58:05.591763Z",
+        "url": "https://files.pythonhosted.org/packages/4d/4d/7abc13404dde1665d2fe3cde3385e06d5f81aed0242c23979acc3f552afd/brotli-1.2.1-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "b2f68eacbc45a0a158897752fae9055a4d4a0cfdb1c8e15680d1815af3936da9",
+          "md5": "92e37c3d7276620ba183c0e56d22a5fc",
+          "sha256": "96e6966edcfae74ffac2522d2dd1a304450d18807a9791f5ed0a3232192c9437"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp312-cp312-win32.whl",
+        "has_sig": false,
+        "md5_digest": "92e37c3d7276620ba183c0e56d22a5fc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": null,
+        "size": 333017,
+        "upload_time": "2026-10-22T13:58:06",
+        "upload_time_iso_8601": "2026-10-22T13:58:06.969382Z",
+        "url": "https://files.pythonhosted.org/packages/b2/f6/8eacbc45a0a158897752fae9055a4d4a0cfdb1c8e15680d1815af3936da9/brotli-1.2.1-cp312-cp312-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "3e82b7f6c56393f2224ff4108cf1cc255921be1c0ae5962163edbe367c8a55bc",
+          "md5": "2be9b92bc3637628d0fa108d89d9cb5f",
+          "sha256": "f5342b8256476554b4045db8b7bf4dc4044d0405485f220f0cd80764bc0d7faf"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp312-cp312-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "2be9b92bc3637628d0fa108d89d9cb5f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": null,
+        "size": 371081,
+        "upload_time": "2026-10-22T13:58:08",
+        "upload_time_iso_8601": "2026-10-22T13:58:08.082135Z",
+        "url": "https://files.pythonhosted.org/packages/3e/82/b7f6c56393f2224ff4108cf1cc255921be1c0ae5962163edbe367c8a55bc/brotli-1.2.1-cp312-cp312-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "0a6deff775fb2de444f224aa52f79ba400ff963377436495c3f01ed52c3071dd",
+          "md5": "4e838370e87bd7046ad697fb4778abc0",
+          "sha256": "b0c32f0660bb21e810ffc1d3d04b6ea682e118b8141c6e12522a3dacadeb70ee"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp312-cp312-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "4e838370e87bd7046ad697fb4778abc0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": null,
+        "size": 380894,
+        "upload_time": "2026-10-22T13:58:09",
+        "upload_time_iso_8601": "2026-10-22T13:58:09.157931Z",
+        "url": "https://files.pythonhosted.org/packages/0a/6d/eff775fb2de444f224aa52f79ba400ff963377436495c3f01ed52c3071dd/brotli-1.2.1-cp312-cp312-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "f085d74a573b92ba449960eb088ce87dcb61a9dc6a0c5a7ba8d104ae180e64c3",
+          "md5": "e36220b2f8c9202ab107f5803b272908",
+          "sha256": "a84e0ae14d1efe782a9f143021c4e01d5ed986a140fe5070505cc5978eaf0592"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp313-cp313-macosx_10_13_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "e36220b2f8c9202ab107f5803b272908",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": null,
+        "size": 861657,
+        "upload_time": "2026-10-22T13:58:10",
+        "upload_time_iso_8601": "2026-10-22T13:58:10.392915Z",
+        "url": "https://files.pythonhosted.org/packages/f0/85/d74a573b92ba449960eb088ce87dcb61a9dc6a0c5a7ba8d104ae180e64c3/brotli-1.2.1-cp313-cp313-macosx_10_13_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "cabd848b55fbd96fa1ce9f534aa39c930f864dbf224282f4a3808c0d35ea2819",
+          "md5": "e4d75838309f12f2a352ad9f18ab4a0f",
+          "sha256": "c5302747f969d5ec925810176f7697712a3fa2ea0fae0c7a85aa4ad9325247fd"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp313-cp313-macosx_10_13_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "e4d75838309f12f2a352ad9f18ab4a0f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": null,
+        "size": 442252,
+        "upload_time": "2026-10-22T13:58:11",
+        "upload_time_iso_8601": "2026-10-22T13:58:11.647188Z",
+        "url": "https://files.pythonhosted.org/packages/ca/bd/848b55fbd96fa1ce9f534aa39c930f864dbf224282f4a3808c0d35ea2819/brotli-1.2.1-cp313-cp313-macosx_10_13_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "404195d5e6774cb037851001038484bcf98b3af203664fe78d29dd03ece317e7",
+          "md5": "7e7e64792035abd558f68180cc4fd0b6",
+          "sha256": "7ec678c52c3ef5e37482a094d109c04cf9e4a0e2923dd1e0fbddb4bf133a976e"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp313-cp313-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl",
+        "has_sig": false,
+        "md5_digest": "7e7e64792035abd558f68180cc4fd0b6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": null,
+        "size": 1242773,
+        "upload_time": "2026-10-22T13:58:13",
+        "upload_time_iso_8601": "2026-10-22T13:58:13.182771Z",
+        "url": "https://files.pythonhosted.org/packages/40/41/95d5e6774cb037851001038484bcf98b3af203664fe78d29dd03ece317e7/brotli-1.2.1-cp313-cp313-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "8bad0942abad71d8b2aabd21472efa5be31ab0be31f98271d58767b9797eec82",
+          "md5": "650c0ead1ffc9a9170d0416f94b75603",
+          "sha256": "b5b458950312830913f837e179ce9221000ab7a20b4e42d7b48c1fcd79140de1"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "650c0ead1ffc9a9170d0416f94b75603",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": null,
+        "size": 1402440,
+        "upload_time": "2026-10-22T13:58:14",
+        "upload_time_iso_8601": "2026-10-22T13:58:14.513463Z",
+        "url": "https://files.pythonhosted.org/packages/8b/ad/0942abad71d8b2aabd21472efa5be31ab0be31f98271d58767b9797eec82/brotli-1.2.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "a3532f7e666e61a1419d527904b6018a711f10650a851e7767358abf2919625e",
+          "md5": "3420aca183ddf4bd1d6adabc89744331",
+          "sha256": "f37ccd159dae35d4914651d57142c8077aa67ab7e3ffef690b00bcb7a7dbd8e6"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp313-cp313-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "3420aca183ddf4bd1d6adabc89744331",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": null,
+        "size": 1424432,
+        "upload_time": "2026-10-22T13:58:15",
+        "upload_time_iso_8601": "2026-10-22T13:58:15.789184Z",
+        "url": "https://files.pythonhosted.org/packages/a3/53/2f7e666e61a1419d527904b6018a711f10650a851e7767358abf2919625e/brotli-1.2.1-cp313-cp313-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "65854c57c3cd2eee42878677b4943086e6b36cefc50214a5447028268045ce63",
+          "md5": "9f0f9bcb9c58df46c2c2e5e7097fe8a1",
+          "sha256": "264fd5b200f6f6170cb551a4b9fcaabf8aa846ddaefe72db4d5f49f9d3743df9"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9f0f9bcb9c58df46c2c2e5e7097fe8a1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": null,
+        "size": 1420480,
+        "upload_time": "2026-10-22T13:58:17",
+        "upload_time_iso_8601": "2026-10-22T13:58:17.007064Z",
+        "url": "https://files.pythonhosted.org/packages/65/85/4c57c3cd2eee42878677b4943086e6b36cefc50214a5447028268045ce63/brotli-1.2.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "8ff765e75560e20d522db1f0c75a1b2612c6ebd542ff9df17b8920cdbe4cde68",
+          "md5": "e60a8450ad155c42cb66cadb113ce6c5",
+          "sha256": "1329c80daa60752f1d94f507479504921e358e71746c5fce9b55b3d51ac038bc"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "e60a8450ad155c42cb66cadb113ce6c5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": null,
+        "size": 1485998,
+        "upload_time": "2026-10-22T13:58:18",
+        "upload_time_iso_8601": "2026-10-22T13:58:18.422148Z",
+        "url": "https://files.pythonhosted.org/packages/8f/f7/65e75560e20d522db1f0c75a1b2612c6ebd542ff9df17b8920cdbe4cde68/brotli-1.2.1-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "5d2a6cc0cfc4170bd72f6fc0aef11984e7c583ecf0a7fec563bb4292c0d50e15",
+          "md5": "e29187fc68d03f09be72c604a8f715cf",
+          "sha256": "77ef5882c5318ffc3dd94c6abc6a8f1ec2af75d66522319f1a250a07d53d0546"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp313-cp313-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "e29187fc68d03f09be72c604a8f715cf",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": null,
+        "size": 1279199,
+        "upload_time": "2026-10-22T13:58:19",
+        "upload_time_iso_8601": "2026-10-22T13:58:19.709905Z",
+        "url": "https://files.pythonhosted.org/packages/5d/2a/6cc0cfc4170bd72f6fc0aef11984e7c583ecf0a7fec563bb4292c0d50e15/brotli-1.2.1-cp313-cp313-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "663697f3eefc9295ce8d87b568433d38e0ca3345b82571341196817c96b2ca50",
+          "md5": "a29080a6e9dc4e005eb4cb46be5beedc",
+          "sha256": "6bd29ab84bb8972370cacd310e8a91651f54476d01de1cd1a4cf0bece5eb25e1"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp313-cp313-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "a29080a6e9dc4e005eb4cb46be5beedc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": null,
+        "size": 1594118,
+        "upload_time": "2026-10-22T13:58:20",
+        "upload_time_iso_8601": "2026-10-22T13:58:20.857576Z",
+        "url": "https://files.pythonhosted.org/packages/66/36/97f3eefc9295ce8d87b568433d38e0ca3345b82571341196817c96b2ca50/brotli-1.2.1-cp313-cp313-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "0361687b36bd6b714270ff3d7ff96df6199336abc26c1fa98da276d9776d75b7",
+          "md5": "20f8dfbdffd9aa7bde1cbe5bdb196254",
+          "sha256": "ed8e452f5cb34f59f4861d50d029c6203b5f8f11c13d4186264392a64b4def8d"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "20f8dfbdffd9aa7bde1cbe5bdb196254",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": null,
+        "size": 1489530,
+        "upload_time": "2026-10-22T13:58:22",
+        "upload_time_iso_8601": "2026-10-22T13:58:22.000252Z",
+        "url": "https://files.pythonhosted.org/packages/03/61/687b36bd6b714270ff3d7ff96df6199336abc26c1fa98da276d9776d75b7/brotli-1.2.1-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "8cb4379b2e5584be70110b154021ffa61b84dc3b476d2c031317f5c3fbcfcde5",
+          "md5": "5d5a3c7e7e8003269eddb9004788a7fa",
+          "sha256": "c788fdab2eeeab671f5ab375ad010ef743f6c95be67f60f878e8876a51f6c671"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp313-cp313-win32.whl",
+        "has_sig": false,
+        "md5_digest": "5d5a3c7e7e8003269eddb9004788a7fa",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": null,
+        "size": 333014,
+        "upload_time": "2026-10-22T13:58:23",
+        "upload_time_iso_8601": "2026-10-22T13:58:23.112533Z",
+        "url": "https://files.pythonhosted.org/packages/8c/b4/379b2e5584be70110b154021ffa61b84dc3b476d2c031317f5c3fbcfcde5/brotli-1.2.1-cp313-cp313-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "96c20c7abb25013043d4bcf7dd768d343bf7dee6ce99ac8c172f7ee4aef1c772",
+          "md5": "d6adab44f7be934eb944eadfe728199b",
+          "sha256": "e6c4fa55eab6b5684b33239597876a18a35ce1280b63ab960164032afbb8783f"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp313-cp313-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "d6adab44f7be934eb944eadfe728199b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": null,
+        "size": 371072,
+        "upload_time": "2026-10-22T13:58:24",
+        "upload_time_iso_8601": "2026-10-22T13:58:24.161891Z",
+        "url": "https://files.pythonhosted.org/packages/96/c2/0c7abb25013043d4bcf7dd768d343bf7dee6ce99ac8c172f7ee4aef1c772/brotli-1.2.1-cp313-cp313-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "81685f9d96203fdce3ff9ba1186ce10220e26483ffa2384cde5430dd980e9057",
+          "md5": "eb65e583b6d6e841c42e5fb8030b3e30",
+          "sha256": "67f4dceb22ce3a742751cee849644449b169684699aa548e77d771de304e963c"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp313-cp313-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "eb65e583b6d6e841c42e5fb8030b3e30",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": null,
+        "size": 380893,
+        "upload_time": "2026-10-22T13:58:25",
+        "upload_time_iso_8601": "2026-10-22T13:58:25.216813Z",
+        "url": "https://files.pythonhosted.org/packages/81/68/5f9d96203fdce3ff9ba1186ce10220e26483ffa2384cde5430dd980e9057/brotli-1.2.1-cp313-cp313-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "afdd641dd6072ea8c5e0ef7d1f8dc02149b4b0b77ef68fe12fc08b08320980d5",
+          "md5": "90bf144a807119dd60648443c5130c10",
+          "sha256": "b8b2fc7901b31d5885f26521cf2d74feccdc126a272ba1d879b7545bb25468bc"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp314-cp314-macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "90bf144a807119dd60648443c5130c10",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": null,
+        "size": 863184,
+        "upload_time": "2026-10-22T13:58:27",
+        "upload_time_iso_8601": "2026-10-22T13:58:27.201194Z",
+        "url": "https://files.pythonhosted.org/packages/af/dd/641dd6072ea8c5e0ef7d1f8dc02149b4b0b77ef68fe12fc08b08320980d5/brotli-1.2.1-cp314-cp314-macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "b2b83c4a50dc10f098a022519042eab84f11ef8c29abb9270fca76086ac392c3",
+          "md5": "375d85d59c0a8a1707e6e75d265337c9",
+          "sha256": "de1bf30d819809a964060356032e6670c9923644666afaaf3d1719d05ddb844e"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp314-cp314-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "375d85d59c0a8a1707e6e75d265337c9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": null,
+        "size": 443276,
+        "upload_time": "2026-10-22T13:58:28",
+        "upload_time_iso_8601": "2026-10-22T13:58:28.470706Z",
+        "url": "https://files.pythonhosted.org/packages/b2/b8/3c4a50dc10f098a022519042eab84f11ef8c29abb9270fca76086ac392c3/brotli-1.2.1-cp314-cp314-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "b1a15ef931a404de2c61b2cd775e70b1652ff3f4d434f0589da22efbee590f4a",
+          "md5": "37456e17ab8ca6ad7d6e75a0f3ca9da4",
+          "sha256": "ed62c15ce5e8b975b2710a0f7c8bb953cbffb472fccb05055be6afcba9520c19"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp314-cp314-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl",
+        "has_sig": false,
+        "md5_digest": "37456e17ab8ca6ad7d6e75a0f3ca9da4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": null,
+        "size": 1243026,
+        "upload_time": "2026-10-22T13:58:29",
+        "upload_time_iso_8601": "2026-10-22T13:58:29.934051Z",
+        "url": "https://files.pythonhosted.org/packages/b1/a1/5ef931a404de2c61b2cd775e70b1652ff3f4d434f0589da22efbee590f4a/brotli-1.2.1-cp314-cp314-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "119554e7278ee3fc589a6ac3a9bc191b5412542949411f0b38c56614d0f51282",
+          "md5": "b7fc80df296627f6f9d7e7a605bd3d17",
+          "sha256": "a3942e2d365f009e5e7839114fa315e1a2bcfea12b52064a28f1a7281862a2a7"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "b7fc80df296627f6f9d7e7a605bd3d17",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": null,
+        "size": 1402517,
+        "upload_time": "2026-10-22T13:58:31",
+        "upload_time_iso_8601": "2026-10-22T13:58:31.231318Z",
+        "url": "https://files.pythonhosted.org/packages/11/95/54e7278ee3fc589a6ac3a9bc191b5412542949411f0b38c56614d0f51282/brotli-1.2.1-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "4ddbe065253a23a09d97dc7bd8cb47194a85479d71be35a51b5c575ae5095ebe",
+          "md5": "4da0df393d6a2e1e2dd838706271b702",
+          "sha256": "6532d2c58018121a9eb5882656cf862cdbbd853600cb5fbccac59bcff14f66b0"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp314-cp314-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "4da0df393d6a2e1e2dd838706271b702",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": null,
+        "size": 1424572,
+        "upload_time": "2026-10-22T13:58:32",
+        "upload_time_iso_8601": "2026-10-22T13:58:32.468914Z",
+        "url": "https://files.pythonhosted.org/packages/4d/db/e065253a23a09d97dc7bd8cb47194a85479d71be35a51b5c575ae5095ebe/brotli-1.2.1-cp314-cp314-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "c4078948582ce173e8e43cea9fadb8c3c3ea94800fb9814119c9239c1ae6c797",
+          "md5": "81ed3ca722fdd7ebd8f5830201226c4b",
+          "sha256": "a998857af4fcd19920bdf5f30f0f1a23f38472a703d33e49168cd4fd32438377"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "81ed3ca722fdd7ebd8f5830201226c4b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": null,
+        "size": 1420557,
+        "upload_time": "2026-10-22T13:58:34",
+        "upload_time_iso_8601": "2026-10-22T13:58:34.100187Z",
+        "url": "https://files.pythonhosted.org/packages/c4/07/8948582ce173e8e43cea9fadb8c3c3ea94800fb9814119c9239c1ae6c797/brotli-1.2.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "c0d465073a06d6356a8f60b4c6ce0c3ade206d1118b8b8705b548f7b72ed549a",
+          "md5": "d8cbb36094dedecaa36bd6d414552a5b",
+          "sha256": "f352f797b1477c46a20e45f4cbc3a0e258e61963c8ae8f79f84a7bfb4195b37e"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp314-cp314-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "d8cbb36094dedecaa36bd6d414552a5b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": null,
+        "size": 1486209,
+        "upload_time": "2026-10-22T13:58:35",
+        "upload_time_iso_8601": "2026-10-22T13:58:35.331115Z",
+        "url": "https://files.pythonhosted.org/packages/c0/d4/65073a06d6356a8f60b4c6ce0c3ade206d1118b8b8705b548f7b72ed549a/brotli-1.2.1-cp314-cp314-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "5a198663beee29665f6fdf520b9c7ea333e0e930952176092be24c4c8bd8f791",
+          "md5": "2bfa0e90f359595321b9d89d6d9bc501",
+          "sha256": "be371af72af54b6e508b68a7a87768e05b7e13023f6c82a3e3f5e4d0e829e186"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp314-cp314-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "2bfa0e90f359595321b9d89d6d9bc501",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": null,
+        "size": 1279217,
+        "upload_time": "2026-10-22T13:58:36",
+        "upload_time_iso_8601": "2026-10-22T13:58:36.719134Z",
+        "url": "https://files.pythonhosted.org/packages/5a/19/8663beee29665f6fdf520b9c7ea333e0e930952176092be24c4c8bd8f791/brotli-1.2.1-cp314-cp314-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "bba63851ec19707a1610412ecf4f057d7c1b5acbb8f8b211494a70e1f451ccf6",
+          "md5": "79767abd7f950639be09b8444b247fa9",
+          "sha256": "dca1bf90b3a6a7440904f128464eb95bf46ac9da7ad3c85912483dd83128fd95"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp314-cp314-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "79767abd7f950639be09b8444b247fa9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": null,
+        "size": 1594292,
+        "upload_time": "2026-10-22T13:58:38",
+        "upload_time_iso_8601": "2026-10-22T13:58:38.115451Z",
+        "url": "https://files.pythonhosted.org/packages/bb/a6/3851ec19707a1610412ecf4f057d7c1b5acbb8f8b211494a70e1f451ccf6/brotli-1.2.1-cp314-cp314-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "8d136bc9d4cb30fb0a475cd149c2075b9f63b93257a84ff70d0783a403f4b015",
+          "md5": "e79f17d16d6db86b4d4e74c02c0ec2e0",
+          "sha256": "e4a7be59d374c445766fa4ac066a04d19a757365ae00a950053d0ab7388d1039"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp314-cp314-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "e79f17d16d6db86b4d4e74c02c0ec2e0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": null,
+        "size": 1489719,
+        "upload_time": "2026-10-22T13:58:39",
+        "upload_time_iso_8601": "2026-10-22T13:58:39.365393Z",
+        "url": "https://files.pythonhosted.org/packages/8d/13/6bc9d4cb30fb0a475cd149c2075b9f63b93257a84ff70d0783a403f4b015/brotli-1.2.1-cp314-cp314-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "04da1ec2e9b4f500693e56e6391f128dd0d304d6d2b7f0d5090e80a802b722f1",
+          "md5": "836644887acdd0ff70d4a847054685e9",
+          "sha256": "0a30e5df5ba985b67f85e13dfd7e5a68e186d8d9b5cff7d9a8904832bb413e81"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp314-cp314-win32.whl",
+        "has_sig": false,
+        "md5_digest": "836644887acdd0ff70d4a847054685e9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": null,
+        "size": 338208,
+        "upload_time": "2026-10-22T13:58:40",
+        "upload_time_iso_8601": "2026-10-22T13:58:40.927902Z",
+        "url": "https://files.pythonhosted.org/packages/04/da/1ec2e9b4f500693e56e6391f128dd0d304d6d2b7f0d5090e80a802b722f1/brotli-1.2.1-cp314-cp314-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "245e80cd38322263da5e92ea4935423f1d3cfa2509201673dce77b772c47b997",
+          "md5": "5261adc10c10a95e77ea87ad3e38daca",
+          "sha256": "972a2e19dbaab47d0aa77c1d07f71c930bdc53538f2b33decc905e92a4be5cbd"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp314-cp314-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "5261adc10c10a95e77ea87ad3e38daca",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": null,
+        "size": 376707,
+        "upload_time": "2026-10-22T13:58:42",
+        "upload_time_iso_8601": "2026-10-22T13:58:42.025209Z",
+        "url": "https://files.pythonhosted.org/packages/24/5e/80cd38322263da5e92ea4935423f1d3cfa2509201673dce77b772c47b997/brotli-1.2.1-cp314-cp314-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "c535cb35c489fcd0a813bbb7500465af5a7bac3bee7d996f6a211bac9096ef2c",
+          "md5": "ecffc8356d395cca7fb51dc2f2905f9f",
+          "sha256": "a3dea7e1ac49e29306500a8627fa3eacabcc9e238d22495eea2d8e61de77065b"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp314-cp314-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "ecffc8356d395cca7fb51dc2f2905f9f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": null,
+        "size": 390280,
+        "upload_time": "2026-10-22T13:58:43",
+        "upload_time_iso_8601": "2026-10-22T13:58:43.256769Z",
+        "url": "https://files.pythonhosted.org/packages/c5/35/cb35c489fcd0a813bbb7500465af5a7bac3bee7d996f6a211bac9096ef2c/brotli-1.2.1-cp314-cp314-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "a27285ea89c1088673a297e8b652cf0080668812144d5525db6512eadddf9d19",
+          "md5": "58ba3eb03c8f035ac5a632f77a7b8794",
+          "sha256": "eea17e3cdc6f9aecffe15fe9a9eeba8e8c049a5d347de1561eed2240cdf35a79"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp315-cp315-macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "58ba3eb03c8f035ac5a632f77a7b8794",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": null,
+        "size": 863002,
+        "upload_time": "2026-10-22T13:58:44",
+        "upload_time_iso_8601": "2026-10-22T13:58:44.325698Z",
+        "url": "https://files.pythonhosted.org/packages/a2/72/85ea89c1088673a297e8b652cf0080668812144d5525db6512eadddf9d19/brotli-1.2.1-cp315-cp315-macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "816abd4db4ef0c4d083d8a2e5a1d0b20239b186f261e72b14a9a0ec91c078e92",
+          "md5": "d95630cbeafb0659144929db38fc6e51",
+          "sha256": "761db18dc32b24d00fbedca1013089eb3470053cefa8492bd9c07b11102d72bf"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp315-cp315-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "d95630cbeafb0659144929db38fc6e51",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": null,
+        "size": 443263,
+        "upload_time": "2026-10-22T13:58:45",
+        "upload_time_iso_8601": "2026-10-22T13:58:45.474284Z",
+        "url": "https://files.pythonhosted.org/packages/81/6a/bd4db4ef0c4d083d8a2e5a1d0b20239b186f261e72b14a9a0ec91c078e92/brotli-1.2.1-cp315-cp315-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "791a08635be453d523474fdfce81f588583a4e8049c75c04df849b5a278bf027",
+          "md5": "2ce4785e5b147b217a15cf9ec76c02fe",
+          "sha256": "035f3bf861328d8b7fcb61f4a976f9913027158e5666116733d59ffc65f2745e"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp315-cp315-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl",
+        "has_sig": false,
+        "md5_digest": "2ce4785e5b147b217a15cf9ec76c02fe",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": null,
+        "size": 1244379,
+        "upload_time": "2026-10-22T13:58:46",
+        "upload_time_iso_8601": "2026-10-22T13:58:46.615027Z",
+        "url": "https://files.pythonhosted.org/packages/79/1a/08635be453d523474fdfce81f588583a4e8049c75c04df849b5a278bf027/brotli-1.2.1-cp315-cp315-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "3b9452f2facc5ae118a68c4f0e715e03c9f854507a359608804d7de2dfe8d603",
+          "md5": "a4bd3b3c0843323819ffafe903030b20",
+          "sha256": "aa32b51702a0b6e9fddc0d1dc66cb6ed6af112f1bba0cac2be9039546a862b5c"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp315-cp315-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "a4bd3b3c0843323819ffafe903030b20",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": null,
+        "size": 1404133,
+        "upload_time": "2026-10-22T13:58:47",
+        "upload_time_iso_8601": "2026-10-22T13:58:47.756334Z",
+        "url": "https://files.pythonhosted.org/packages/3b/94/52f2facc5ae118a68c4f0e715e03c9f854507a359608804d7de2dfe8d603/brotli-1.2.1-cp315-cp315-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "1e9b768635c710b684574da55e12bcdbe36419fd8bf6cb97e01c72a4593f9747",
+          "md5": "1921c7404a3666f3d7ca8971e9acf8d2",
+          "sha256": "810aea5958d6a2d92593fd27218df528644aeb72cc7f6d401e650752d6c98949"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp315-cp315-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "1921c7404a3666f3d7ca8971e9acf8d2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": null,
+        "size": 1424875,
+        "upload_time": "2026-10-22T13:58:48",
+        "upload_time_iso_8601": "2026-10-22T13:58:48.912871Z",
+        "url": "https://files.pythonhosted.org/packages/1e/9b/768635c710b684574da55e12bcdbe36419fd8bf6cb97e01c72a4593f9747/brotli-1.2.1-cp315-cp315-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "46397b7d53d7cea61f35f6b52ea149804523d01e532bf26017eed4351d82a7ad",
+          "md5": "f24dd74ee14b10452130dd67a94f3c4d",
+          "sha256": "f00ff4b56caf151365c77988eb85a4a71eb26fe63047d4084d5614e06d65e3cf"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp315-cp315-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "f24dd74ee14b10452130dd67a94f3c4d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": null,
+        "size": 1425345,
+        "upload_time": "2026-10-22T13:58:50",
+        "upload_time_iso_8601": "2026-10-22T13:58:50.253204Z",
+        "url": "https://files.pythonhosted.org/packages/46/39/7b7d53d7cea61f35f6b52ea149804523d01e532bf26017eed4351d82a7ad/brotli-1.2.1-cp315-cp315-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "cb5e652c788a4da5c6415c7ae31382626ba870020c9280e0f9be1a6dfec80261",
+          "md5": "2e55b34962d5249c84e10d8ecbcadbb3",
+          "sha256": "dafaeb38712f99e5c31ad7f02c366f1ddd3792921b94066015f8c49f197163b0"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp315-cp315-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "2e55b34962d5249c84e10d8ecbcadbb3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": null,
+        "size": 1487925,
+        "upload_time": "2026-10-22T13:58:51",
+        "upload_time_iso_8601": "2026-10-22T13:58:51.593591Z",
+        "url": "https://files.pythonhosted.org/packages/cb/5e/652c788a4da5c6415c7ae31382626ba870020c9280e0f9be1a6dfec80261/brotli-1.2.1-cp315-cp315-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "85c91b7753d02c106ff70b3d88056586ed7c2fe329d2aa5707cdaebe90372942",
+          "md5": "f54d58c9d075d8732a39985ccf17d2cc",
+          "sha256": "972e34c5cbbfe6c90358bfae38edae1a29d3456e920da5a4664c98f221ee4df8"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp315-cp315-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "f54d58c9d075d8732a39985ccf17d2cc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": null,
+        "size": 1276526,
+        "upload_time": "2026-10-22T13:58:53",
+        "upload_time_iso_8601": "2026-10-22T13:58:53.142566Z",
+        "url": "https://files.pythonhosted.org/packages/85/c9/1b7753d02c106ff70b3d88056586ed7c2fe329d2aa5707cdaebe90372942/brotli-1.2.1-cp315-cp315-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "a55f6ae3e85bfb7a3f4711cea5a1b92d4377fddf1319a666cda213cc83b6c040",
+          "md5": "addafaa98199e7c650d64e10acfd4e75",
+          "sha256": "59ca34c7a83d7a3b842247183c426f891a95a8f57db41b7aac92195c51e8a83a"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp315-cp315-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "addafaa98199e7c650d64e10acfd4e75",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": null,
+        "size": 1594681,
+        "upload_time": "2026-10-22T13:58:54",
+        "upload_time_iso_8601": "2026-10-22T13:58:54.571644Z",
+        "url": "https://files.pythonhosted.org/packages/a5/5f/6ae3e85bfb7a3f4711cea5a1b92d4377fddf1319a666cda213cc83b6c040/brotli-1.2.1-cp315-cp315-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "8a522808406d83e5462c086d69dbebb892f4ed78d2eb4b6755ea4b9e58357e3b",
+          "md5": "b334058861ad5cce1a0a761e4f276170",
+          "sha256": "90bd49511341dd7c40bb3acaa97cd8b9e5df4821a5714b842117e7069c7cc03e"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp315-cp315-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "b334058861ad5cce1a0a761e4f276170",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": null,
+        "size": 1486968,
+        "upload_time": "2026-10-22T13:58:56",
+        "upload_time_iso_8601": "2026-10-22T13:58:56.008832Z",
+        "url": "https://files.pythonhosted.org/packages/8a/52/2808406d83e5462c086d69dbebb892f4ed78d2eb4b6755ea4b9e58357e3b/brotli-1.2.1-cp315-cp315-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "a95335042a907c309af8defb423e58692bdc5e3e1fd3d03388892b7614270626",
+          "md5": "4212ae4b29c5ff706c5c3d0b695e52e8",
+          "sha256": "1880db6241276e191d3e34a6e4eea708c6629103c396f0ea21e75b0ce63a9a2c"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp315-cp315-win32.whl",
+        "has_sig": false,
+        "md5_digest": "4212ae4b29c5ff706c5c3d0b695e52e8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": null,
+        "size": 338212,
+        "upload_time": "2026-10-22T13:58:57",
+        "upload_time_iso_8601": "2026-10-22T13:58:57.189141Z",
+        "url": "https://files.pythonhosted.org/packages/a9/53/35042a907c309af8defb423e58692bdc5e3e1fd3d03388892b7614270626/brotli-1.2.1-cp315-cp315-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "386c883a32c23603e278ae93d8df31f0573b67382de827e6e05a6e9ee0b51896",
+          "md5": "1c96eb9d674953b9a4034470365748a3",
+          "sha256": "09a2f112a638aca15a88f298571788795fc45d62f2bca7f3870c1152153ef399"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp315-cp315-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "1c96eb9d674953b9a4034470365748a3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": null,
+        "size": 376707,
+        "upload_time": "2026-10-22T13:58:58",
+        "upload_time_iso_8601": "2026-10-22T13:58:58.292902Z",
+        "url": "https://files.pythonhosted.org/packages/38/6c/883a32c23603e278ae93d8df31f0573b67382de827e6e05a6e9ee0b51896/brotli-1.2.1-cp315-cp315-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "9fd52c574da9faf130a59c4c685ba1378f2f470b57fb9fa5d3b0f8b4e90579a0",
+          "md5": "144f84f2be0a8ae7a556fe8ddb30748d",
+          "sha256": "91097d66ebb8ca8d23372081a33405a44e2239445614888e38929bd7f5879dae"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp315-cp315-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "144f84f2be0a8ae7a556fe8ddb30748d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": null,
+        "size": 390278,
+        "upload_time": "2026-10-22T13:58:59",
+        "upload_time_iso_8601": "2026-10-22T13:58:59.512612Z",
+        "url": "https://files.pythonhosted.org/packages/9f/d5/2c574da9faf130a59c4c685ba1378f2f470b57fb9fa5d3b0f8b4e90579a0/brotli-1.2.1-cp315-cp315-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0e7767cf1ec012ff52ecab0120c219efdf2f3af3292b899687ef7ff0a43801d2"
+        },
+        "digests": {
+          "blake2b_256": "f94b38329b10f3d61608b8a1a19d63d9832fda56c72a0653fa3bb69114fab6b3",
+          "md5": "3df49cbacfaa005dd066a9de20021722",
+          "sha256": "624240d21823e1805425c155fe8b35b4124e0a837eb8ea271bd0a54caeac4ef6"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp36-cp36m-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3df49cbacfaa005dd066a9de20021722",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": null,
+        "size": 442743,
+        "upload_time": "2026-10-22T13:59:00",
+        "upload_time_iso_8601": "2026-10-22T13:59:00.915264Z",
+        "url": "https://files.pythonhosted.org/packages/f9/4b/38329b10f3d61608b8a1a19d63d9832fda56c72a0653fa3bb69114fab6b3/brotli-1.2.1-cp36-cp36m-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0e7767cf1ec012ff52ecab0120c219efdf2f3af3292b899687ef7ff0a43801d2"
+        },
+        "digests": {
+          "blake2b_256": "c87bcce570c8bfde1ef0da11cb7740ace7b33b54b365dd2a765bd055c326d2a9",
+          "md5": "1b458168f5c79748e9243bc2d2287428",
+          "sha256": "0c5c6144aa4b4585e4e0b3595f9fb2743a2e32650bce4b2669a0e809b3e7bbbd"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp36-cp36m-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "1b458168f5c79748e9243bc2d2287428",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": null,
+        "size": 1400705,
+        "upload_time": "2026-10-22T13:59:02",
+        "upload_time_iso_8601": "2026-10-22T13:59:02.399991Z",
+        "url": "https://files.pythonhosted.org/packages/c8/7b/cce570c8bfde1ef0da11cb7740ace7b33b54b365dd2a765bd055c326d2a9/brotli-1.2.1-cp36-cp36m-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0e7767cf1ec012ff52ecab0120c219efdf2f3af3292b899687ef7ff0a43801d2"
+        },
+        "digests": {
+          "blake2b_256": "0bb8847c6749957569a9d56c575921595d2ae51acfb7df7aee590e6c72a74b16",
+          "md5": "04575c61e2d9c16702e7b97c19507b63",
+          "sha256": "6beca755e6b691096a398df587f544c3f8ff6e9e3a8119d90eae37872a829382"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp36-cp36m-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "04575c61e2d9c16702e7b97c19507b63",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": null,
+        "size": 1422602,
+        "upload_time": "2026-10-22T13:59:03",
+        "upload_time_iso_8601": "2026-10-22T13:59:03.574712Z",
+        "url": "https://files.pythonhosted.org/packages/0b/b8/847c6749957569a9d56c575921595d2ae51acfb7df7aee590e6c72a74b16/brotli-1.2.1-cp36-cp36m-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0e7767cf1ec012ff52ecab0120c219efdf2f3af3292b899687ef7ff0a43801d2"
+        },
+        "digests": {
+          "blake2b_256": "09d4345ea102c300c2b3536ce96a004f561d069c79e096b512e4fe0cb31ea842",
+          "md5": "0cc3a1aa15df3d0c27eca8599906c3ce",
+          "sha256": "727c922e0e8511e22a7f3c81fbcce0aeebc8c7cdb7bd8f13f505394ea9865dcf"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp36-cp36m-manylinux_2_5_i686.manylinux1_i686.manylinux_2_12_i686.manylinux2010_i686.whl",
+        "has_sig": false,
+        "md5_digest": "0cc3a1aa15df3d0c27eca8599906c3ce",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": null,
+        "size": 1261036,
+        "upload_time": "2026-10-22T13:59:04",
+        "upload_time_iso_8601": "2026-10-22T13:59:04.775679Z",
+        "url": "https://files.pythonhosted.org/packages/09/d4/345ea102c300c2b3536ce96a004f561d069c79e096b512e4fe0cb31ea842/brotli-1.2.1-cp36-cp36m-manylinux_2_5_i686.manylinux1_i686.manylinux_2_12_i686.manylinux2010_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0e7767cf1ec012ff52ecab0120c219efdf2f3af3292b899687ef7ff0a43801d2"
+        },
+        "digests": {
+          "blake2b_256": "ff34625b8ebd2604d7ce9b8a284d11ca508cd7599cc96e08f9f355c4ed848a9b",
+          "md5": "332d0390ed9f122f11d541f95eb99ff0",
+          "sha256": "ea396d0ab0c9e082e009a16d7bda6849784b411b884d86e287a1b0a36eb278fb"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp36-cp36m-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_12_x86_64.manylinux2010_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "332d0390ed9f122f11d541f95eb99ff0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": null,
+        "size": 1521086,
+        "upload_time": "2026-10-22T13:59:05",
+        "upload_time_iso_8601": "2026-10-22T13:59:05.985443Z",
+        "url": "https://files.pythonhosted.org/packages/ff/34/625b8ebd2604d7ce9b8a284d11ca508cd7599cc96e08f9f355c4ed848a9b/brotli-1.2.1-cp36-cp36m-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_12_x86_64.manylinux2010_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0e7767cf1ec012ff52ecab0120c219efdf2f3af3292b899687ef7ff0a43801d2"
+        },
+        "digests": {
+          "blake2b_256": "f09392b7f26bba3cf70e44f98e8b13c9330a085ffddaede262f4242ae60ff485",
+          "md5": "c601bc4737e2522908656ae53fcb50d0",
+          "sha256": "4583e4d11d40fa4a05b7d81cd822008d65bce755dd78c49945b5a98272953759"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp36-cp36m-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "c601bc4737e2522908656ae53fcb50d0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": null,
+        "size": 1483996,
+        "upload_time": "2026-10-22T13:59:07",
+        "upload_time_iso_8601": "2026-10-22T13:59:07.197932Z",
+        "url": "https://files.pythonhosted.org/packages/f0/93/92b7f26bba3cf70e44f98e8b13c9330a085ffddaede262f4242ae60ff485/brotli-1.2.1-cp36-cp36m-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0e7767cf1ec012ff52ecab0120c219efdf2f3af3292b899687ef7ff0a43801d2"
+        },
+        "digests": {
+          "blake2b_256": "fc6b72b2c0a467f404a095146246b1d908b71b6c66db4e6c43f6e680e57a7f12",
+          "md5": "4f7a254b61c464c1a8acba800a7d6b20",
+          "sha256": "25d7c19ea92df4be1358126b6712209ac58229d17af915397d1510f9efe0411d"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp36-cp36m-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "4f7a254b61c464c1a8acba800a7d6b20",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": null,
+        "size": 1277091,
+        "upload_time": "2026-10-22T13:59:08",
+        "upload_time_iso_8601": "2026-10-22T13:59:08.500022Z",
+        "url": "https://files.pythonhosted.org/packages/fc/6b/72b2c0a467f404a095146246b1d908b71b6c66db4e6c43f6e680e57a7f12/brotli-1.2.1-cp36-cp36m-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0e7767cf1ec012ff52ecab0120c219efdf2f3af3292b899687ef7ff0a43801d2"
+        },
+        "digests": {
+          "blake2b_256": "1b27574b865c5dfac6e8d049319c087d2523c591280279737d2b495b94b500b0",
+          "md5": "7b10db4e0f7ec3af85a0694def31b57a",
+          "sha256": "9f9aba3f8d2e3c22cf233d9bf2c2cfc050989d9da627802845df317d7ab33e84"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp36-cp36m-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "7b10db4e0f7ec3af85a0694def31b57a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": null,
+        "size": 1591688,
+        "upload_time": "2026-10-22T13:59:09",
+        "upload_time_iso_8601": "2026-10-22T13:59:09.821258Z",
+        "url": "https://files.pythonhosted.org/packages/1b/27/574b865c5dfac6e8d049319c087d2523c591280279737d2b495b94b500b0/brotli-1.2.1-cp36-cp36m-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0e7767cf1ec012ff52ecab0120c219efdf2f3af3292b899687ef7ff0a43801d2"
+        },
+        "digests": {
+          "blake2b_256": "a1899c0cedfd5c935e8d7682818fcdd4a6efa154b2b0522f9627664b3e0d1db4",
+          "md5": "2fd54740bf9e1c0805a4b438d42a0071",
+          "sha256": "9acd83184eed969a08c1afa404a202a3f4287e3580781f2a36e927d4f25363fd"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp36-cp36m-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "2fd54740bf9e1c0805a4b438d42a0071",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": null,
+        "size": 1486864,
+        "upload_time": "2026-10-22T13:59:11",
+        "upload_time_iso_8601": "2026-10-22T13:59:11.101280Z",
+        "url": "https://files.pythonhosted.org/packages/a1/89/9c0cedfd5c935e8d7682818fcdd4a6efa154b2b0522f9627664b3e0d1db4/brotli-1.2.1-cp36-cp36m-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0e7767cf1ec012ff52ecab0120c219efdf2f3af3292b899687ef7ff0a43801d2"
+        },
+        "digests": {
+          "blake2b_256": "bba36687ca6511943713eba1c5f1ce0854ef6069265512139db016309b96df8a",
+          "md5": "cb4987750c8e71e44be99850e0e4d0a9",
+          "sha256": "b9e56ed83aa2ad78496788afe87d830725a752deb590fa8b7c95e1105da21dc0"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp36-cp36m-win32.whl",
+        "has_sig": false,
+        "md5_digest": "cb4987750c8e71e44be99850e0e4d0a9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": null,
+        "size": 377159,
+        "upload_time": "2026-10-22T13:59:12",
+        "upload_time_iso_8601": "2026-10-22T13:59:12.170389Z",
+        "url": "https://files.pythonhosted.org/packages/bb/a3/6687ca6511943713eba1c5f1ce0854ef6069265512139db016309b96df8a/brotli-1.2.1-cp36-cp36m-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "0e7767cf1ec012ff52ecab0120c219efdf2f3af3292b899687ef7ff0a43801d2"
+        },
+        "digests": {
+          "blake2b_256": "48a8afc6fe0ebf9ff1d4fbb54f1498001fb317b24f798c95c229198cc36314b5",
+          "md5": "7dc89b84cc01f24ac4003f50b84f34d2",
+          "sha256": "c741ff72829507be41dc50c731565fa2413287e845e55f0661dedf0a942c1c31"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp36-cp36m-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "7dc89b84cc01f24ac4003f50b84f34d2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp36",
+        "requires_python": null,
+        "size": 432976,
+        "upload_time": "2026-10-22T13:59:13",
+        "upload_time_iso_8601": "2026-10-22T13:59:13.210161Z",
+        "url": "https://files.pythonhosted.org/packages/48/a8/afc6fe0ebf9ff1d4fbb54f1498001fb317b24f798c95c229198cc36314b5/brotli-1.2.1-cp36-cp36m-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "2111d29e3f3b47798c941c201a274b9b187ea154f404ccf068dc3237a5525b31",
+          "md5": "1f5bc6fd75e2ced398aa238b5f38384c",
+          "sha256": "4e89a05511f8538911d98566f6ddd0883f28a5ab35fefbd70c036ab630feae1b"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp37-cp37m-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "1f5bc6fd75e2ced398aa238b5f38384c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp37",
+        "requires_python": null,
+        "size": 442873,
+        "upload_time": "2026-10-22T13:59:14",
+        "upload_time_iso_8601": "2026-10-22T13:59:14.576174Z",
+        "url": "https://files.pythonhosted.org/packages/21/11/d29e3f3b47798c941c201a274b9b187ea154f404ccf068dc3237a5525b31/brotli-1.2.1-cp37-cp37m-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "90406b96da9e39852c1a3aa8c154c56418453a3eed1d8d19f1056776cd23a80a",
+          "md5": "83d2e8191819925b2942e3a77535b924",
+          "sha256": "457f011c135263900805b4bf0dd290724d277785656c32e4f5fefe4a1feede1e"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp37-cp37m-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "83d2e8191819925b2942e3a77535b924",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp37",
+        "requires_python": null,
+        "size": 1401600,
+        "upload_time": "2026-10-22T13:59:15",
+        "upload_time_iso_8601": "2026-10-22T13:59:15.733633Z",
+        "url": "https://files.pythonhosted.org/packages/90/40/6b96da9e39852c1a3aa8c154c56418453a3eed1d8d19f1056776cd23a80a/brotli-1.2.1-cp37-cp37m-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "d39737789eaaeee475768a920adcdcc6ae8ab4b0dbd5b416e168d0e21aa33078",
+          "md5": "927f5ef530893c2a2dc037cdfc294cdf",
+          "sha256": "4092027deb7313156d2b601fb0e3637cbdf9d598f5bd57dc57348432967ecd31"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp37-cp37m-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "927f5ef530893c2a2dc037cdfc294cdf",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp37",
+        "requires_python": null,
+        "size": 1423497,
+        "upload_time": "2026-10-22T13:59:17",
+        "upload_time_iso_8601": "2026-10-22T13:59:17.264041Z",
+        "url": "https://files.pythonhosted.org/packages/d3/97/37789eaaeee475768a920adcdcc6ae8ab4b0dbd5b416e168d0e21aa33078/brotli-1.2.1-cp37-cp37m-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "cd15c64b2e9ac7cc8c528c9b2cdb2a6bd62a07c63d40a4d7184fac93401316f0",
+          "md5": "ca21702ab9e90efe119453e34b4df593",
+          "sha256": "7c0f9fcfa54570222eb4cbece2fc44b71de3710e0ea6e075bc0ffdc8965ca1ac"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp37-cp37m-manylinux_2_5_i686.manylinux1_i686.manylinux_2_12_i686.manylinux2010_i686.whl",
+        "has_sig": false,
+        "md5_digest": "ca21702ab9e90efe119453e34b4df593",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp37",
+        "requires_python": null,
+        "size": 1261719,
+        "upload_time": "2026-10-22T13:59:18",
+        "upload_time_iso_8601": "2026-10-22T13:59:18.545830Z",
+        "url": "https://files.pythonhosted.org/packages/cd/15/c64b2e9ac7cc8c528c9b2cdb2a6bd62a07c63d40a4d7184fac93401316f0/brotli-1.2.1-cp37-cp37m-manylinux_2_5_i686.manylinux1_i686.manylinux_2_12_i686.manylinux2010_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "f51ccaf0d992920670a4b0e86e43db801fffebe60e06959e6971755da2d02b31",
+          "md5": "931445bb80e4b381e2cef4c36202babf",
+          "sha256": "d9ff3dcfaf60de01805e0268a29947205a71742e02797ef07ca46a58ab2a3390"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp37-cp37m-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_12_x86_64.manylinux2010_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "931445bb80e4b381e2cef4c36202babf",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp37",
+        "requires_python": null,
+        "size": 1522105,
+        "upload_time": "2026-10-22T13:59:19",
+        "upload_time_iso_8601": "2026-10-22T13:59:19.907371Z",
+        "url": "https://files.pythonhosted.org/packages/f5/1c/caf0d992920670a4b0e86e43db801fffebe60e06959e6971755da2d02b31/brotli-1.2.1-cp37-cp37m-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_12_x86_64.manylinux2010_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "ea5eac8ec638eaf1d7445a12f319cbaf135bd35b5d082b5fa1d09f01c4a72a6b",
+          "md5": "daeb64aeb183ff2db598f45294c7faa7",
+          "sha256": "461daaef60db39e407a6a6954a2b4804170db56c6212c009a6cdadbdd12d7a9b"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp37-cp37m-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "daeb64aeb183ff2db598f45294c7faa7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp37",
+        "requires_python": null,
+        "size": 1484920,
+        "upload_time": "2026-10-22T13:59:21",
+        "upload_time_iso_8601": "2026-10-22T13:59:21.147907Z",
+        "url": "https://files.pythonhosted.org/packages/ea/5e/ac8ec638eaf1d7445a12f319cbaf135bd35b5d082b5fa1d09f01c4a72a6b/brotli-1.2.1-cp37-cp37m-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "f9419482effa8ce450b4e79e53024165f938f445b5aaaeb24ba07746a78b8f7d",
+          "md5": "6cf88c035410a52947ad8981c025eed0",
+          "sha256": "cba95509120e059fb1a13089428bfba90535b0fa296890650137282a066d7db2"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp37-cp37m-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "6cf88c035410a52947ad8981c025eed0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp37",
+        "requires_python": null,
+        "size": 1278043,
+        "upload_time": "2026-10-22T13:59:22",
+        "upload_time_iso_8601": "2026-10-22T13:59:22.309613Z",
+        "url": "https://files.pythonhosted.org/packages/f9/41/9482effa8ce450b4e79e53024165f938f445b5aaaeb24ba07746a78b8f7d/brotli-1.2.1-cp37-cp37m-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "a1aaf521a9db6d3e6e7cfdc99ebb88e3937ddae9b108daa4167443fc1fc4fcd3",
+          "md5": "7b37c522177f4783164cb16ee3aba5dc",
+          "sha256": "4f94a73b5f30b8bb36ac684f2b6a6e9bdc58a9b4bfe1658592727369443bce93"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp37-cp37m-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "7b37c522177f4783164cb16ee3aba5dc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp37",
+        "requires_python": null,
+        "size": 1592708,
+        "upload_time": "2026-10-22T13:59:23",
+        "upload_time_iso_8601": "2026-10-22T13:59:23.496716Z",
+        "url": "https://files.pythonhosted.org/packages/a1/aa/f521a9db6d3e6e7cfdc99ebb88e3937ddae9b108daa4167443fc1fc4fcd3/brotli-1.2.1-cp37-cp37m-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "d0a405b63d573104dd03dd167ec85569cab5d77b4990b81e1c4ebc55fd2b26ee",
+          "md5": "b8132ddfc99c3bacb1c0466179d6ca22",
+          "sha256": "faa8520b1c2a3c8216065077e047f84b116405661b1ba070862dac82d464ef39"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp37-cp37m-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "b8132ddfc99c3bacb1c0466179d6ca22",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp37",
+        "requires_python": null,
+        "size": 1488117,
+        "upload_time": "2026-10-22T13:59:24",
+        "upload_time_iso_8601": "2026-10-22T13:59:24.660451Z",
+        "url": "https://files.pythonhosted.org/packages/d0/a4/05b63d573104dd03dd167ec85569cab5d77b4990b81e1c4ebc55fd2b26ee/brotli-1.2.1-cp37-cp37m-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "cc277ad1dae094a17608c41cca76eb69eb5956ee43a68e7a9e00cece10dd0cdd"
+        },
+        "digests": {
+          "blake2b_256": "025db70a664e2bb273a9376d97e23418bb01a9d655ad415489674051a536ecbc",
+          "md5": "6c1224ab5e2d64ba322d71960de23296",
+          "sha256": "6f83664d0e48fd22114dd5ca2cd5202743a7b75b5e6e3fbc6ed61489cee749c8"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp37-cp37m-win32.whl",
+        "has_sig": false,
+        "md5_digest": "6c1224ab5e2d64ba322d71960de23296",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp37",
+        "requires_python": null,
+        "size": 333077,
+        "upload_time": "2026-10-22T13:59:26",
+        "upload_time_iso_8601": "2026-10-22T13:59:26.011140Z",
+        "url": "https://files.pythonhosted.org/packages/02/5d/b70a664e2bb273a9376d97e23418bb01a9d655ad415489674051a536ecbc/brotli-1.2.1-cp37-cp37m-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "cc277ad1dae094a17608c41cca76eb69eb5956ee43a68e7a9e00cece10dd0cdd"
+        },
+        "digests": {
+          "blake2b_256": "b259ef73ca0cf1be5e98a6297acc39b83ff50caad4a50f4d2e5cc24f81818596",
+          "md5": "8b4f0f3ab09d91d290c13c7ca5503d79",
+          "sha256": "ecfb50c208c59d9a786262ab06ee25688d1ada618e48a442eb4a12b38835f294"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp37-cp37m-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "8b4f0f3ab09d91d290c13c7ca5503d79",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp37",
+        "requires_python": null,
+        "size": 371254,
+        "upload_time": "2026-10-22T13:59:27",
+        "upload_time_iso_8601": "2026-10-22T13:59:27.281976Z",
+        "url": "https://files.pythonhosted.org/packages/b2/59/ef73ca0cf1be5e98a6297acc39b83ff50caad4a50f4d2e5cc24f81818596/brotli-1.2.1-cp37-cp37m-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "18e57497ccf57cae216a5f32ad3bd42c3cf66eab16224f6c553476044b6c1a4b",
+          "md5": "e5a3eb55f7c1c59b1db4075e9c1ed829",
+          "sha256": "6b885b6b1a3b01c5980dddeb2d9dccbc5a5dc0f255ea15904bf585b73ef375a1"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp38-cp38-macosx_10_9_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "e5a3eb55f7c1c59b1db4075e9c1ed829",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": null,
+        "size": 862886,
+        "upload_time": "2026-10-22T13:59:28",
+        "upload_time_iso_8601": "2026-10-22T13:59:28.491989Z",
+        "url": "https://files.pythonhosted.org/packages/18/e5/7497ccf57cae216a5f32ad3bd42c3cf66eab16224f6c553476044b6c1a4b/brotli-1.2.1-cp38-cp38-macosx_10_9_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "04757573bf41d21238c08eafae2fc0028c17b987ff6f46b65852543b23c6e74d",
+          "md5": "9d3f9a55b55ea4516355778deb1f895c",
+          "sha256": "104d3504678db9172de523bdd8e6ab8d3643067fbde18e5b89476f405b64cf25"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp38-cp38-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9d3f9a55b55ea4516355778deb1f895c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": null,
+        "size": 442979,
+        "upload_time": "2026-10-22T13:59:29",
+        "upload_time_iso_8601": "2026-10-22T13:59:29.583469Z",
+        "url": "https://files.pythonhosted.org/packages/04/75/7573bf41d21238c08eafae2fc0028c17b987ff6f46b65852543b23c6e74d/brotli-1.2.1-cp38-cp38-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "e423fb82283059999536b298775a60aba4b31d2adcf0dc24f40ccafe21b61094",
+          "md5": "175f56bb6f008610659b80b69f0de86c",
+          "sha256": "bd18576a758364b194e9347e0859362e158df99fb0dec3af480578fd9d92ae27"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp38-cp38-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "175f56bb6f008610659b80b69f0de86c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": null,
+        "size": 1408411,
+        "upload_time": "2026-10-22T13:59:30",
+        "upload_time_iso_8601": "2026-10-22T13:59:30.712758Z",
+        "url": "https://files.pythonhosted.org/packages/e4/23/fb82283059999536b298775a60aba4b31d2adcf0dc24f40ccafe21b61094/brotli-1.2.1-cp38-cp38-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "71aa9acb81deaee408977a094106e6f748c9a273c0e03dc9179d3da2ee01dd1e",
+          "md5": "a9b2213e6bc3626c9f6dc1fe1bdf0f09",
+          "sha256": "cc5eb1be95fb880bd083fb24df064bd5fc8caa85c05cf0ee5f33e2ddf9af625d"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp38-cp38-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "a9b2213e6bc3626c9f6dc1fe1bdf0f09",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": null,
+        "size": 1429766,
+        "upload_time": "2026-10-22T13:59:32",
+        "upload_time_iso_8601": "2026-10-22T13:59:32.051885Z",
+        "url": "https://files.pythonhosted.org/packages/71/aa/9acb81deaee408977a094106e6f748c9a273c0e03dc9179d3da2ee01dd1e/brotli-1.2.1-cp38-cp38-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "d968eb42209a6bd2c09b13ca290ea696448379eb684865931235b8d37799d7b4",
+          "md5": "885dc8662b7116828690b995d7129d99",
+          "sha256": "4acd709bfe362c2ed80da311d195654467110bc747de1484c731304810fd20e5"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "885dc8662b7116828690b995d7129d99",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": null,
+        "size": 1426005,
+        "upload_time": "2026-10-22T13:59:33",
+        "upload_time_iso_8601": "2026-10-22T13:59:33.405348Z",
+        "url": "https://files.pythonhosted.org/packages/d9/68/eb42209a6bd2c09b13ca290ea696448379eb684865931235b8d37799d7b4/brotli-1.2.1-cp38-cp38-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "048ac20bf9afc5dcb2c521f5ae9f9594aeef88059f71b4d04e8d11cd6f62fad7",
+          "md5": "d6e2f8435850b0bf298429a20a8ca162",
+          "sha256": "b95809496769fb09777136f3e259433ac21c495f3517bf7aab7dfb5a95cfde8b"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp38-cp38-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl",
+        "has_sig": false,
+        "md5_digest": "d6e2f8435850b0bf298429a20a8ca162",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": null,
+        "size": 1248175,
+        "upload_time": "2026-10-22T13:59:34",
+        "upload_time_iso_8601": "2026-10-22T13:59:34.833810Z",
+        "url": "https://files.pythonhosted.org/packages/04/8a/c20bf9afc5dcb2c521f5ae9f9594aeef88059f71b4d04e8d11cd6f62fad7/brotli-1.2.1-cp38-cp38-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "6178bdf11ecfee21a67c96ba70a43bc2cef03aa616fa9ebaa4a41e66ea99457d",
+          "md5": "b4734777e0111d441884fffb9e261beb",
+          "sha256": "4839f1a1ec3a95671238b2a165eba7a0a823090913ab4fc48aa03dc6f666dd02"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp38-cp38-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "b4734777e0111d441884fffb9e261beb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": null,
+        "size": 1489842,
+        "upload_time": "2026-10-22T13:59:36",
+        "upload_time_iso_8601": "2026-10-22T13:59:36.142618Z",
+        "url": "https://files.pythonhosted.org/packages/61/78/bdf11ecfee21a67c96ba70a43bc2cef03aa616fa9ebaa4a41e66ea99457d/brotli-1.2.1-cp38-cp38-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "95934655314a40f231d6f40e088d0636b1fea9968c84bd3d023d92587e18a0ac",
+          "md5": "fc553c75e698da313a4b4bbb16c36404",
+          "sha256": "f20bec84117a324b6c4b679d2c748d2813df55e1fe181b3a6bcaa93b6719a772"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp38-cp38-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "fc553c75e698da313a4b4bbb16c36404",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": null,
+        "size": 1282302,
+        "upload_time": "2026-10-22T13:59:37",
+        "upload_time_iso_8601": "2026-10-22T13:59:37.443533Z",
+        "url": "https://files.pythonhosted.org/packages/95/93/4655314a40f231d6f40e088d0636b1fea9968c84bd3d023d92587e18a0ac/brotli-1.2.1-cp38-cp38-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "14d8be7ca9ff58e0fb37563bc666f6b894184de6da793bdf813bd31c35285224",
+          "md5": "ce4c101df43b928093d9f657ceea2a52",
+          "sha256": "7aa24d49840c016a8256adb1f104f4e064ed9fa7d97523675dd50e08c05b143d"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp38-cp38-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "ce4c101df43b928093d9f657ceea2a52",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": null,
+        "size": 1598285,
+        "upload_time": "2026-10-22T13:59:38",
+        "upload_time_iso_8601": "2026-10-22T13:59:38.633345Z",
+        "url": "https://files.pythonhosted.org/packages/14/d8/be7ca9ff58e0fb37563bc666f6b894184de6da793bdf813bd31c35285224/brotli-1.2.1-cp38-cp38-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "ce639fc7f1abaa9dcedbbc0317c43a651686a09956a5cb891811fa2c81757a01"
+        },
+        "digests": {
+          "blake2b_256": "c677bf9e2e8cce1c776a23ee7513ece8b9e7a93e576b9cd5b322e4d2a0b951b1",
+          "md5": "2dc4070bfd9de874f7b1b7e4e04f025d",
+          "sha256": "304ee5bf4f85b719f6a274fa0b50d86b39b5dd1219f4cc61410d4eae315757a9"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp38-cp38-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "2dc4070bfd9de874f7b1b7e4e04f025d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": null,
+        "size": 1493253,
+        "upload_time": "2026-10-22T13:59:39",
+        "upload_time_iso_8601": "2026-10-22T13:59:39.937813Z",
+        "url": "https://files.pythonhosted.org/packages/c6/77/bf9e2e8cce1c776a23ee7513ece8b9e7a93e576b9cd5b322e4d2a0b951b1/brotli-1.2.1-cp38-cp38-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "cc277ad1dae094a17608c41cca76eb69eb5956ee43a68e7a9e00cece10dd0cdd"
+        },
+        "digests": {
+          "blake2b_256": "f9f78fa5b6d5f478784e25df161afac737e415a2691313a6dced2a9aa5bcb232",
+          "md5": "69b06971e5f340f3df1301b8eebad034",
+          "sha256": "cd678af3f73bcacd0391897a8697e19ba4bd1445b35ba6d776342e64f8c98f29"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp38-cp38-win32.whl",
+        "has_sig": false,
+        "md5_digest": "69b06971e5f340f3df1301b8eebad034",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": null,
+        "size": 332985,
+        "upload_time": "2026-10-22T13:59:41",
+        "upload_time_iso_8601": "2026-10-22T13:59:41.370254Z",
+        "url": "https://files.pythonhosted.org/packages/f9/f7/8fa5b6d5f478784e25df161afac737e415a2691313a6dced2a9aa5bcb232/brotli-1.2.1-cp38-cp38-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "cc277ad1dae094a17608c41cca76eb69eb5956ee43a68e7a9e00cece10dd0cdd"
+        },
+        "digests": {
+          "blake2b_256": "c21081afa1711e342e3d57d604613768ad415e2a3cdc9eeca559b98b88a18a50",
+          "md5": "f7e0e8157b5d969e0c9c9ef32047c48f",
+          "sha256": "c4c82b91f512942db9bfb4f33ab6b8e17e49cba0e9e98ed34c0cf7c33a48a458"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp38-cp38-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "f7e0e8157b5d969e0c9c9ef32047c48f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp38",
+        "requires_python": null,
+        "size": 370872,
+        "upload_time": "2026-10-22T13:59:42",
+        "upload_time_iso_8601": "2026-10-22T13:59:42.399511Z",
+        "url": "https://files.pythonhosted.org/packages/c2/10/81afa1711e342e3d57d604613768ad415e2a3cdc9eeca559b98b88a18a50/brotli-1.2.1-cp38-cp38-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "dcb3b1568cd35a966543159e3e62ba945b3c3913a89326be5c547b5d5660b2a5",
+          "md5": "e10843e079d6508f20ef2d49f941170d",
+          "sha256": "76b11b4af067c2b55ffde313ae978d8ab51cfa65046bb70de23448c9dc4e18c4"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp39-cp39-macosx_10_9_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "e10843e079d6508f20ef2d49f941170d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": null,
+        "size": 863023,
+        "upload_time": "2026-10-22T13:59:43",
+        "upload_time_iso_8601": "2026-10-22T13:59:43.476957Z",
+        "url": "https://files.pythonhosted.org/packages/dc/b3/b1568cd35a966543159e3e62ba945b3c3913a89326be5c547b5d5660b2a5/brotli-1.2.1-cp39-cp39-macosx_10_9_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "d1133a71825dec10cd7d62c81109e305912fe699547559090983b1c42499c32b",
+          "md5": "d69c1fc29afe8a712c4a1e8cd0700d34",
+          "sha256": "77fe6845833339ff6c54be391b56dc5fcff9e7a9acdf7df54647d27e5d3afdd2"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp39-cp39-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "d69c1fc29afe8a712c4a1e8cd0700d34",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": null,
+        "size": 443213,
+        "upload_time": "2026-10-22T13:59:44",
+        "upload_time_iso_8601": "2026-10-22T13:59:44.652433Z",
+        "url": "https://files.pythonhosted.org/packages/d1/13/3a71825dec10cd7d62c81109e305912fe699547559090983b1c42499c32b/brotli-1.2.1-cp39-cp39-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "1f4c04bc7d53038be1d13984594d6ce551d9ff11dd2a3c0bacf74fa9d3a9fd5d",
+          "md5": "30f41f5a081e7d7ac6571fc03a658f4f",
+          "sha256": "50248e2f05c8335089b9c2a80ebb4a8b5833a3581a433438b523e2341f45e681"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp39-cp39-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl",
+        "has_sig": false,
+        "md5_digest": "30f41f5a081e7d7ac6571fc03a658f4f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": null,
+        "size": 1246625,
+        "upload_time": "2026-10-22T13:59:46",
+        "upload_time_iso_8601": "2026-10-22T13:59:46.105758Z",
+        "url": "https://files.pythonhosted.org/packages/1f/4c/04bc7d53038be1d13984594d6ce551d9ff11dd2a3c0bacf74fa9d3a9fd5d/brotli-1.2.1-cp39-cp39-manylinux1_i686.manylinux2014_i686.manylinux_2_17_i686.manylinux_2_5_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "e15b0aabfb06199de192dc9860e0ccd69492aee413ca13371f2a0f285a0c9e8a",
+          "md5": "1e56586db99fd461a369acb4179886fd",
+          "sha256": "7a553fffd70a518916ce5b595b3067a55c0357732b4f0a96db2dce70a4db717b"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp39-cp39-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "1e56586db99fd461a369acb4179886fd",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": null,
+        "size": 1406502,
+        "upload_time": "2026-10-22T13:59:47",
+        "upload_time_iso_8601": "2026-10-22T13:59:47.252890Z",
+        "url": "https://files.pythonhosted.org/packages/e1/5b/0aabfb06199de192dc9860e0ccd69492aee413ca13371f2a0f285a0c9e8a/brotli-1.2.1-cp39-cp39-manylinux2014_aarch64.manylinux_2_17_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "cfb1ad7f563debf7ea7cd918ec555451985bcaa1be8dc74140f9c014af786c63",
+          "md5": "4a03d69458488307105a5bbab58e9872",
+          "sha256": "81f289389af277345b85aea4b36f4ed2bbdf7504d4466cbec7d28702c4926b01"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp39-cp39-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "4a03d69458488307105a5bbab58e9872",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": null,
+        "size": 1428408,
+        "upload_time": "2026-10-22T13:59:48",
+        "upload_time_iso_8601": "2026-10-22T13:59:48.682454Z",
+        "url": "https://files.pythonhosted.org/packages/cf/b1/ad7f563debf7ea7cd918ec555451985bcaa1be8dc74140f9c014af786c63/brotli-1.2.1-cp39-cp39-manylinux2014_ppc64le.manylinux_2_17_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "513f62d18dd47ec5adac1bf5a17261588cfa2221e7e757de0c5fb23300f966cb",
+          "md5": "a10fcf0818f87d8a02a86e3487f216fe",
+          "sha256": "ddc832886517c5009863209a4a292c4353967cd304ba55822d533e0d59eb6a60"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp39-cp39-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "a10fcf0818f87d8a02a86e3487f216fe",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": null,
+        "size": 1424193,
+        "upload_time": "2026-10-22T13:59:50",
+        "upload_time_iso_8601": "2026-10-22T13:59:50.269470Z",
+        "url": "https://files.pythonhosted.org/packages/51/3f/62d18dd47ec5adac1bf5a17261588cfa2221e7e757de0c5fb23300f966cb/brotli-1.2.1-cp39-cp39-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "f766c8fd25594fe08419aac6cfdae67fa7ecebda97dfa46909e477655b5f012d",
+          "md5": "26cf49cb0488c92e974d3d2cbce5b11b",
+          "sha256": "0023348c448140a6ea71615eba331835c971d38ae8acf8a89b4e963b1f38f131"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp39-cp39-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "26cf49cb0488c92e974d3d2cbce5b11b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": null,
+        "size": 1488931,
+        "upload_time": "2026-10-22T13:59:51",
+        "upload_time_iso_8601": "2026-10-22T13:59:51.478568Z",
+        "url": "https://files.pythonhosted.org/packages/f7/66/c8fd25594fe08419aac6cfdae67fa7ecebda97dfa46909e477655b5f012d/brotli-1.2.1-cp39-cp39-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "8b8f1a5253f59acb8e318dd216a75527c5b3a7ded57cb61aa73e362ea3036a6f",
+          "md5": "204122eeb09ed487ae3a0297054b438c",
+          "sha256": "3b7df499157279a4d5d83ab86bd328c58c9ccfc48f5de45d4e791d3234a54dff"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp39-cp39-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "204122eeb09ed487ae3a0297054b438c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": null,
+        "size": 1281513,
+        "upload_time": "2026-10-22T13:59:52",
+        "upload_time_iso_8601": "2026-10-22T13:59:52.655704Z",
+        "url": "https://files.pythonhosted.org/packages/8b/8f/1a5253f59acb8e318dd216a75527c5b3a7ded57cb61aa73e362ea3036a6f/brotli-1.2.1-cp39-cp39-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "480d06fd30d4f65b284f6c49c12f4b1066021e88302ec924b098f031e25a8c7c",
+          "md5": "0637a532d730b56426e6e9a91e6e5674",
+          "sha256": "5da5cb778a7fc889f72bd2238ddf39b9f7e8b0979ccefd760380f1c24bd9f33b"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp39-cp39-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "0637a532d730b56426e6e9a91e6e5674",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": null,
+        "size": 1597295,
+        "upload_time": "2026-10-22T13:59:53",
+        "upload_time_iso_8601": "2026-10-22T13:59:53.832518Z",
+        "url": "https://files.pythonhosted.org/packages/48/0d/06fd30d4f65b284f6c49c12f4b1066021e88302ec924b098f031e25a8c7c/brotli-1.2.1-cp39-cp39-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "a1340b6f2892d789f2752cbb4c095201b429b6acb801192c2e6a70c76a99b8d9",
+          "md5": "3b640334656b03467330cca51470b07d",
+          "sha256": "a961713b7bb90671a7d601886f0d603c8276ae95c6c63baaf36957fddba6fa72"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp39-cp39-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3b640334656b03467330cca51470b07d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": null,
+        "size": 1492499,
+        "upload_time": "2026-10-22T13:59:55",
+        "upload_time_iso_8601": "2026-10-22T13:59:55.024951Z",
+        "url": "https://files.pythonhosted.org/packages/a1/34/0b6f2892d789f2752cbb4c095201b429b6acb801192c2e6a70c76a99b8d9/brotli-1.2.1-cp39-cp39-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "271b52e75500374c358a0da4b09044ccabb549ab22fb617139115ded32508841",
+          "md5": "fdfa139347345e717ac69c048abdada0",
+          "sha256": "7f38649a7711c301ee231e296e0c8f14376a9d4f9ea7369ecc3cb22187813d9e"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp39-cp39-win32.whl",
+        "has_sig": false,
+        "md5_digest": "fdfa139347345e717ac69c048abdada0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": null,
+        "size": 333071,
+        "upload_time": "2026-10-22T13:59:56",
+        "upload_time_iso_8601": "2026-10-22T13:59:56.413719Z",
+        "url": "https://files.pythonhosted.org/packages/27/1b/52e75500374c358a0da4b09044ccabb549ab22fb617139115ded32508841/brotli-1.2.1-cp39-cp39-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "93767a7b47e840e2bd3d66fb4fb498fd2f703d7e1e7491bc54d348182b3e5415",
+          "md5": "e1e9c8c4e271df8b18081f6335c13f0c",
+          "sha256": "00c9a4262dd81cdc32968f8bc2482c735ad238010d95b49698f1b788c359c7a4"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp39-cp39-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "e1e9c8c4e271df8b18081f6335c13f0c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": null,
+        "size": 370956,
+        "upload_time": "2026-10-22T13:59:57",
+        "upload_time_iso_8601": "2026-10-22T13:59:57.494189Z",
+        "url": "https://files.pythonhosted.org/packages/93/76/7a7b47e840e2bd3d66fb4fb498fd2f703d7e1e7491bc54d348182b3e5415/brotli-1.2.1-cp39-cp39-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "967f8bcd49ad493fe8e6cc7de3ae540542158e999601730b9ed58ed00498e0eb",
+          "md5": "50b08bcd25935ae6607c86627cd1e764",
+          "sha256": "32567555e2e0040c596beb7f5f2ef69da6bf224aee4617c2a52099248dd3e243"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-cp39-cp39-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "50b08bcd25935ae6607c86627cd1e764",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": null,
+        "size": 380812,
+        "upload_time": "2026-10-22T13:59:58",
+        "upload_time_iso_8601": "2026-10-22T13:59:58.521510Z",
+        "url": "https://files.pythonhosted.org/packages/96/7f/8bcd49ad493fe8e6cc7de3ae540542158e999601730b9ed58ed00498e0eb/brotli-1.2.1-cp39-cp39-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "7feb803fb4003fc74fb7202eade0832057729837c0929b690e7f691c1778f230",
+          "md5": "33ddb1d6591f88606f6916f584d97109",
+          "sha256": "93269f11303fc9a3e3990b57e0533f41949546156d9f0e535571f313032563cc"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-pp311-pypy311_pp80-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "33ddb1d6591f88606f6916f584d97109",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": null,
+        "size": 416747,
+        "upload_time": "2026-10-22T13:59:59",
+        "upload_time_iso_8601": "2026-10-22T13:59:59.612963Z",
+        "url": "https://files.pythonhosted.org/packages/7f/eb/803fb4003fc74fb7202eade0832057729837c0929b690e7f691c1778f230/brotli-1.2.1-pp311-pypy311_pp80-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "60fc48f827dda08844d6313a97c6c34b7f0cffc8310bf4f2cd4d98fae6c198fb",
+          "md5": "696dfe8ffac8c9e358d6cfc38319a14e",
+          "sha256": "87492842770cd772fce25e9cd279913eaea6c55a91a960b6302aedfa2ec7b152"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-pp311-pypy311_pp80-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "696dfe8ffac8c9e358d6cfc38319a14e",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": null,
+        "size": 399671,
+        "upload_time": "2026-10-22T14:00:01",
+        "upload_time_iso_8601": "2026-10-22T14:00:01.176168Z",
+        "url": "https://files.pythonhosted.org/packages/60/fc/48f827dda08844d6313a97c6c34b7f0cffc8310bf4f2cd4d98fae6c198fb/brotli-1.2.1-pp311-pypy311_pp80-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "c32b21aa1de7b7b5739f8d9b55c12100de794c42b10abd1a83da1a99072e2b46",
+          "md5": "96fdfccbc5826b4ce37982481c477ffd",
+          "sha256": "f06dd6a30438692d48c0d54de4b659cd55a57c2c2f6591c969c98d0a5523ab07"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-pp311-pypy311_pp80-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "96fdfccbc5826b4ce37982481c477ffd",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": null,
+        "size": 404664,
+        "upload_time": "2026-10-22T14:00:02",
+        "upload_time_iso_8601": "2026-10-22T14:00:02.357273Z",
+        "url": "https://files.pythonhosted.org/packages/c3/2b/21aa1de7b7b5739f8d9b55c12100de794c42b10abd1a83da1a99072e2b46/brotli-1.2.1-pp311-pypy311_pp80-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "f122bce8a2f6af49807728b4d3394a67190032b37170be0a9f870c98b0e1e4a6",
+          "md5": "732d6428a34e0c06c8ad34730b9b6790",
+          "sha256": "fb6a4d400aa531c73a718b337116fad77ba8dc6df34fa615c808bfc55ffb19ca"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-pp311-pypy311_pp80-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "732d6428a34e0c06c8ad34730b9b6790",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": null,
+        "size": 398822,
+        "upload_time": "2026-10-22T14:00:03",
+        "upload_time_iso_8601": "2026-10-22T14:00:03.441574Z",
+        "url": "https://files.pythonhosted.org/packages/f1/22/bce8a2f6af49807728b4d3394a67190032b37170be0a9f870c98b0e1e4a6/brotli-1.2.1-pp311-pypy311_pp80-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "d7d49741f736300c89ef911f1aa950db9f91ad26e2c1c19d9ba4958776aee12e",
+          "md5": "28a265c0f9ae6f004bf7795f41e714af",
+          "sha256": "cfa54e7f5bd5ef482e7f5336f7cf3c30ae608d9767e514dd930b7c30a03fa977"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-pp311-pypy311_pp80-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "28a265c0f9ae6f004bf7795f41e714af",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": null,
+        "size": 457754,
+        "upload_time": "2026-10-22T14:00:04",
+        "upload_time_iso_8601": "2026-10-22T14:00:04.729222Z",
+        "url": "https://files.pythonhosted.org/packages/d7/d4/9741f736300c89ef911f1aa950db9f91ad26e2c1c19d9ba4958776aee12e/brotli-1.2.1-pp311-pypy311_pp80-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "f52962f7de3d08c53b09fe67b24b024b13ce3ec088fe0dd6940064719e61eba5",
+          "md5": "8e8612f151544fb4c007cd0a18bd6b2c",
+          "sha256": "5f3da70516b1bd1b2aa183ec4ab5c02dfc6ad5c1184d47bb65ade25e710439b6"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-pp312-pypy312_pp80-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "8e8612f151544fb4c007cd0a18bd6b2c",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp312",
+        "requires_python": null,
+        "size": 416714,
+        "upload_time": "2026-10-22T14:00:06",
+        "upload_time_iso_8601": "2026-10-22T14:00:06.054425Z",
+        "url": "https://files.pythonhosted.org/packages/f5/29/62f7de3d08c53b09fe67b24b024b13ce3ec088fe0dd6940064719e61eba5/brotli-1.2.1-pp312-pypy312_pp80-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "e2663da6c4e928c55fc85f4cdaf0cbd41ebb1639ae70c71f9f26183818460d54",
+          "md5": "230c6b117bc8c32528ba676cc9c15ba8",
+          "sha256": "11aec6ea5c20cad61a33302e06baa48b0243bfa4d173bc2985dabd047e367d08"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-pp312-pypy312_pp80-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "230c6b117bc8c32528ba676cc9c15ba8",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp312",
+        "requires_python": null,
+        "size": 399657,
+        "upload_time": "2026-10-22T14:00:07",
+        "upload_time_iso_8601": "2026-10-22T14:00:07.095815Z",
+        "url": "https://files.pythonhosted.org/packages/e2/66/3da6c4e928c55fc85f4cdaf0cbd41ebb1639ae70c71f9f26183818460d54/brotli-1.2.1-pp312-pypy312_pp80-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "859d626bb730a70507151667d950c9214003427b962a3876142c07ba52d96391",
+          "md5": "55100e1ec2707a2ecc5fc5dcd092bfd2",
+          "sha256": "00a50d063aae2e69c2eb28818ccf6dc3e51f2ea5b74e3c2082a47943ee23f399"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-pp312-pypy312_pp80-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "55100e1ec2707a2ecc5fc5dcd092bfd2",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp312",
+        "requires_python": null,
+        "size": 404727,
+        "upload_time": "2026-10-22T14:00:08",
+        "upload_time_iso_8601": "2026-10-22T14:00:08.438861Z",
+        "url": "https://files.pythonhosted.org/packages/85/9d/626bb730a70507151667d950c9214003427b962a3876142c07ba52d96391/brotli-1.2.1-pp312-pypy312_pp80-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "9d45cb1ed6b59c80fedb4aa893fa11c1bc8e9127e6b0bebe58e0adf5a330e6aa"
+        },
+        "digests": {
+          "blake2b_256": "bb34fb0bbe56d822ee4c75b2383e518bdd579327f18f1cfedf1d779a585df01b",
+          "md5": "302157a19d28553bd3bb0a13af13d8ae",
+          "sha256": "37de1818ce469b3c37324c89d4d4dbb5e64461d9dc01c16f8abb2a17c465b132"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-pp312-pypy312_pp80-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "302157a19d28553bd3bb0a13af13d8ae",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp312",
+        "requires_python": null,
+        "size": 398927,
+        "upload_time": "2026-10-22T14:00:09",
+        "upload_time_iso_8601": "2026-10-22T14:00:09.739679Z",
+        "url": "https://files.pythonhosted.org/packages/bb/34/fb0bbe56d822ee4c75b2383e518bdd579327f18f1cfedf1d779a585df01b/brotli-1.2.1-pp312-pypy312_pp80-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "dd37f7b084bbf2787aa6423e7cf9d268f43c50e0b7397a59317508df83711fa6"
+        },
+        "digests": {
+          "blake2b_256": "4d3f43ea0a58dcb50c820465a0d62ccbbf6464c2e2cc4ebf582e64225dd67b4b",
+          "md5": "b002aaa4b8d438076246bd93852604b5",
+          "sha256": "06a22fcbcae059c0679098232779095fc50a735a3fea02db5c79cab10b84d877"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1-pp312-pypy312_pp80-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "b002aaa4b8d438076246bd93852604b5",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp312",
+        "requires_python": null,
+        "size": 457800,
+        "upload_time": "2026-10-22T14:00:10",
+        "upload_time_iso_8601": "2026-10-22T14:00:10.978212Z",
+        "url": "https://files.pythonhosted.org/packages/4d/3f/43ea0a58dcb50c820465a0d62ccbbf6464c2e2cc4ebf582e64225dd67b4b/brotli-1.2.1-pp312-pypy312_pp80-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "cf811546c983678a9b4e77cb4718eaedd1b2caf24a6cdbf1eb8775938d22aff7",
+          "md5": "ac1e85a7466ee46d0ca594e041d7ca78",
+          "sha256": "02b2f7b5a83485efe448a44ddf7983def05c3bb1dcf917d4f7154070260e13de"
+        },
+        "downloads": -1,
+        "filename": "brotli-1.2.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "ac1e85a7466ee46d0ca594e041d7ca78",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": null,
+        "size": 7389447,
+        "upload_time": "2026-10-22T14:00:12",
+        "upload_time_iso_8601": "2026-10-22T14:00:12.660058Z",
+        "url": "https://files.pythonhosted.org/packages/cf/81/1546c983678a9b4e77cb4718eaedd1b2caf24a6cdbf1eb8775938d22aff7/brotli-1.2.1.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "brotli",
+    "version": "1.2.1",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "0023348c448140a6ea71615eba331835c971d38ae8acf8a89b4e963b1f38f131",
+      "00a50d063aae2e69c2eb28818ccf6dc3e51f2ea5b74e3c2082a47943ee23f399",
+      "00c9a4262dd81cdc32968f8bc2482c735ad238010d95b49698f1b788c359c7a4",
+      "02b2f7b5a83485efe448a44ddf7983def05c3bb1dcf917d4f7154070260e13de",
+      "035f3bf861328d8b7fcb61f4a976f9913027158e5666116733d59ffc65f2745e",
+      "06a22fcbcae059c0679098232779095fc50a735a3fea02db5c79cab10b84d877",
+      "09a2f112a638aca15a88f298571788795fc45d62f2bca7f3870c1152153ef399",
+      "09b560859a04d112d206639c7e444161ee2f413098aa6de11d43daf3ce883d24",
+      "0a30e5df5ba985b67f85e13dfd7e5a68e186d8d9b5cff7d9a8904832bb413e81",
+      "0c5c6144aa4b4585e4e0b3595f9fb2743a2e32650bce4b2669a0e809b3e7bbbd",
+      "103b4762941760ae245d8d0d50e3ee4a7e034fcd786f122d177f76d6afc90c63",
+      "104d3504678db9172de523bdd8e6ab8d3643067fbde18e5b89476f405b64cf25",
+      "11aec6ea5c20cad61a33302e06baa48b0243bfa4d173bc2985dabd047e367d08",
+      "1329c80daa60752f1d94f507479504921e358e71746c5fce9b55b3d51ac038bc",
+      "1624ca7006d2776cc8f0313e62d63aef9d3720b66f0d24e4439f5d754488e001",
+      "1880db6241276e191d3e34a6e4eea708c6629103c396f0ea21e75b0ce63a9a2c",
+      "1f5d8c6e68555b82692f8180ee646cd1752aa9ab98daf68769a7c56a6e8d7af7",
+      "1f65a91f3576949793b8720b12a47e7ea06debc970a2da6d54ff8458053e2109",
+      "228abf241b39925450ea5046cbd8bc88ae1b91cd229037b0e194409df4ef2f4a",
+      "23f0d23995100458d17f3bf5ce1e959fe46df894b472063a74266f7adeb2e72e",
+      "24a3f765167e6ecac3d85a9fe3da857a068097cf44abc08bd67c5681d8251bca",
+      "25d7c19ea92df4be1358126b6712209ac58229d17af915397d1510f9efe0411d",
+      "264fd5b200f6f6170cb551a4b9fcaabf8aa846ddaefe72db4d5f49f9d3743df9",
+      "2df1678c2c25db2f669c613fe8b4e587d0dd24c6acf7746bad13d6e87e4b051d",
+      "304ee5bf4f85b719f6a274fa0b50d86b39b5dd1219f4cc61410d4eae315757a9",
+      "32567555e2e0040c596beb7f5f2ef69da6bf224aee4617c2a52099248dd3e243",
+      "338856ae9ff63af4fc3dbbd6184a7276a6ae83df2243562e86e5ee5cf980cce7",
+      "37de1818ce469b3c37324c89d4d4dbb5e64461d9dc01c16f8abb2a17c465b132",
+      "390f5e174ac2296dafd047d0785591e61194ff3df11ad43abd2fddb0e750eff5",
+      "3975fb11f63e212b87a087e4a910187b522c6969a4989ca362d6f85f9dc36acd",
+      "3b7df499157279a4d5d83ab86bd328c58c9ccfc48f5de45d4e791d3234a54dff",
+      "4092027deb7313156d2b601fb0e3637cbdf9d598f5bd57dc57348432967ecd31",
+      "457f011c135263900805b4bf0dd290724d277785656c32e4f5fefe4a1feede1e",
+      "4583e4d11d40fa4a05b7d81cd822008d65bce755dd78c49945b5a98272953759",
+      "461daaef60db39e407a6a6954a2b4804170db56c6212c009a6cdadbdd12d7a9b",
+      "4839f1a1ec3a95671238b2a165eba7a0a823090913ab4fc48aa03dc6f666dd02",
+      "49de36a626557629db1f9b1eb57e7d88f3815a42373ff7f9d8b87c1da120687e",
+      "4acd709bfe362c2ed80da311d195654467110bc747de1484c731304810fd20e5",
+      "4b9dd0173ca5e01d1eb307d3c184fe8c09bdc168ede560889b1018d216d38c61",
+      "4d47a9f0ba5ee608f3f3a9c942dcd244443068ae5b0d90183dd396dea02236e4",
+      "4e89a05511f8538911d98566f6ddd0883f28a5ab35fefbd70c036ab630feae1b",
+      "4f94a73b5f30b8bb36ac684f2b6a6e9bdc58a9b4bfe1658592727369443bce93",
+      "50248e2f05c8335089b9c2a80ebb4a8b5833a3581a433438b523e2341f45e681",
+      "509ee1058937d80d88b33aa893ca46e1925779d928181916bd60bda3a8738687",
+      "59ca34c7a83d7a3b842247183c426f891a95a8f57db41b7aac92195c51e8a83a",
+      "59ec359a56f44277ad424fb4b7cf1a0ae2fd855b35ba8f15dcfbcabb3fb51aeb",
+      "5c77d41984e388c9f393da124394af941ef757fb33bb6f1eb72e8167fc557489",
+      "5da5cb778a7fc889f72bd2238ddf39b9f7e8b0979ccefd760380f1c24bd9f33b",
+      "5f3da70516b1bd1b2aa183ec4ab5c02dfc6ad5c1184d47bb65ade25e710439b6",
+      "624240d21823e1805425c155fe8b35b4124e0a837eb8ea271bd0a54caeac4ef6",
+      "6532d2c58018121a9eb5882656cf862cdbbd853600cb5fbccac59bcff14f66b0",
+      "66f171af80744c06f6b4e5b01fe6e40c70cc4e17570888746a281422fed83fc0",
+      "67f4dceb22ce3a742751cee849644449b169684699aa548e77d771de304e963c",
+      "6b3c3d5794212a54434b4856f808f7bdf7ad48eacadaadb5b2346fc9a639365a",
+      "6b885b6b1a3b01c5980dddeb2d9dccbc5a5dc0f255ea15904bf585b73ef375a1",
+      "6bd29ab84bb8972370cacd310e8a91651f54476d01de1cd1a4cf0bece5eb25e1",
+      "6beca755e6b691096a398df587f544c3f8ff6e9e3a8119d90eae37872a829382",
+      "6f83664d0e48fd22114dd5ca2cd5202743a7b75b5e6e3fbc6ed61489cee749c8",
+      "7248c282d7d6aef4ae89363da5fc3df7b9250eb04b252622955296eb5d0ea82f",
+      "727c922e0e8511e22a7f3c81fbcce0aeebc8c7cdb7bd8f13f505394ea9865dcf",
+      "761db18dc32b24d00fbedca1013089eb3470053cefa8492bd9c07b11102d72bf",
+      "76b11b4af067c2b55ffde313ae978d8ab51cfa65046bb70de23448c9dc4e18c4",
+      "77ef5882c5318ffc3dd94c6abc6a8f1ec2af75d66522319f1a250a07d53d0546",
+      "77fe6845833339ff6c54be391b56dc5fcff9e7a9acdf7df54647d27e5d3afdd2",
+      "78c9b5c2cceaeb158d56d03ba9336b3d310c64da6d304296ba39b6c00b8840c1",
+      "7a553fffd70a518916ce5b595b3067a55c0357732b4f0a96db2dce70a4db717b",
+      "7aa24d49840c016a8256adb1f104f4e064ed9fa7d97523675dd50e08c05b143d",
+      "7c0f9fcfa54570222eb4cbece2fc44b71de3710e0ea6e075bc0ffdc8965ca1ac",
+      "7ec678c52c3ef5e37482a094d109c04cf9e4a0e2923dd1e0fbddb4bf133a976e",
+      "7f38649a7711c301ee231e296e0c8f14376a9d4f9ea7369ecc3cb22187813d9e",
+      "810aea5958d6a2d92593fd27218df528644aeb72cc7f6d401e650752d6c98949",
+      "81f289389af277345b85aea4b36f4ed2bbdf7504d4466cbec7d28702c4926b01",
+      "87492842770cd772fce25e9cd279913eaea6c55a91a960b6302aedfa2ec7b152",
+      "875975f91870682cca4371260522ad3f22d636e845b5c5355c52bc045c0f75c8",
+      "90bd49511341dd7c40bb3acaa97cd8b9e5df4821a5714b842117e7069c7cc03e",
+      "91097d66ebb8ca8d23372081a33405a44e2239445614888e38929bd7f5879dae",
+      "9307679936e86d7773eadfa444a4a4ee80f6f45230e93379875f4a6897a09a2b",
+      "93269f11303fc9a3e3990b57e0533f41949546156d9f0e535571f313032563cc",
+      "96e6966edcfae74ffac2522d2dd1a304450d18807a9791f5ed0a3232192c9437",
+      "970a3dbce807a3f5c2b8232036052bade01e4bc92ade37d73ea3750418307fa1",
+      "972a2e19dbaab47d0aa77c1d07f71c930bdc53538f2b33decc905e92a4be5cbd",
+      "972e34c5cbbfe6c90358bfae38edae1a29d3456e920da5a4664c98f221ee4df8",
+      "9acd83184eed969a08c1afa404a202a3f4287e3580781f2a36e927d4f25363fd",
+      "9f9aba3f8d2e3c22cf233d9bf2c2cfc050989d9da627802845df317d7ab33e84",
+      "a151eca7da2b04b6bed1f70138b50f5634704b98ee3ee63046316d7661f21b75",
+      "a26384540c88b7c157899c2a08ff34c180a83ec1de97064d80c68bf8141af2f4",
+      "a34be674fe74b35a67ce768cbb86b9350caa22c4b04f2eb0d868d9c01f6539d1",
+      "a3942e2d365f009e5e7839114fa315e1a2bcfea12b52064a28f1a7281862a2a7",
+      "a3dea7e1ac49e29306500a8627fa3eacabcc9e238d22495eea2d8e61de77065b",
+      "a84e0ae14d1efe782a9f143021c4e01d5ed986a140fe5070505cc5978eaf0592",
+      "a961713b7bb90671a7d601886f0d603c8276ae95c6c63baaf36957fddba6fa72",
+      "a998857af4fcd19920bdf5f30f0f1a23f38472a703d33e49168cd4fd32438377",
+      "aa32b51702a0b6e9fddc0d1dc66cb6ed6af112f1bba0cac2be9039546a862b5c",
+      "b0c32f0660bb21e810ffc1d3d04b6ea682e118b8141c6e12522a3dacadeb70ee",
+      "b0ee9e74480cb7393288ac2ed837e132200bfedd620e765e6db3a3192c9b5b9a",
+      "b0faa0b9af9367748388345d5b12f6add2a9cf896481e72910e88fbfe14ecd54",
+      "b5b458950312830913f837e179ce9221000ab7a20b4e42d7b48c1fcd79140de1",
+      "b8b2fc7901b31d5885f26521cf2d74feccdc126a272ba1d879b7545bb25468bc",
+      "b95809496769fb09777136f3e259433ac21c495f3517bf7aab7dfb5a95cfde8b",
+      "b9e56ed83aa2ad78496788afe87d830725a752deb590fa8b7c95e1105da21dc0",
+      "bd18576a758364b194e9347e0859362e158df99fb0dec3af480578fd9d92ae27",
+      "be371af72af54b6e508b68a7a87768e05b7e13023f6c82a3e3f5e4d0e829e186",
+      "bfb2d71edaaa0c6e0e51c52328154c635aec3ee6ea6a29271fbac1a8bc157c12",
+      "c3f667dc60a875b12a5ecd7828062ccd97c0fb79c4adc6c8699d23d5ff2af7e1",
+      "c4b68ce579b05c66bb18a16356a4f713bebac2446ee498dd8bb1ecab3da77b89",
+      "c4c82b91f512942db9bfb4f33ab6b8e17e49cba0e9e98ed34c0cf7c33a48a458",
+      "c5302747f969d5ec925810176f7697712a3fa2ea0fae0c7a85aa4ad9325247fd",
+      "c741ff72829507be41dc50c731565fa2413287e845e55f0661dedf0a942c1c31",
+      "c788fdab2eeeab671f5ab375ad010ef743f6c95be67f60f878e8876a51f6c671",
+      "cba95509120e059fb1a13089428bfba90535b0fa296890650137282a066d7db2",
+      "cc5eb1be95fb880bd083fb24df064bd5fc8caa85c05cf0ee5f33e2ddf9af625d",
+      "cd678af3f73bcacd0391897a8697e19ba4bd1445b35ba6d776342e64f8c98f29",
+      "cfa54e7f5bd5ef482e7f5336f7cf3c30ae608d9767e514dd930b7c30a03fa977",
+      "d6ef0035b6ae338a46951c144081c61fb044f4c1eb6d20acc5ba6277f666a4c0",
+      "d9ff3dcfaf60de01805e0268a29947205a71742e02797ef07ca46a58ab2a3390",
+      "dafaeb38712f99e5c31ad7f02c366f1ddd3792921b94066015f8c49f197163b0",
+      "dca1bf90b3a6a7440904f128464eb95bf46ac9da7ad3c85912483dd83128fd95",
+      "ddc832886517c5009863209a4a292c4353967cd304ba55822d533e0d59eb6a60",
+      "de1bf30d819809a964060356032e6670c9923644666afaaf3d1719d05ddb844e",
+      "de499e2492c8106a5e163d3cf5b6726e2797f9234cfbc6055fbb5f9d8f198f39",
+      "e4a7be59d374c445766fa4ac066a04d19a757365ae00a950053d0ab7388d1039",
+      "e6c4fa55eab6b5684b33239597876a18a35ce1280b63ab960164032afbb8783f",
+      "ea396d0ab0c9e082e009a16d7bda6849784b411b884d86e287a1b0a36eb278fb",
+      "eaa5178a4c1fe619eff9cbe93b57919d426332e219870301d4ef5fc09a522ae9",
+      "ecfb50c208c59d9a786262ab06ee25688d1ada618e48a442eb4a12b38835f294",
+      "ed62c15ce5e8b975b2710a0f7c8bb953cbffb472fccb05055be6afcba9520c19",
+      "ed8e452f5cb34f59f4861d50d029c6203b5f8f11c13d4186264392a64b4def8d",
+      "eea17e3cdc6f9aecffe15fe9a9eeba8e8c049a5d347de1561eed2240cdf35a79",
+      "f00ff4b56caf151365c77988eb85a4a71eb26fe63047d4084d5614e06d65e3cf",
+      "f06dd6a30438692d48c0d54de4b659cd55a57c2c2f6591c969c98d0a5523ab07",
+      "f20bec84117a324b6c4b679d2c748d2813df55e1fe181b3a6bcaa93b6719a772",
+      "f34405292fca45cd77419005c1ea35ba1c03eaff9042afe76d6fe189fe474669",
+      "f352f797b1477c46a20e45f4cbc3a0e258e61963c8ae8f79f84a7bfb4195b37e",
+      "f37ccd159dae35d4914651d57142c8077aa67ab7e3ffef690b00bcb7a7dbd8e6",
+      "f51bca8fcac4266519533698c316f3d23340768a8e57c4796c9f6e0a4f353807",
+      "f5342b8256476554b4045db8b7bf4dc4044d0405485f220f0cd80764bc0d7faf",
+      "f5fbda9703bce94a976e1a6bbdbbe0af25fb613a593a56091991359928b66c05",
+      "f760d9a9c441bfc87eee720ddb0946d3e19995b20983ae14038e033f1664efcb",
+      "f9e9f04e5cb640cf7bbf6fdd4e3970e821138df320ae85cad81b4efc2f5cc802",
+      "faa8520b1c2a3c8216065077e047f84b116405661b1ba070862dac82d464ef39",
+      "fb5df75d1b1c42d997adbb39eac61f2cdb48efa26304a0cb9c0b757c9bc20732",
+      "fb6a4d400aa531c73a718b337116fad77ba8dc6df34fa615c808bfc55ffb19ca",
+      "ff02e697d947f518e9e99f2b25698045a5ddffa95049c4d95b5a8cf3618d9008"
+    ],
+    "retrieved_at": "2026-11-28T12:09:55+00:00",
+    "pypi_info": {
+      "license": "MIT",
+      "license_expression": null,
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 4 - Beta",
+        "Environment :: Console",
+        "Intended Audience :: Developers",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: C",
+        "Programming Language :: C++",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 2",
+        "Programming Language :: Python :: 2.7",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.3",
+        "Programming Language :: Python :: 3.4",
+        "Programming Language :: Python :: 3.5",
+        "Programming Language :: Unix Shell",
+        "Topic :: Software Development :: Libraries",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Topic :: System :: Archiving",
+        "Topic :: System :: Archiving :: Compression",
+        "Topic :: Text Processing :: Fonts",
+        "Topic :: Utilities"
+      ],
+      "requires_python": null,
+      "project_urls": {
+        "Homepage": "https://github.com/google/brotli"
+      },
+      "home_page": "https://github.com/google/brotli",
+      "summary": "Python bindings for the Brotli compression library",
+      "author": "The Brotli Authors"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "brotli-1.2.1-cp311-cp311-win_amd64.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "brotli-1.2.1-cp311-cp311-win_amd64.whl",
+        "url": "https://files.pythonhosted.org/packages/f4/6d/1001898f9e6666027f5357f846d8d7b80e743a3e49703d128cf8ed91abe8/brotli-1.2.1-cp311-cp311-win_amd64.whl",
+        "packagetype": "bdist_wheel",
+        "size": 371026,
+        "sha256_pypi": "7248c282d7d6aef4ae89363da5fc3df7b9250eb04b252622955296eb5d0ea82f",
+        "sha256_verified": "7248c282d7d6aef4ae89363da5fc3df7b9250eb04b252622955296eb5d0ea82f",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "brotli-1.2.1-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/f4/6d/1001898f9e6666027f5357f846d8d7b80e743a3e49703d128cf8ed91abe8/brotli-1.2.1-cp311-cp311-win_amd64.whl",
+      "packagetype": "bdist_wheel",
+      "size": 371026,
+      "sha256_pypi": "7248c282d7d6aef4ae89363da5fc3df7b9250eb04b252622955296eb5d0ea82f",
+      "sha256_verified": "7248c282d7d6aef4ae89363da5fc3df7b9250eb04b252622955296eb5d0ea82f",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "brotli-1.2.1-cp311-cp311-win_amd64.whl::brotli-1.2.1.dist-info/licenses/LICENSE": {
+        "saved_as": "brotli-1.2.1.dist-info_licenses_LICENSE",
+        "sha256": "60ae0f13e76cc2eaaa108677eefa4ce16b647f6bbe8cf0a1ac9429d82eca7248",
+        "bytes": 1103,
+        "from_artifact": "brotli-1.2.1-cp311-cp311-win_amd64.whl",
+        "artifact_sha256": "7248c282d7d6aef4ae89363da5fc3df7b9250eb04b252622955296eb5d0ea82f"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

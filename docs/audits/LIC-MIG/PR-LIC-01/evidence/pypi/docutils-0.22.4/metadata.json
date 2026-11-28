@@ -1,0 +1,326 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "David Goodger <goodger@python.org>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 4 - Beta",
+        "Environment :: Console",
+        "Intended Audience :: Developers",
+        "Intended Audience :: End Users/Desktop",
+        "Intended Audience :: Information Technology",
+        "Intended Audience :: Other Audience",
+        "Intended Audience :: System Administrators",
+        "License :: OSI Approved :: BSD License",
+        "License :: OSI Approved :: GNU General Public License (GPL)",
+        "License :: Public Domain",
+        "Natural Language :: Afrikaans",
+        "Natural Language :: Arabic",
+        "Natural Language :: Catalan",
+        "Natural Language :: Catalan (Valencian)",
+        "Natural Language :: Chinese (Simplified)",
+        "Natural Language :: Chinese (Traditional)",
+        "Natural Language :: Czech",
+        "Natural Language :: Danish",
+        "Natural Language :: Dutch",
+        "Natural Language :: English",
+        "Natural Language :: Esperanto",
+        "Natural Language :: Finnish",
+        "Natural Language :: French",
+        "Natural Language :: Galician",
+        "Natural Language :: Georgian",
+        "Natural Language :: German",
+        "Natural Language :: Hebrew",
+        "Natural Language :: Italian",
+        "Natural Language :: Japanese",
+        "Natural Language :: Korean",
+        "Natural Language :: Latvian",
+        "Natural Language :: Lithuanian",
+        "Natural Language :: Persian",
+        "Natural Language :: Polish",
+        "Natural Language :: Portuguese (Brazilian)",
+        "Natural Language :: Russian",
+        "Natural Language :: Slovak",
+        "Natural Language :: Spanish",
+        "Natural Language :: Swedish",
+        "Natural Language :: Ukrainian",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.9",
+        "Topic :: Documentation",
+        "Topic :: Software Development",
+        "Topic :: Software Development :: Documentation",
+        "Topic :: Text Editors :: Documentation",
+        "Topic :: Text Processing",
+        "Topic :: Text Processing :: General",
+        "Topic :: Text Processing :: Markup",
+        "Topic :: Text Processing :: Markup :: HTML",
+        "Topic :: Text Processing :: Markup :: LaTeX",
+        "Topic :: Text Processing :: Markup :: Markdown",
+        "Topic :: Text Processing :: Markup :: XML",
+        "Topic :: Text Processing :: Markup :: reStructuredText",
+        "Topic :: Utilities"
+      ],
+      "description": "=========================\n README: Docutils 0.22.4\n=========================\n\n:Author: David Goodger\n:Contact: goodger@python.org\n:Date: $Date: 2025-12-18 19:44:54 +0100 (Do, 18. Dez 2025) $\n:Web site: https://docutils.sourceforge.io/\n:Copyright: This document has been placed in the public domain.\n\n:Abstract: Docutils is a modular system for processing documentation into\n           useful formats, such as HTML, XML, and LaTeX.\n           For input Docutils supports reStructuredText, an easy-to-read,\n           what-you-see-is-what-you-get plaintext markup syntax.\n\n.. contents::\n\n\nQuick-Start\n===========\n\nThis is for those who want to get up & running quickly.\n\n1. Docutils requires **Python**, available from\n   https://www.python.org/.\n   See Dependencies_ below for details.\n\n2. Install the latest stable release from PyPi with pip_::\n\n       pip install docutils\n\n   For alternatives and details, see section `Installation`_ below.\n\n3. Use the `front-end scripts`_ to convert reStructuredText documents.\n   Try for example::\n\n       docutils FAQ.rst FAQ.html\n\n   See Usage_ below for details.\n\n\nPurpose\n=======\n\nThe purpose of the Docutils project is to provide a set of tools for\nprocessing plaintext documentation into useful formats, such as HTML,\nLaTeX, troff (man pages), OpenOffice, and native XML.  Support for the\nfollowing sources has been implemented:\n\n* Standalone files.\n\n* `PEPs (Python Enhancement Proposals)`_.\n\nSupport for the following sources is planned or provided by\n`third party tools`_:\n\n* Inline documentation from Python modules and packages, extracted\n  with namespace context.\n\n* Email (RFC-822 headers, quoted excerpts, signatures, MIME parts).\n\n* Wikis, with global reference lookups of \"wiki links\".\n\n* Compound documents, such as multiple chapter files merged into a\n  book.\n\n* And others as discovered.\n\n.. _PEPs (Python Enhancement Proposals):\n   https://peps.python.org/pep-0012\n.. _third party tools: docs/user/links.html#related-applications\n\n\nDependencies\n============\n\nTo run the code, Python_ must be installed.\n(Python is pre-installed with most Linux distributions.)\n\n* Since version 0.21, Docutils requires Python 3.9 or later.\n* Docutils versions 0.19 to 0.20.1 require Python 3.7 or later.\n* Docutils versions 0.16 to 0.18 require Python 2.7 or 3.5+.\n\nThe **type hints** added in version 0.22 use Python 3.10 syntax.\nHowever, the Python interpreter treats them as annotations\nunless ``typing.TYPE_CHECKING`` is set to ``True``.\n\n.. _Python: https://www.python.org/.\n\n\nRecommendations\n---------------\n\nDocutils uses the following packages for enhanced functionality, if they\nare installed:\n\n* The recommended installer is pip_, setuptools_ works, too.\n\n* The `Python Imaging Library`_ (PIL) is used for some image\n  manipulation operations.\n\n* The `Pygments`_ package provides syntax highlight of \"code\" directives\n  and roles.\n\n* The `myst`_, `pycmark`_, or `recommonmark`_ parsers can be used to\n  parse input in \"Markdown\" (CommonMark_) format.\n\nThe `Docutils Link List <docs/user/links.html>`__ records projects that\nusers of Docutils and reStructuredText may find useful.\n\n.. _pip: https://pypi.org/project/pip/\n.. _setuptools: https://pypi.org/project/setuptools/\n.. _Python Imaging Library: http://www.pythonware.com/products/pil/\n.. _Pygments: https://pypi.org/project/Pygments/\n.. _myst: https://pypi.org/project/myst-docutils/\n.. _pycmark: https://pypi.org/project/pycmark/\n.. _recommonmark: https://github.com/rtfd/recommonmark\n.. _CommonMark: https://spec.commonmark.org/0.30/\n\n\nInstallation\n============\n\nThe `Python Packaging User Guide`_ gives details how to\n`use pip for installing`_.\n\n* The simplest way is to install the latest *stable release* from PyPi::\n\n      pip install docutils\n\n* To install a *pre-relase*, append the option ``--pre``.\n\n* To install a `development version`_ *from source*:\n\n  1. Open a shell\n\n  2. Go to the directory containing the ``pyproject.toml`` file.\n\n  3. Install the package with **one** of the following commands::\n\n         pip install -e .  # editable install\n         pip install .     # regular install\n\n     or do a `\"manual\" install`_.\n\n  4. Optional steps:\n\n     * `Running the test suite`_\n     * `Converting the documentation`_\n\n  See also the OS-specific installation instructions below and\n  the `Docutils version repository`_ documentation.\n\n* To install for a *specific Python version*, use this version in the\n  setup call, e.g. ::\n\n       python3.11 -m pip install docutils\n\n  If the python executable isn't on your path, you'll have to specify the\n  complete path, such as ``/usr/local/bin/python3.11``.\n\n  To install for different Python versions, repeat step 3 for every\n  required version. The last installed version will be used for the\n  ``docutils`` command line application.\n\n.. _Python Packaging User Guide: https://packaging.python.org/en/latest/\n.. _use pip for installing:\n    https://packaging.python.org/en/latest/tutorials/installing-packages/\n    #use-pip-for-installing\n.. _\"editable\" install:\n    https://pip.pypa.io/en/stable/topics/local-project-installs/\n    #editable-installs\n.. _\"manual\" install: docs/dev/repository.html#manual-install\n\n\nGNU/Linux, BSDs, Unix, Mac OS X, etc.\n-------------------------------------\n\n* Use ``su`` or ``sudo`` for a system-wide\n  installation as ``root``, e.g.::\n\n      sudo pip install docutils\n\n\nWindows\n-------\n\n* The Python FAQ explains `how to run a Python program under Windows`__.\n\n  __ https://docs.python.org/3/faq/windows.html\n     #how-do-i-run-a-python-program-under-windows\n\n* Usually, pip_ is automatically installed if you are using Python\n  downloaded from https://python.org. If not, see the\n  `pip documentation <https://pip.pypa.io/en/stable/installation/>`__.\n\n* The command window should recognise the word ``py`` as an instruction to\n  start the interpreter, e.g.\n\n       py -m pip install docutils\n\n  If this does not work, you may have to specify the full path to the\n  Python executable.\n\n\nUsage\n=====\n\nStart the \"docutils\" command line application with::\n\n    docutils [options] [<source> [<destination>]]\n\nThe default action is to convert a reStructuredText_ document to HTML5,\nfor example::\n\n    docutils test.rst test.html\n\nRead the ``--help`` option output for details on options and arguments and\n`Docutils Front-End Tools`_ for the full documentation of the various tools.\n\nFor programmatic use of the `docutils` Python package, read the\n`API Reference Material`_ and the source code.\nRemaining questions may be answered in the `Docutils Project\nDocumentation`_ or the Docutils-users_ mailing list.\n\nContributions are welcome!\n\n.. _reStructuredText: https://docutils.sourceforge.io/rst.html\n.. _front-end scripts:\n.. _Docutils Front-End Tools: docs/user/tools.html\n.. _API Reference Material: /docs/index.html\n                            #api-reference-material-for-client-developers\n.. _Docutils Project Documentation: /docs/index.html\n\n\nProject Files & Directories\n===========================\n\n* README.rst: You're reading it.\n\n* COPYING.rst: Public Domain Dedication and copyright details for\n  non-public-domain files (most are PD).\n\n* FAQ.rst: Frequently Asked Questions (with answers!).\n\n* RELEASE-NOTES.rst: Summary of the major changes in recent releases.\n\n* HISTORY.rst: A detailed change log, for the current and all previous\n  project releases.\n\n* BUGS.rst: Known bugs, and how to report a bug.\n\n* THANKS.rst: List of contributors.\n\n* pyproject.toml: Project metadata.\n  See \"Installation\" above.\n\n* docutils: The project source directory, installed as a Python\n  package.\n\n* docs: The project documentation directory.  Read ``docs/index.rst``\n  for an overview.\n\n* docs/user: The project user documentation directory.  Contains the\n  following documents, among others:\n\n  - docs/user/tools.rst: Docutils Front-End Tools\n  - docs/user/latex.rst: Docutils LaTeX Writer\n  - docs/user/rst/quickstart.rst: A ReStructuredText Primer\n  - docs/user/rst/quickref.html: Quick reStructuredText (HTML only)\n\n* docs/ref: The project reference directory.\n  ``docs/ref/rst/restructuredtext.rst`` is the reStructuredText\n  reference.\n\n* licenses: Directory containing copies of license files for\n  non-public-domain files.\n\n* tools: Directory for Docutils front-end tools.  See\n  ``docs/user/tools.rst`` for documentation.\n\n* test: Unit tests.  Not required to use the software, but very useful\n  if you're planning to modify it.  See `Running the Test Suite`_\n  below.\n\n\nDevelopment version\n===================\n\nWhile we are trying to follow a \"release early & often\" policy,\nfeatures are added frequently.\nWe recommend using a current snapshot or a working copy of the repository.\n\nRepository check-out:\n  To keep up to date on the latest developments,\n  use a `working copy`__ of the `Docutils version repository`_.\n\nSnapshots:\n  To get a repository _`snapshot`, go to\n  https://sourceforge.net/p/docutils/code/HEAD/tree/trunk/docutils/\n  and click the download snapshot button.\n\n  Unpack in a temporary directory,\n  **not** directly in Python's ``site-packages``.\n\nSee the `Installation`_ instructions above.\n\n__ docs/dev/repository.html#checking-out-the-repository\n.. _Docutils version repository: docs/dev/repository.html\n.. _sandbox: https://docutils.sourceforge.io/sandbox/README.html\n\n\nConverting the documentation\n============================\n\nAfter unpacking and installing the Docutils package, the following\nshell commands will generate HTML for all included documentation::\n\n    cd <archive_directory_path>\n    tools/buildhtml.py .\n\nOn Windows systems, type::\n\n    cd <archive_directory_path>\n    py tools\\buildhtml.py ..\n\nThe final directory name of the ``<archive_directory_path>`` is\n\"docutils\" for snapshots.  For official releases, the directory may be\ncalled \"docutils-X.Y.Z\", where \"X.Y.Z\" is the release version.\n\nSome files may generate system messages (warnings and errors).  The\n``docs/user/rst/demo.rst`` file (under the archive directory) contains\nfive intentional errors.  (They test the error reporting mechanism!)\n\n\nRunning the Test Suite\n======================\n\nThe test suite is documented in `Docutils Testing`_ (docs/dev/testing.rst).\n\nTo run the entire test suite, open a shell and use the following\ncommands::\n\n    cd <archive_directory_path>/test\n    ./alltests.py\n\nUnder Windows, type::\n\n    cd <archive_directory_path>\\test\n    python alltests.py\n\n\nYou should see a long line of periods, one for each test, and then a\nsummary like this::\n\n    Ran 1744 tests in 5.859s\n\n    OK (skipped=1)\n    Elapsed time: 6.235 seconds\n\nThe number of tests will grow over time, and the times reported will\ndepend on the computer running the tests.\nSome test are skipped, if optional dependencies (`recommendations`_)\nare missing.\nThe difference between the two times represents the time required to set\nup the tests (import modules, create data structures, etc.).\n\nA copy of the test output is written to the file ``alltests.out``.\n\nIf any of the tests fail, please `open a bug report`_ or `send an email`_\n(see `Bugs <BUGS.html>`_).\nPlease include all relevant output, information about your operating\nsystem, Python version, and Docutils version.  To see the Docutils\nversion, look at the test output or use ::\n\n    docutils --version\n\n.. _Docutils Testing: https://docutils.sourceforge.io/docs/dev/testing.html\n.. _open a bug report:\n   https://sourceforge.net/p/docutils/bugs/\n.. _send an email: mailto:docutils-users@lists.sourceforge.net\n   ?subject=Test%20suite%20failure\n.. _web interface: https://sourceforge.net/p/docutils/mailman/\n\n\nGetting Help\n============\n\nAll documentation can be reached from the `Project Documentation\nOverview`_.\n\nThe SourceForge `project page`_ has links to the tracker, mailing\nlists, and code repository.\n\nIf you have further questions or need assistance with Docutils or\nreStructuredText, please post a message to the Docutils-users_ mailing\nlist.\n\n.. _Project Documentation Overview: docs/index.html\n.. _project page: https://sourceforge.net/p/docutils\n.. _Docutils-users: docs/user/mailing-lists.html#docutils-users\n\n\n..\f Emacs settings\n\n   Local Variables:\n   mode: indented-text\n   mode: rst\n   indent-tabs-mode: nil\n   sentence-end-double-space: t\n   fill-column: 70\n   End:\n\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": null,
+      "license": null,
+      "license_expression": null,
+      "license_files": [
+        "COPYING.rst",
+        "licenses/BSD-0-Clause.rst",
+        "licenses/BSD-2-Clause.rst",
+        "licenses/gpl-3-0.txt"
+      ],
+      "maintainer": null,
+      "maintainer_email": "docutils-develop list <docutils-develop@lists.sourceforge.net>",
+      "name": "docutils",
+      "package_url": "https://pypi.org/project/docutils/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/docutils/",
+      "project_urls": {
+        "Changelog": "https://docutils.sourceforge.io/HISTORY.html",
+        "Code": "https://sourceforge.net/p/docutils/code/",
+        "Documentation": "https://docutils.sourceforge.io/docs/",
+        "Download": "https://pypi.org/project/docutils/",
+        "Homepage": "https://docutils.sourceforge.io",
+        "Issue tracker": "https://sourceforge.net/p/docutils/bugs/"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/docutils/0.22.4/",
+      "requires_dist": null,
+      "requires_python": ">=3.9",
+      "summary": "Docutils -- Python Documentation Utilities",
+      "version": "0.22.4",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 37465794,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "goodger"
+        },
+        {
+          "role": "Owner",
+          "user": "grubert"
+        },
+        {
+          "role": "Owner",
+          "user": "milde"
+        },
+        {
+          "role": "Maintainer",
+          "user": "AA-Turner"
+        },
+        {
+          "role": "Maintainer",
+          "user": "felixwiemann"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "16d95dfa4055669d8bfd3691ce7183b18022f3504f4aaf54353471bb819491bc"
+        },
+        "digests": {
+          "blake2b_256": "02105da547df7a391dcde17f59520a231527b8571e6f46fc8efb02ccb370ab12",
+          "md5": "9c1b22053bd8e4f12f392e933001d90f",
+          "sha256": "d0013f540772d1420576855455d050a2180186c91c15779301ac2ccb3eeb68de"
+        },
+        "downloads": -1,
+        "filename": "docutils-0.22.4-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "9c1b22053bd8e4f12f392e933001d90f",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.9",
+        "size": 633196,
+        "upload_time": "2025-12-18T19:00:18",
+        "upload_time_iso_8601": "2025-12-18T19:00:18.077803Z",
+        "url": "https://files.pythonhosted.org/packages/02/10/5da547df7a391dcde17f59520a231527b8571e6f46fc8efb02ccb370ab12/docutils-0.22.4-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "aeb603bb70946330e88ffec97aefd3ea75ba575cb2e762061e0e62a213befee8",
+          "md5": "58f718cd60a87725d4dac56ae427c9f8",
+          "sha256": "4db53b1fde9abecbb74d91230d32ab626d94f6badfc575d6db9194a49df29968"
+        },
+        "downloads": -1,
+        "filename": "docutils-0.22.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "58f718cd60a87725d4dac56ae427c9f8",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.9",
+        "size": 2291750,
+        "upload_time": "2025-12-18T19:00:26",
+        "upload_time_iso_8601": "2025-12-18T19:00:26.443107Z",
+        "url": "https://files.pythonhosted.org/packages/ae/b6/03bb70946330e88ffec97aefd3ea75ba575cb2e762061e0e62a213befee8/docutils-0.22.4.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "docutils",
+    "version": "0.22.4",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "4db53b1fde9abecbb74d91230d32ab626d94f6badfc575d6db9194a49df29968",
+      "d0013f540772d1420576855455d050a2180186c91c15779301ac2ccb3eeb68de"
+    ],
+    "retrieved_at": "2026-11-28T12:09:55+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: BSD License",
+        "License :: OSI Approved :: GNU General Public License (GPL)",
+        "License :: Public Domain"
+      ],
+      "classifiers_all": [
+        "Development Status :: 4 - Beta",
+        "Environment :: Console",
+        "Intended Audience :: Developers",
+        "Intended Audience :: End Users/Desktop",
+        "Intended Audience :: Information Technology",
+        "Intended Audience :: Other Audience",
+        "Intended Audience :: System Administrators",
+        "License :: OSI Approved :: BSD License",
+        "License :: OSI Approved :: GNU General Public License (GPL)",
+        "License :: Public Domain",
+        "Natural Language :: Afrikaans",
+        "Natural Language :: Arabic",
+        "Natural Language :: Catalan",
+        "Natural Language :: Catalan (Valencian)",
+        "Natural Language :: Chinese (Simplified)",
+        "Natural Language :: Chinese (Traditional)",
+        "Natural Language :: Czech",
+        "Natural Language :: Danish",
+        "Natural Language :: Dutch",
+        "Natural Language :: English",
+        "Natural Language :: Esperanto",
+        "Natural Language :: Finnish",
+        "Natural Language :: French",
+        "Natural Language :: Galician",
+        "Natural Language :: Georgian",
+        "Natural Language :: German",
+        "Natural Language :: Hebrew",
+        "Natural Language :: Italian",
+        "Natural Language :: Japanese",
+        "Natural Language :: Korean",
+        "Natural Language :: Latvian",
+        "Natural Language :: Lithuanian",
+        "Natural Language :: Persian",
+        "Natural Language :: Polish",
+        "Natural Language :: Portuguese (Brazilian)",
+        "Natural Language :: Russian",
+        "Natural Language :: Slovak",
+        "Natural Language :: Spanish",
+        "Natural Language :: Swedish",
+        "Natural Language :: Ukrainian",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.9",
+        "Topic :: Documentation",
+        "Topic :: Software Development",
+        "Topic :: Software Development :: Documentation",
+        "Topic :: Text Editors :: Documentation",
+        "Topic :: Text Processing",
+        "Topic :: Text Processing :: General",
+        "Topic :: Text Processing :: Markup",
+        "Topic :: Text Processing :: Markup :: HTML",
+        "Topic :: Text Processing :: Markup :: LaTeX",
+        "Topic :: Text Processing :: Markup :: Markdown",
+        "Topic :: Text Processing :: Markup :: XML",
+        "Topic :: Text Processing :: Markup :: reStructuredText",
+        "Topic :: Utilities"
+      ],
+      "requires_python": ">=3.9",
+      "project_urls": {
+        "Changelog": "https://docutils.sourceforge.io/HISTORY.html",
+        "Code": "https://sourceforge.net/p/docutils/code/",
+        "Documentation": "https://docutils.sourceforge.io/docs/",
+        "Download": "https://pypi.org/project/docutils/",
+        "Homepage": "https://docutils.sourceforge.io",
+        "Issue tracker": "https://sourceforge.net/p/docutils/bugs/"
+      },
+      "home_page": null,
+      "summary": "Docutils -- Python Documentation Utilities",
+      "author": "David Goodger <goodger@python.org>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "docutils-0.22.4-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "docutils-0.22.4-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/02/10/5da547df7a391dcde17f59520a231527b8571e6f46fc8efb02ccb370ab12/docutils-0.22.4-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 633196,
+        "sha256_pypi": "d0013f540772d1420576855455d050a2180186c91c15779301ac2ccb3eeb68de",
+        "sha256_verified": "d0013f540772d1420576855455d050a2180186c91c15779301ac2ccb3eeb68de",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "docutils-0.22.4-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/02/10/5da547df7a391dcde17f59520a231527b8571e6f46fc8efb02ccb370ab12/docutils-0.22.4-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 633196,
+      "sha256_pypi": "d0013f540772d1420576855455d050a2180186c91c15779301ac2ccb3eeb68de",
+      "sha256_verified": "d0013f540772d1420576855455d050a2180186c91c15779301ac2ccb3eeb68de",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "docutils-0.22.4-py3-none-any.whl::docutils-0.22.4.dist-info/licenses/COPYING.rst": {
+        "saved_as": "docutils-0.22.4.dist-info_licenses_COPYING.rst",
+        "sha256": "6ab4f27c76c74f96e5e692da5944a6f82968f3bddaac5660a4aa723e70eb5d8f",
+        "bytes": 6075,
+        "from_artifact": "docutils-0.22.4-py3-none-any.whl",
+        "artifact_sha256": "d0013f540772d1420576855455d050a2180186c91c15779301ac2ccb3eeb68de"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

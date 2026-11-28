@@ -1,0 +1,192 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "\"Jason R. Coombs\" <jaraco@jaraco.com>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only"
+      ],
+      "description": ".. image:: https://img.shields.io/pypi/v/backports.tarfile.svg\n   :target: https://pypi.org/project/backports.tarfile\n\n.. image:: https://img.shields.io/pypi/pyversions/backports.tarfile.svg\n\n.. image:: https://github.com/jaraco/backports.tarfile/actions/workflows/main.yml/badge.svg\n   :target: https://github.com/jaraco/backports.tarfile/actions?query=workflow%3A%22tests%22\n   :alt: tests\n\n.. image:: https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/charliermarsh/ruff/main/assets/badge/v2.json\n    :target: https://github.com/astral-sh/ruff\n    :alt: Ruff\n\n.. .. image:: https://readthedocs.org/projects/backportstarfile/badge/?version=latest\n..    :target: https://backportstarfile.readthedocs.io/en/latest/?badge=latest\n\n.. image:: https://img.shields.io/badge/skeleton-2024-informational\n   :target: https://blog.jaraco.com/skeleton\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": null,
+      "license": null,
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "backports.tarfile",
+      "package_url": "https://pypi.org/project/backports.tarfile/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/backports.tarfile/",
+      "project_urls": {
+        "Homepage": "https://github.com/jaraco/backports.tarfile"
+      },
+      "provides_extra": [
+        "docs",
+        "testing"
+      ],
+      "release_url": "https://pypi.org/project/backports.tarfile/1.2.0/",
+      "requires_dist": [
+        "sphinx>=3.5; extra == \"docs\"",
+        "jaraco.packaging>=9.3; extra == \"docs\"",
+        "rst.linker>=1.9; extra == \"docs\"",
+        "furo; extra == \"docs\"",
+        "sphinx-lint; extra == \"docs\"",
+        "pytest!=8.1.*,>=6; extra == \"testing\"",
+        "pytest-checkdocs>=2.4; extra == \"testing\"",
+        "pytest-cov; extra == \"testing\"",
+        "pytest-enabler>=2.2; extra == \"testing\"",
+        "jaraco.test; extra == \"testing\"",
+        "pytest!=8.0.*; extra == \"testing\""
+      ],
+      "requires_python": ">=3.8",
+      "summary": "Backport of CPython tarfile module",
+      "version": "1.2.0",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 23415614,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "jaraco"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": "",
+        "core-metadata": {
+          "sha256": "8215c54ead77d9dc5a108a25c6bdc72b5999aa6f62c9499a440359412afa5a51"
+        },
+        "digests": {
+          "blake2b_256": "b9fa123043af240e49752f1c4bd24da5053b6bd00cad78c2be53c0d1e8b975bc",
+          "md5": "ce3d3224ad9ee162615afae966ed5908",
+          "sha256": "77e284d754527b01fb1e6fa8a1afe577858ebe4e9dad8919e34c862cb399bc34"
+        },
+        "downloads": -1,
+        "filename": "backports.tarfile-1.2.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "ce3d3224ad9ee162615afae966ed5908",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.8",
+        "size": 30181,
+        "upload_time": "2024-05-28T17:01:53",
+        "upload_time_iso_8601": "2024-05-28T17:01:53.112046Z",
+        "url": "https://files.pythonhosted.org/packages/b9/fa/123043af240e49752f1c4bd24da5053b6bd00cad78c2be53c0d1e8b975bc/backports.tarfile-1.2.0-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": "",
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "8672cd9b395f25e290e633655a100af28cb253e4393396264a98bd5f5951d50f",
+          "md5": "6fa4cba424a2bf48a7764412e9e65dcd",
+          "sha256": "d75e02c268746e1b8144c278978b6e98e85de6ad16f8e4b0844a154557eca991"
+        },
+        "downloads": -1,
+        "filename": "backports_tarfile-1.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6fa4cba424a2bf48a7764412e9e65dcd",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.8",
+        "size": 86406,
+        "upload_time": "2024-05-28T17:01:54",
+        "upload_time_iso_8601": "2024-05-28T17:01:54.731337Z",
+        "url": "https://files.pythonhosted.org/packages/86/72/cd9b395f25e290e633655a100af28cb253e4393396264a98bd5f5951d50f/backports_tarfile-1.2.0.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "backports-tarfile",
+    "version": "1.2.0",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "77e284d754527b01fb1e6fa8a1afe577858ebe4e9dad8919e34c862cb399bc34",
+      "d75e02c268746e1b8144c278978b6e98e85de6ad16f8e4b0844a154557eca991"
+    ],
+    "retrieved_at": "2026-11-28T12:09:54+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: MIT License"
+      ],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only"
+      ],
+      "requires_python": ">=3.8",
+      "project_urls": {
+        "Homepage": "https://github.com/jaraco/backports.tarfile"
+      },
+      "home_page": null,
+      "summary": "Backport of CPython tarfile module",
+      "author": "\"Jason R. Coombs\" <jaraco@jaraco.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "backports.tarfile-1.2.0-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "backports.tarfile-1.2.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/b9/fa/123043af240e49752f1c4bd24da5053b6bd00cad78c2be53c0d1e8b975bc/backports.tarfile-1.2.0-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 30181,
+        "sha256_pypi": "77e284d754527b01fb1e6fa8a1afe577858ebe4e9dad8919e34c862cb399bc34",
+        "sha256_verified": "77e284d754527b01fb1e6fa8a1afe577858ebe4e9dad8919e34c862cb399bc34",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "backports.tarfile-1.2.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/b9/fa/123043af240e49752f1c4bd24da5053b6bd00cad78c2be53c0d1e8b975bc/backports.tarfile-1.2.0-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 30181,
+      "sha256_pypi": "77e284d754527b01fb1e6fa8a1afe577858ebe4e9dad8919e34c862cb399bc34",
+      "sha256_verified": "77e284d754527b01fb1e6fa8a1afe577858ebe4e9dad8919e34c862cb399bc34",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "backports.tarfile-1.2.0-py3-none-any.whl::backports.tarfile-1.2.0.dist-info/LICENSE": {
+        "saved_as": "backports.tarfile-1.2.0.dist-info_LICENSE",
+        "sha256": "86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741",
+        "bytes": 1023,
+        "from_artifact": "backports.tarfile-1.2.0-py3-none-any.whl",
+        "artifact_sha256": "77e284d754527b01fb1e6fa8a1afe577858ebe4e9dad8919e34c862cb399bc34"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

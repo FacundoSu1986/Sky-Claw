@@ -1,0 +1,1957 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "Hiroshi Miura <miurahr@linux.com>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Topic :: Software Development :: Libraries :: Python Modules"
+      ],
+      "description": "inflate64\n=========\n\n.. image:: https://badge.fury.io/py/inflate64.svg\n    :target: https://badge.fury.io/py/inflate64\n\n.. image:: https://github.com/miurahr/inflate64/actions/workflows/run-tox-tests.yml/badge.svg?branch=main\n    :target: https://github.com/miurahr/inflate64/actions/workflows/run-tox-tests.yml\n\n.. image:: https://ci.codeberg.org/api/badges/12505/status.svg\n    :target: https://ci.codeberg.org/repos/12505\n\n\nThe ``inflate64`` is a python package to provide ``Deflater`` and ``Inflater`` class to compress and\ndecompress with Enhanced Deflate compression algorithm.\n\nThe project is in ``Production/Stable`` status.\n\nHow to use\n----------\n\nYou can install it with ``pip`` command as usual.\n\n.. code-block::\n\n  pip install inflate64\n\n\nYou can extract compressed data by instantiating ``Inflater`` class and call ``inflate`` method.\n\n.. code-block:: python\n\n  import inflate64\n  decompressor = inflate64.Inflater()\n  extracted = decompressor.inflate(data)\n\n\nYou can also compress data by instantiating ``Deflater`` class and call ``deflate`` method.\n\n.. code-block:: python\n\n  import inflate64\n  compressor = inflate64.Deflater()\n  compressed = compressor.deflate(data)\n  compressed += compressor.flush()\n\n\nLicense\n-------\n\nThis library is free software; you can redistribute it and/or\nmodify it under the terms of the GNU Lesser General Public\nLicense as published by the Free Software Foundation; either\nversion 2.1 of the License, or (at your option) any later version.\n\nThis library is distributed in the hope that it will be useful,\nbut WITHOUT ANY WARRANTY; without even the implied warranty of\nMERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU\nLesser General Public License for more details.\n\nYou should have received a copy of the GNU Lesser General Public\nLicense along with this library; if not, write to the Free Software\nFoundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA\n\n.. note::\n   Please note that Enhanced Deflate algorithm is also known as `DEFLATE64` :sup:`TM`\n   that is a registered trademark of `PKWARE, Inc.`\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": [
+        "License-File"
+      ],
+      "home_page": null,
+      "keywords": "deflate64, compression",
+      "license": "LGPL-2.1-or-later",
+      "license_expression": null,
+      "license_files": [
+        "COPYING"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "inflate64",
+      "package_url": "https://pypi.org/project/inflate64/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/inflate64/",
+      "project_urls": {
+        "Bug Tracker": "https://github.com/miurahr/inflate64/issues",
+        "Changelog": "https://inflate64.readthedocs.io/en/latest/changelog.html",
+        "Documentation": "https://inflate64.readthedocs.io/en/stable/",
+        "Homepage": "https://inflate64.readthedocs.io/",
+        "Source": "https://github.com/miurahr/inflate64"
+      },
+      "provides_extra": [
+        "test",
+        "docs",
+        "check"
+      ],
+      "release_url": "https://pypi.org/project/inflate64/1.0.4/",
+      "requires_dist": [
+        "pytest; extra == \"test\"",
+        "sphinx>=5.0; extra == \"docs\"",
+        "sphinx_rtd_theme; extra == \"docs\"",
+        "docutils; extra == \"docs\"",
+        "mypy>=1.10.0; extra == \"check\"",
+        "mypy_extensions>=0.4.1; extra == \"check\"",
+        "check-manifest; extra == \"check\"",
+        "flake8; extra == \"check\"",
+        "flake8-black; extra == \"check\"",
+        "flake8-deprecated; extra == \"check\"",
+        "flake8-isort; extra == \"check\"",
+        "pygments; extra == \"check\"",
+        "readme-renderer; extra == \"check\"",
+        "twine; extra == \"check\""
+      ],
+      "requires_python": ">=3.9",
+      "summary": "deflate64 compression/decompression library",
+      "version": "1.0.4",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 32670700,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "miurahr"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "efd55c13cfc7954ed716ae0e5e64c4f54be43f8c145b546472b67803feaa18a4",
+          "md5": "33c2fce2d3fb06684152875d09a3552f",
+          "sha256": "f1a47837d4322e0684824f91eb635aa6fd1967584140c478b0a1aca7b11740d6"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp310-cp310-macosx_10_9_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "33c2fce2d3fb06684152875d09a3552f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 58602,
+        "upload_time": "2025-11-28T10:54:21",
+        "upload_time_iso_8601": "2025-11-28T10:54:21.346426Z",
+        "url": "https://files.pythonhosted.org/packages/ef/d5/5c13cfc7954ed716ae0e5e64c4f54be43f8c145b546472b67803feaa18a4/inflate64-1.0.4-cp310-cp310-macosx_10_9_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "33574d740b677cda81ec6f47c05b502ed15103c8a7d9c3e91ee93352d46fe69c",
+          "md5": "61bdda796530fcbd9cbef75a80a894eb",
+          "sha256": "8600478542e2354d1ee7b5c57c957006cabacd8b787b4046951f487a2216e5c0"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp310-cp310-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "61bdda796530fcbd9cbef75a80a894eb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 35856,
+        "upload_time": "2025-11-28T10:54:22",
+        "upload_time_iso_8601": "2025-11-28T10:54:22.629337Z",
+        "url": "https://files.pythonhosted.org/packages/33/57/4d740b677cda81ec6f47c05b502ed15103c8a7d9c3e91ee93352d46fe69c/inflate64-1.0.4-cp310-cp310-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "17cdec3c058283706a43ab790e8d611a3a787a4f4cc4ae3faeafba6e2e216e36",
+          "md5": "90ba0bdbfc16b3733646b0c8400f3cb0",
+          "sha256": "fb2b5a62579d074f38352a3494c3c6ac1a90516b75c5793c39303547f1fea925"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp310-cp310-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "90ba0bdbfc16b3733646b0c8400f3cb0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 36007,
+        "upload_time": "2025-11-28T10:54:23",
+        "upload_time_iso_8601": "2025-11-28T10:54:23.685854Z",
+        "url": "https://files.pythonhosted.org/packages/17/cd/ec3c058283706a43ab790e8d611a3a787a4f4cc4ae3faeafba6e2e216e36/inflate64-1.0.4-cp310-cp310-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "248390f7086f8078057a090db43459e478dc45e2d5ce2509f9c6a6a08100efa0",
+          "md5": "2d2883e993b9de6b0464a4d148520c61",
+          "sha256": "dcfafc572a642215894af1ec8d05949fa35eb7cb36d053aa97b11eccf1ae579e"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "2d2883e993b9de6b0464a4d148520c61",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 95055,
+        "upload_time": "2025-11-28T10:54:24",
+        "upload_time_iso_8601": "2025-11-28T10:54:24.864077Z",
+        "url": "https://files.pythonhosted.org/packages/24/83/90f7086f8078057a090db43459e478dc45e2d5ce2509f9c6a6a08100efa0/inflate64-1.0.4-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "95d34f760f095ce8a9494d441b96a8735346141dd24f52fa573c971c0da1c958",
+          "md5": "6ac13b54ea05ab602d1ea44dd0ae7608",
+          "sha256": "cb93159cb60aee8cab62541aa70e4c460f13359660a27a1a486518bba0153535"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "6ac13b54ea05ab602d1ea44dd0ae7608",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 96645,
+        "upload_time": "2025-11-28T10:54:26",
+        "upload_time_iso_8601": "2025-11-28T10:54:26.308224Z",
+        "url": "https://files.pythonhosted.org/packages/95/d3/4f760f095ce8a9494d441b96a8735346141dd24f52fa573c971c0da1c958/inflate64-1.0.4-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "8c2a78ab2fcb02c13e3c8c93c2d82bf5eec1862b428bc6177dcc76ac4044408d",
+          "md5": "257aac380440a62d02e11eab421d1c51",
+          "sha256": "89126ceb4d96e76842f4697017a9a3e750c34e029ddb360b3d8ca79a648d47f6"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp310-cp310-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "257aac380440a62d02e11eab421d1c51",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 92933,
+        "upload_time": "2025-11-28T10:54:27",
+        "upload_time_iso_8601": "2025-11-28T10:54:27.563445Z",
+        "url": "https://files.pythonhosted.org/packages/8c/2a/78ab2fcb02c13e3c8c93c2d82bf5eec1862b428bc6177dcc76ac4044408d/inflate64-1.0.4-cp310-cp310-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "c51bc9a2d84fc117dddee0749dc1b3ab9ed725bf92e866ef0ede0945a5128ef0",
+          "md5": "2e3c116d039697b67b23c5719dbce296",
+          "sha256": "f70e6692617ec82500b203eefac8765302298ce7e73584fcf995bb9e23184530"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp310-cp310-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "2e3c116d039697b67b23c5719dbce296",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 95898,
+        "upload_time": "2025-11-28T10:54:28",
+        "upload_time_iso_8601": "2025-11-28T10:54:28.910370Z",
+        "url": "https://files.pythonhosted.org/packages/c5/1b/c9a2d84fc117dddee0749dc1b3ab9ed725bf92e866ef0ede0945a5128ef0/inflate64-1.0.4-cp310-cp310-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "bd855879fa47122c7d5b563c6dacbd4a782bd9464405f69d46af01e02d4a3907",
+          "md5": "4264151918cae13938e55922019fcd80",
+          "sha256": "d08cdda33341b4f992af60c12dc60e370e9993b80a936c17244a602711eeb727"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp310-cp310-win32.whl",
+        "has_sig": false,
+        "md5_digest": "4264151918cae13938e55922019fcd80",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 32940,
+        "upload_time": "2025-11-28T10:54:30",
+        "upload_time_iso_8601": "2025-11-28T10:54:30.385895Z",
+        "url": "https://files.pythonhosted.org/packages/bd/85/5879fa47122c7d5b563c6dacbd4a782bd9464405f69d46af01e02d4a3907/inflate64-1.0.4-cp310-cp310-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "a359cef1b3505dc33d8cb9d115481923dec1de1372d29ac278622feecf9c03a1",
+          "md5": "08acaf44c8a461ec65fcba8ccc5eab46",
+          "sha256": "950dd7fe53474df5f4699b8f099980027e812d55fd82d8e167d599822c3d27d6"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp310-cp310-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "08acaf44c8a461ec65fcba8ccc5eab46",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 35541,
+        "upload_time": "2025-11-28T10:54:31",
+        "upload_time_iso_8601": "2025-11-28T10:54:31.837353Z",
+        "url": "https://files.pythonhosted.org/packages/a3/59/cef1b3505dc33d8cb9d115481923dec1de1372d29ac278622feecf9c03a1/inflate64-1.0.4-cp310-cp310-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "7213d964fbfceeee6752c36c45645e5e9a9ef0dd70d4ce64e5e7316822e43382",
+          "md5": "4e009c30cb2c6f934ae2f6d63d9d6ffb",
+          "sha256": "bad20de249d6336793f6267880668dbb286ca5c6e6991795aa6344c817588068"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp310-cp310-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "4e009c30cb2c6f934ae2f6d63d9d6ffb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.9",
+        "size": 33460,
+        "upload_time": "2025-11-28T10:54:32",
+        "upload_time_iso_8601": "2025-11-28T10:54:32.954110Z",
+        "url": "https://files.pythonhosted.org/packages/72/13/d964fbfceeee6752c36c45645e5e9a9ef0dd70d4ce64e5e7316822e43382/inflate64-1.0.4-cp310-cp310-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "39e42fc07d71cf863ed4167e7d3eb7f89de0341ffe3ed3a62ff6cc4123bdbda6",
+          "md5": "11282fbacb834ff33447625881797638",
+          "sha256": "bccda9815b27623e805a34ee3ee4f46c93f0cc7ac621f9834d75f033fd79c27a"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp311-cp311-macosx_10_9_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "11282fbacb834ff33447625881797638",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 58595,
+        "upload_time": "2025-11-28T10:54:34",
+        "upload_time_iso_8601": "2025-11-28T10:54:34.338088Z",
+        "url": "https://files.pythonhosted.org/packages/39/e4/2fc07d71cf863ed4167e7d3eb7f89de0341ffe3ed3a62ff6cc4123bdbda6/inflate64-1.0.4-cp311-cp311-macosx_10_9_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "53771119bb53e8f4c9c77f2a5e3ab7d8c3e905fcfc9912073962b9b4cbf72118",
+          "md5": "16667048d0d230bae1b3f7a87348daa8",
+          "sha256": "c11e2a3cb9d9b49620c9b0c806dd0c55daec3b6bb665299b770a68f01bfc5432"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp311-cp311-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "16667048d0d230bae1b3f7a87348daa8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 35854,
+        "upload_time": "2025-11-28T10:54:35",
+        "upload_time_iso_8601": "2025-11-28T10:54:35.796470Z",
+        "url": "https://files.pythonhosted.org/packages/53/77/1119bb53e8f4c9c77f2a5e3ab7d8c3e905fcfc9912073962b9b4cbf72118/inflate64-1.0.4-cp311-cp311-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "de408b028a731f6fabbb49069a58f1aa5c3332688b57dcb8726f9e596661ce5b",
+          "md5": "f2a4491dd1e6ecfe9de04017cae210a1",
+          "sha256": "e42def03ace8c58fd50b0df4f40241c45a2314c3876d020cce24acf958323c98"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp311-cp311-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "f2a4491dd1e6ecfe9de04017cae210a1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 36011,
+        "upload_time": "2025-11-28T10:54:37",
+        "upload_time_iso_8601": "2025-11-28T10:54:37.208347Z",
+        "url": "https://files.pythonhosted.org/packages/de/40/8b028a731f6fabbb49069a58f1aa5c3332688b57dcb8726f9e596661ce5b/inflate64-1.0.4-cp311-cp311-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "86a35b67ef7fd5e7546d4c2be8a9a869c70d9fd525de1cfb2b4dc4b0855eeee8",
+          "md5": "502bdabd47e2ddddaa0dee82b0c96bbe",
+          "sha256": "7912927a509ca58d1a445ce4ff6e6e9f276dc1d72687386cdf7103bf590e785c"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "502bdabd47e2ddddaa0dee82b0c96bbe",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 98112,
+        "upload_time": "2025-11-28T10:54:38",
+        "upload_time_iso_8601": "2025-11-28T10:54:38.616107Z",
+        "url": "https://files.pythonhosted.org/packages/86/a3/5b67ef7fd5e7546d4c2be8a9a869c70d9fd525de1cfb2b4dc4b0855eeee8/inflate64-1.0.4-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "5b6e6443ea6c42f6b244c4e59cb43f16e6b903669f718a96e3f1985acf473dea",
+          "md5": "9b90810bb0ce1d4d25dd629fe73a1ade",
+          "sha256": "ec40c0383cbd84d845dcb785a48ae76eef43246c923f84fda380fdd5ea653d3c"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9b90810bb0ce1d4d25dd629fe73a1ade",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 99549,
+        "upload_time": "2025-11-28T10:54:40",
+        "upload_time_iso_8601": "2025-11-28T10:54:40.167194Z",
+        "url": "https://files.pythonhosted.org/packages/5b/6e/6443ea6c42f6b244c4e59cb43f16e6b903669f718a96e3f1985acf473dea/inflate64-1.0.4-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "e3cee98577e0771b857b491a64a3f7495eb507e0752b80093068b69813088df1",
+          "md5": "33ad8c8572b483226eadbce18026fd7c",
+          "sha256": "5b01539fea372c6078b9707d9121c12cb321e587e193f50e257ce06cf5b15e41"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "33ad8c8572b483226eadbce18026fd7c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 95946,
+        "upload_time": "2025-11-28T10:54:41",
+        "upload_time_iso_8601": "2025-11-28T10:54:41.318710Z",
+        "url": "https://files.pythonhosted.org/packages/e3/ce/e98577e0771b857b491a64a3f7495eb507e0752b80093068b69813088df1/inflate64-1.0.4-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "6b3e8165ff4051dff08b2cc8448dafd15a697564e84cf40f3ee0dc0df16eed16",
+          "md5": "b8506fb24b8944bdeb10e215ca96a9cf",
+          "sha256": "bf4e34e32a37a42e9cf8bd9681f89e3e37b218f97d8b8cc95bd065419bc8db13"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "b8506fb24b8944bdeb10e215ca96a9cf",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 98766,
+        "upload_time": "2025-11-28T10:54:43",
+        "upload_time_iso_8601": "2025-11-28T10:54:43.366712Z",
+        "url": "https://files.pythonhosted.org/packages/6b/3e/8165ff4051dff08b2cc8448dafd15a697564e84cf40f3ee0dc0df16eed16/inflate64-1.0.4-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "79b820cad309ded1d97195c5ad50e341b38ddc2e82f5c44ee7d000c4372c8b56",
+          "md5": "78bad51db8cf18e8cb098439d7b577aa",
+          "sha256": "2725ccc14b138f0ad622d0322b769f177f9edfe016ee9ed3404102935d39e7de"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp311-cp311-win32.whl",
+        "has_sig": false,
+        "md5_digest": "78bad51db8cf18e8cb098439d7b577aa",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 32939,
+        "upload_time": "2025-11-28T10:54:44",
+        "upload_time_iso_8601": "2025-11-28T10:54:44.507652Z",
+        "url": "https://files.pythonhosted.org/packages/79/b8/20cad309ded1d97195c5ad50e341b38ddc2e82f5c44ee7d000c4372c8b56/inflate64-1.0.4-cp311-cp311-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "8c32be5cac018960157d33d61278377d590d5cc34922222cb0c4dc3284ce6eeb",
+          "md5": "89ed9280a21e400add52f7b0cd51f4b3",
+          "sha256": "7056148548c1f25dcb38251f88c19b4635a5f32af4c7bad00621c85509e3d8c0"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp311-cp311-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "89ed9280a21e400add52f7b0cd51f4b3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 35535,
+        "upload_time": "2025-11-28T10:54:46",
+        "upload_time_iso_8601": "2025-11-28T10:54:46.214508Z",
+        "url": "https://files.pythonhosted.org/packages/8c/32/be5cac018960157d33d61278377d590d5cc34922222cb0c4dc3284ce6eeb/inflate64-1.0.4-cp311-cp311-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "13369b130e45299d587f306178d65e950e1c8f60a09db8bb55c7cdce8fdda3b6",
+          "md5": "66cbaa2a1fe785761c0dbbfe41627085",
+          "sha256": "2ea7bdcad65e255b4596f84880f6e0c1756d6336d620e302653257defa407742"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp311-cp311-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "66cbaa2a1fe785761c0dbbfe41627085",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.9",
+        "size": 33457,
+        "upload_time": "2025-11-28T10:54:47",
+        "upload_time_iso_8601": "2025-11-28T10:54:47.258385Z",
+        "url": "https://files.pythonhosted.org/packages/13/36/9b130e45299d587f306178d65e950e1c8f60a09db8bb55c7cdce8fdda3b6/inflate64-1.0.4-cp311-cp311-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "ed335cfa7468960de1be0833e7e41adf5b7804a0aef2fb46f3679df3876bf3ab",
+          "md5": "82a95832b2b1d772f8efd7ca5ec3e1f1",
+          "sha256": "c8009e4a4918ee6c8cbc49e58fe159464895064cfdf0565fed3f49ca81e45272"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp312-cp312-macosx_10_13_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "82a95832b2b1d772f8efd7ca5ec3e1f1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 58619,
+        "upload_time": "2025-11-28T10:54:48",
+        "upload_time_iso_8601": "2025-11-28T10:54:48.315465Z",
+        "url": "https://files.pythonhosted.org/packages/ed/33/5cfa7468960de1be0833e7e41adf5b7804a0aef2fb46f3679df3876bf3ab/inflate64-1.0.4-cp312-cp312-macosx_10_13_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "cd0a583c7c2832da36e986c5758d0afb6f5944599e55c5b798b066a9ef63e581",
+          "md5": "a061ace1462563115a016e47e01b6c38",
+          "sha256": "0d173a7a0e865bb7d19685c5b1ad2994712b8361b24136d7e94abeff58505647"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp312-cp312-macosx_10_13_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "a061ace1462563115a016e47e01b6c38",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 35865,
+        "upload_time": "2025-11-28T10:54:49",
+        "upload_time_iso_8601": "2025-11-28T10:54:49.389159Z",
+        "url": "https://files.pythonhosted.org/packages/cd/0a/583c7c2832da36e986c5758d0afb6f5944599e55c5b798b066a9ef63e581/inflate64-1.0.4-cp312-cp312-macosx_10_13_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "724b9c6acfbe900e5c8698132244c68036b0455bd2169f46e356c83dc0366f11",
+          "md5": "b8196c31a0d34896ca2f5e1bcbcbb3e9",
+          "sha256": "8bad992f2d034f5f7e36208e54502d1b0829ce772c898e5dc59109833420148a"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp312-cp312-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "b8196c31a0d34896ca2f5e1bcbcbb3e9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 36019,
+        "upload_time": "2025-11-28T10:54:50",
+        "upload_time_iso_8601": "2025-11-28T10:54:50.813370Z",
+        "url": "https://files.pythonhosted.org/packages/72/4b/9c6acfbe900e5c8698132244c68036b0455bd2169f46e356c83dc0366f11/inflate64-1.0.4-cp312-cp312-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "7f66c0c3d3b4b863aab2c2ce631d219a8eb3b95b78acd5f40d3212f071e693db",
+          "md5": "97625c8266c958d0e2a32c4a8f3e4a58",
+          "sha256": "6bfcf806912ced77a21394f7363805ecacd626b79f93cba87d505a48e88ede78"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "97625c8266c958d0e2a32c4a8f3e4a58",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 98765,
+        "upload_time": "2025-11-28T10:54:52",
+        "upload_time_iso_8601": "2025-11-28T10:54:52.273071Z",
+        "url": "https://files.pythonhosted.org/packages/7f/66/c0c3d3b4b863aab2c2ce631d219a8eb3b95b78acd5f40d3212f071e693db/inflate64-1.0.4-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "37001a2351a85d36b26c5b2b8cfbb37ad86084c98f592dd7590f8577d8b33993",
+          "md5": "4fff5ee4fa9f8b8cb5721819376cac4a",
+          "sha256": "62d1aac3aba094ae42e27ce7581b414c90f218248be0953b6aeb11a127225e5d"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "4fff5ee4fa9f8b8cb5721819376cac4a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 100594,
+        "upload_time": "2025-11-28T10:54:53",
+        "upload_time_iso_8601": "2025-11-28T10:54:53.684187Z",
+        "url": "https://files.pythonhosted.org/packages/37/00/1a2351a85d36b26c5b2b8cfbb37ad86084c98f592dd7590f8577d8b33993/inflate64-1.0.4-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "f73e5d18ff5b86aaaf54117e1bb6ce15cb17163f56035f9c480e609d35f258ab",
+          "md5": "d335373234c6e0f6f6c925a444b82b72",
+          "sha256": "8065166f355122484f004225b379d403346bdae69ec624786a9334f025580675"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "d335373234c6e0f6f6c925a444b82b72",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 96745,
+        "upload_time": "2025-11-28T10:54:55",
+        "upload_time_iso_8601": "2025-11-28T10:54:55.277058Z",
+        "url": "https://files.pythonhosted.org/packages/f7/3e/5d18ff5b86aaaf54117e1bb6ce15cb17163f56035f9c480e609d35f258ab/inflate64-1.0.4-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "84ff306d5d6aca1e04e596d2a504a59ff9a900623a6ec852f38aab99f384562d",
+          "md5": "0154e01db1167c108986d2fb44829192",
+          "sha256": "94a95f32087d223d2e119ff5c7c264109e8d4cb7e421e7a688a899a6fe021b38"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "0154e01db1167c108986d2fb44829192",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 99795,
+        "upload_time": "2025-11-28T10:54:56",
+        "upload_time_iso_8601": "2025-11-28T10:54:56.485557Z",
+        "url": "https://files.pythonhosted.org/packages/84/ff/306d5d6aca1e04e596d2a504a59ff9a900623a6ec852f38aab99f384562d/inflate64-1.0.4-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "cfecd4caa4bf3c9e520c15e900fee5a00fc523953843e14aa378ca1abfb2b4ea",
+          "md5": "ce4707004a7fbe646631ba548f69c3be",
+          "sha256": "ad4fa490bb7dc2a4640a3adaa2d5950f4a465ba034bbcf184c2103646e58ad97"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp312-cp312-win32.whl",
+        "has_sig": false,
+        "md5_digest": "ce4707004a7fbe646631ba548f69c3be",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 32956,
+        "upload_time": "2025-11-28T10:54:57",
+        "upload_time_iso_8601": "2025-11-28T10:54:57.642484Z",
+        "url": "https://files.pythonhosted.org/packages/cf/ec/d4caa4bf3c9e520c15e900fee5a00fc523953843e14aa378ca1abfb2b4ea/inflate64-1.0.4-cp312-cp312-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "33c4c0de4e9bdf12e449360b710e9ab5b5248804610f382b538773cbd07b72bb",
+          "md5": "6ed9fd90492d767048bb27105a078875",
+          "sha256": "2c6befdf83d088a6e0d10d0873a9d4bfde2ce00ad7a52c8189cf303306f98030"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp312-cp312-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "6ed9fd90492d767048bb27105a078875",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 35577,
+        "upload_time": "2025-11-28T10:54:59",
+        "upload_time_iso_8601": "2025-11-28T10:54:59.140579Z",
+        "url": "https://files.pythonhosted.org/packages/33/c4/c0de4e9bdf12e449360b710e9ab5b5248804610f382b538773cbd07b72bb/inflate64-1.0.4-cp312-cp312-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "800703a5ef74ad3869b3c5af3b09216321f5a1a5a45265f7bd6d5abc669c7622",
+          "md5": "3132ee1a8a8d5817f21510faf262707a",
+          "sha256": "2b263c619469f90a75f29c421c53d31b208ad494a078235a8f6db2bc96583fdc"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp312-cp312-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "3132ee1a8a8d5817f21510faf262707a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.9",
+        "size": 33465,
+        "upload_time": "2025-11-28T10:55:00",
+        "upload_time_iso_8601": "2025-11-28T10:55:00.568479Z",
+        "url": "https://files.pythonhosted.org/packages/80/07/03a5ef74ad3869b3c5af3b09216321f5a1a5a45265f7bd6d5abc669c7622/inflate64-1.0.4-cp312-cp312-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "c255b7de7ae318a4f233f892c4f7c8b7e0e8643abe3fdcc53ed35020a9fe3f47",
+          "md5": "965802397c13d0c767d6681c859d0626",
+          "sha256": "c3f37540d0e64884a935fd62a7d17e40ab69f05ec63e815483b6513675d01bef"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp313-cp313-macosx_10_13_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "965802397c13d0c767d6681c859d0626",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 58633,
+        "upload_time": "2025-11-28T10:55:01",
+        "upload_time_iso_8601": "2025-11-28T10:55:01.931507Z",
+        "url": "https://files.pythonhosted.org/packages/c2/55/b7de7ae318a4f233f892c4f7c8b7e0e8643abe3fdcc53ed35020a9fe3f47/inflate64-1.0.4-cp313-cp313-macosx_10_13_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "b85f6f89c8524503fd7a9ca2bd91fe60d7291b3f684e9d41edb38ef49e10fc3d",
+          "md5": "0b24551d29c730ec89257a57c68c69b6",
+          "sha256": "4d24112180c95d12f279cade9a1e21f8be7f4790c4109c293292edf87d061992"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp313-cp313-macosx_10_13_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "0b24551d29c730ec89257a57c68c69b6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 35864,
+        "upload_time": "2025-11-28T10:55:03",
+        "upload_time_iso_8601": "2025-11-28T10:55:03.075481Z",
+        "url": "https://files.pythonhosted.org/packages/b8/5f/6f89c8524503fd7a9ca2bd91fe60d7291b3f684e9d41edb38ef49e10fc3d/inflate64-1.0.4-cp313-cp313-macosx_10_13_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "7d149eadd59244b38cf85ccd0ca43d1296c50b3a33aa37be4fb68a1928efa58c",
+          "md5": "f57e18399b5c285855a973ab6050b793",
+          "sha256": "5c098dab17821f466fc6e6a3d78fc6e0295bb51458015f03416b1d58d6a8df4f"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp313-cp313-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "f57e18399b5c285855a973ab6050b793",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 36019,
+        "upload_time": "2025-11-28T10:55:04",
+        "upload_time_iso_8601": "2025-11-28T10:55:04.126450Z",
+        "url": "https://files.pythonhosted.org/packages/7d/14/9eadd59244b38cf85ccd0ca43d1296c50b3a33aa37be4fb68a1928efa58c/inflate64-1.0.4-cp313-cp313-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "ca04399e82d8f5003dd92c8a0c5c1a9a8ce0919114710a496cbe88848bff3a72",
+          "md5": "e5f1c643fec5664e8731da9671774dd2",
+          "sha256": "a984b9287ff0fb596eb058d66a9e94530556afd2b7c054b44f2e0aeeff894e8f"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "e5f1c643fec5664e8731da9671774dd2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 98973,
+        "upload_time": "2025-11-28T10:55:05",
+        "upload_time_iso_8601": "2025-11-28T10:55:05.229860Z",
+        "url": "https://files.pythonhosted.org/packages/ca/04/399e82d8f5003dd92c8a0c5c1a9a8ce0919114710a496cbe88848bff3a72/inflate64-1.0.4-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "c0c5038dc2593bbc4272d87eac8c9f75692267d47f834ced888f6d81995df606",
+          "md5": "951571471db8acd18a78ce150e9256ef",
+          "sha256": "f62a13d0327631778fa2a47c308ae2b07b2659b7bb8564783259ac65949f8c0c"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "951571471db8acd18a78ce150e9256ef",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 100777,
+        "upload_time": "2025-11-28T10:55:06",
+        "upload_time_iso_8601": "2025-11-28T10:55:06.410176Z",
+        "url": "https://files.pythonhosted.org/packages/c0/c5/038dc2593bbc4272d87eac8c9f75692267d47f834ced888f6d81995df606/inflate64-1.0.4-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "744af6d3031dd3578510894a41bfe1ac149228970ce1629a43f20e0c5abbe8d1",
+          "md5": "5eae0ba348523345dd7a69c157e5b3a3",
+          "sha256": "513201336fb3b0b7e2aee5dbbbe30a9f1b23291738b5ceb80076fc285f2ec2f1"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "5eae0ba348523345dd7a69c157e5b3a3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 96967,
+        "upload_time": "2025-11-28T10:55:07",
+        "upload_time_iso_8601": "2025-11-28T10:55:07.594436Z",
+        "url": "https://files.pythonhosted.org/packages/74/4a/f6d3031dd3578510894a41bfe1ac149228970ce1629a43f20e0c5abbe8d1/inflate64-1.0.4-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "26ef7ab3bde4e176609ae0e607a8a9bb38d201885275664a6d574299f5bf7850",
+          "md5": "ddd54438495e5a98a3a209073361b49a",
+          "sha256": "84ce3a97272ba745fce52b38363855c7201968f6402a794bbade774e64c657b9"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "ddd54438495e5a98a3a209073361b49a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 99997,
+        "upload_time": "2025-11-28T10:55:08",
+        "upload_time_iso_8601": "2025-11-28T10:55:08.850853Z",
+        "url": "https://files.pythonhosted.org/packages/26/ef/7ab3bde4e176609ae0e607a8a9bb38d201885275664a6d574299f5bf7850/inflate64-1.0.4-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "39598256b3e802e203c8645e0b32b25e6bd94508ad572593f0cdf8234db3879a",
+          "md5": "3843c4f00f21cd5a47484ff872da4fcf",
+          "sha256": "332051a9d7e50579b90a3f555d68f53414b06f636c9ffe82e97c0baae3c8fbcc"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp313-cp313-win32.whl",
+        "has_sig": false,
+        "md5_digest": "3843c4f00f21cd5a47484ff872da4fcf",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 32958,
+        "upload_time": "2025-11-28T10:55:10",
+        "upload_time_iso_8601": "2025-11-28T10:55:10.343118Z",
+        "url": "https://files.pythonhosted.org/packages/39/59/8256b3e802e203c8645e0b32b25e6bd94508ad572593f0cdf8234db3879a/inflate64-1.0.4-cp313-cp313-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "e74f5784ee1eb8260f2310e24ef2883f1f494f9332bcfde4ed14ee780372149e",
+          "md5": "c0911788ba73d2bf20fd9c79622a13cb",
+          "sha256": "3983f53b590ff7d0ba243f664ce852aca882482f30f7a8eab33e10d769336d0c"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp313-cp313-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "c0911788ba73d2bf20fd9c79622a13cb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 35578,
+        "upload_time": "2025-11-28T10:55:11",
+        "upload_time_iso_8601": "2025-11-28T10:55:11.389342Z",
+        "url": "https://files.pythonhosted.org/packages/e7/4f/5784ee1eb8260f2310e24ef2883f1f494f9332bcfde4ed14ee780372149e/inflate64-1.0.4-cp313-cp313-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "39e88d927770ce25dc9764c8104207a80653d65471d0a6a8f9ead350016e4586",
+          "md5": "aeec29dffcf497d5aed99269033c46c4",
+          "sha256": "118d8286f085e99a14341c76ef9fbffd56619ccc80318a9a204aea3dbfa71470"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp313-cp313-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "aeec29dffcf497d5aed99269033c46c4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.9",
+        "size": 33465,
+        "upload_time": "2025-11-28T10:55:12",
+        "upload_time_iso_8601": "2025-11-28T10:55:12.824339Z",
+        "url": "https://files.pythonhosted.org/packages/39/e8/8d927770ce25dc9764c8104207a80653d65471d0a6a8f9ead350016e4586/inflate64-1.0.4-cp313-cp313-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "5bfbec9d10f44f2fc7666ad5d70acae2b8a1941e8e08ccae1fad0820f7796be3",
+          "md5": "8b23293480e3d259e7d71b6915dfc416",
+          "sha256": "4f61925b2d4248eac2ebb15350a80aaa0d1f7f1dc770bd5ebbbb3b0db4a6a416"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314-macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "8b23293480e3d259e7d71b6915dfc416",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 58727,
+        "upload_time": "2025-11-28T10:55:13",
+        "upload_time_iso_8601": "2025-11-28T10:55:13.834806Z",
+        "url": "https://files.pythonhosted.org/packages/5b/fb/ec9d10f44f2fc7666ad5d70acae2b8a1941e8e08ccae1fad0820f7796be3/inflate64-1.0.4-cp314-cp314-macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "818024ba0d2ee14e07e275e9c5b058e59a8a58f8ef42dd51a78ebbfd7c857ac4",
+          "md5": "e6fa17b9da811d62148d5b101ee0008d",
+          "sha256": "c1acf18b08b32981a4a11ec5a112b8ad5d7c7a5b15cb5bdbdb5b19201e9aa180"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "e6fa17b9da811d62148d5b101ee0008d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 35945,
+        "upload_time": "2025-11-28T10:55:15",
+        "upload_time_iso_8601": "2025-11-28T10:55:15.225500Z",
+        "url": "https://files.pythonhosted.org/packages/81/80/24ba0d2ee14e07e275e9c5b058e59a8a58f8ef42dd51a78ebbfd7c857ac4/inflate64-1.0.4-cp314-cp314-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "70b8073a79716e093db973b8823bdfb02e10fbdf65642dbe1fa3cda24832aeb2",
+          "md5": "dd4d09ed77b275e42caca95c8c2f09db",
+          "sha256": "abddae8920b2eaef824254e14b8d4ff54afbe6194a1bbe9816584859f0c1244d"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "dd4d09ed77b275e42caca95c8c2f09db",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 36060,
+        "upload_time": "2025-11-28T10:55:16",
+        "upload_time_iso_8601": "2025-11-28T10:55:16.261010Z",
+        "url": "https://files.pythonhosted.org/packages/70/b8/073a79716e093db973b8823bdfb02e10fbdf65642dbe1fa3cda24832aeb2/inflate64-1.0.4-cp314-cp314-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "4cf087d3c317ed0acd94f5e9b3b1b9e9000228ea2af0cb4618c62cbfc816da34",
+          "md5": "9a501ab9c93218a0a4b749727ee6dfba",
+          "sha256": "b303132cc562a906543a56f35c4e164e3880da6ff041cb4a7b1df9f9d2b4bb69"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "9a501ab9c93218a0a4b749727ee6dfba",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 98995,
+        "upload_time": "2025-11-28T10:55:17",
+        "upload_time_iso_8601": "2025-11-28T10:55:17.405379Z",
+        "url": "https://files.pythonhosted.org/packages/4c/f0/87d3c317ed0acd94f5e9b3b1b9e9000228ea2af0cb4618c62cbfc816da34/inflate64-1.0.4-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "90720b6035302e9c33f004240a50cb6e2e1fc7bb1f2b415b02d939c551bdd06b",
+          "md5": "cf12d94afd8ad92ef5146d9bce69f7c7",
+          "sha256": "6f0993214dea0738c557fa56c13cd9083aef0097a201d726c21984ad7f577514"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "cf12d94afd8ad92ef5146d9bce69f7c7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 100781,
+        "upload_time": "2025-11-28T10:55:18",
+        "upload_time_iso_8601": "2025-11-28T10:55:18.597839Z",
+        "url": "https://files.pythonhosted.org/packages/90/72/0b6035302e9c33f004240a50cb6e2e1fc7bb1f2b415b02d939c551bdd06b/inflate64-1.0.4-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "2b055f383c615ec0f01bcbbc699a71da167623e494083ab7ed0df86b4bddf125",
+          "md5": "6937643ebffd6bd7a7452723157c45b9",
+          "sha256": "a6baedc3288d7a4ff588951d3a9a97a5391dceed6255ff5b16e42cae7274bfa9"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "6937643ebffd6bd7a7452723157c45b9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 97038,
+        "upload_time": "2025-11-28T10:55:20",
+        "upload_time_iso_8601": "2025-11-28T10:55:20.156243Z",
+        "url": "https://files.pythonhosted.org/packages/2b/05/5f383c615ec0f01bcbbc699a71da167623e494083ab7ed0df86b4bddf125/inflate64-1.0.4-cp314-cp314-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "4e9ac1482718c717c49c67490c42b4fdced9476e894eaebd52193e488c12e188",
+          "md5": "5a74da76f771f403d59892d2f088eb9d",
+          "sha256": "a846ce1f38845b20bef2625af1b512be83416d97824539524c5a34e7a729aec7"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "5a74da76f771f403d59892d2f088eb9d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 100016,
+        "upload_time": "2025-11-28T10:55:21",
+        "upload_time_iso_8601": "2025-11-28T10:55:21.337661Z",
+        "url": "https://files.pythonhosted.org/packages/4e/9a/c1482718c717c49c67490c42b4fdced9476e894eaebd52193e488c12e188/inflate64-1.0.4-cp314-cp314-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "c079b466ec7666c40912ea81a305a8a2b75f5998e6cec1d3d75e067d76203731",
+          "md5": "2db93d16f89d2c3235fd33ba4746095f",
+          "sha256": "b17bf665d948dc4edeea0cd17752415d0cd7240c882b9c7e136ad4cc4321e9d4"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314t-macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "2db93d16f89d2c3235fd33ba4746095f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 59300,
+        "upload_time": "2025-11-28T10:55:26",
+        "upload_time_iso_8601": "2025-11-28T10:55:26.185435Z",
+        "url": "https://files.pythonhosted.org/packages/c0/79/b466ec7666c40912ea81a305a8a2b75f5998e6cec1d3d75e067d76203731/inflate64-1.0.4-cp314-cp314t-macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "c9ad16e1168ac80f39894e6cb18b439eec63fec42cbced239aebfe12081b6ec7",
+          "md5": "ed0897fb43fb89cc5017ee2973a59737",
+          "sha256": "6751758301936fbb38fa38eb5312e14e27b6a1abf568f83c17557fab2694373d"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314t-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "ed0897fb43fb89cc5017ee2973a59737",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 36258,
+        "upload_time": "2025-11-28T10:55:27",
+        "upload_time_iso_8601": "2025-11-28T10:55:27.295925Z",
+        "url": "https://files.pythonhosted.org/packages/c9/ad/16e1168ac80f39894e6cb18b439eec63fec42cbced239aebfe12081b6ec7/inflate64-1.0.4-cp314-cp314t-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "2542c463b42fd8a7947b4445fbaf57c265bb7f3114362fb7aee6884ffd8b5341",
+          "md5": "8dd2446e4c5a2b31e5b40a028f3b4827",
+          "sha256": "d6a4136752aa2a544301059d8f13780aeb88c34d60770258436a87dacd3fc304"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314t-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "8dd2446e4c5a2b31e5b40a028f3b4827",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 36296,
+        "upload_time": "2025-11-28T10:55:28",
+        "upload_time_iso_8601": "2025-11-28T10:55:28.632635Z",
+        "url": "https://files.pythonhosted.org/packages/25/42/c463b42fd8a7947b4445fbaf57c265bb7f3114362fb7aee6884ffd8b5341/inflate64-1.0.4-cp314-cp314t-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "39f1cf6121926e405020e9e7bccb78ec7781fbc87500ec67368e7d9e866758be",
+          "md5": "6f6d4b0aab4a8f0006f78d16e27fe42b",
+          "sha256": "938ebc6b28578bfd365d1a9fdb18b7faab08321babeb2198e8025d07d8dc7fb5"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "6f6d4b0aab4a8f0006f78d16e27fe42b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 106788,
+        "upload_time": "2025-11-28T10:55:29",
+        "upload_time_iso_8601": "2025-11-28T10:55:29.797042Z",
+        "url": "https://files.pythonhosted.org/packages/39/f1/cf6121926e405020e9e7bccb78ec7781fbc87500ec67368e7d9e866758be/inflate64-1.0.4-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "9cddb653f9962497cf4d3520d69272894c37fd76f86a0e04bb3bd9f32827dc2f",
+          "md5": "5cb5a790903b744152eb6da1044b1901",
+          "sha256": "61f51f80fa6f367288343c1a2cd20a42af454883087064e9274fd2a8c3a5a200"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "5cb5a790903b744152eb6da1044b1901",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 107959,
+        "upload_time": "2025-11-28T10:55:31",
+        "upload_time_iso_8601": "2025-11-28T10:55:31.306878Z",
+        "url": "https://files.pythonhosted.org/packages/9c/dd/b653f9962497cf4d3520d69272894c37fd76f86a0e04bb3bd9f32827dc2f/inflate64-1.0.4-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "60ae65d88109b63611c9b6c29008201107127cf2603d186ab99beec39d85f38e",
+          "md5": "aba5d932de2f0959ec111a51ccfdc43c",
+          "sha256": "172b51da7bbfa66b33f0a5405e944807b9949e92cf4cd9f983c07af8152766df"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314t-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "aba5d932de2f0959ec111a51ccfdc43c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 104213,
+        "upload_time": "2025-11-28T10:55:32",
+        "upload_time_iso_8601": "2025-11-28T10:55:32.506976Z",
+        "url": "https://files.pythonhosted.org/packages/60/ae/65d88109b63611c9b6c29008201107127cf2603d186ab99beec39d85f38e/inflate64-1.0.4-cp314-cp314t-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "f994c17de2f55b9fb1269bca4657f9089efe4ba0f3d4b652f07b34dfc69f69a2",
+          "md5": "bf48b20f4af044a4514f0b603316b5ac",
+          "sha256": "8ca9a2985afd5a14fb48cd126a67e5944ccb7a0a6bdec58c4f796c8c88a84539"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314t-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "bf48b20f4af044a4514f0b603316b5ac",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 106629,
+        "upload_time": "2025-11-28T10:55:33",
+        "upload_time_iso_8601": "2025-11-28T10:55:33.735863Z",
+        "url": "https://files.pythonhosted.org/packages/f9/94/c17de2f55b9fb1269bca4657f9089efe4ba0f3d4b652f07b34dfc69f69a2/inflate64-1.0.4-cp314-cp314t-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "8e308bbc587bb2ad09ab7edf1f9215b2c5faf4fa7ee7c071daefe9ed55e28814",
+          "md5": "0300b35a0fa92c01537b1ff1b3ef2d73",
+          "sha256": "f8964ceaabea294bc20abc9ef408c6aae978a75c25c83168a76cd87a37c38938"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314t-win32.whl",
+        "has_sig": false,
+        "md5_digest": "0300b35a0fa92c01537b1ff1b3ef2d73",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 33865,
+        "upload_time": "2025-11-28T10:55:35",
+        "upload_time_iso_8601": "2025-11-28T10:55:35.335679Z",
+        "url": "https://files.pythonhosted.org/packages/8e/30/8bbc587bb2ad09ab7edf1f9215b2c5faf4fa7ee7c071daefe9ed55e28814/inflate64-1.0.4-cp314-cp314t-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "91878bf6f412f93c8b6dc14866a021b83321331fbdd17f6ab902a24dbf88773d",
+          "md5": "2910bd3b1d5a2ac21bde1fe4383a18ed",
+          "sha256": "7d13b04cba65c12d21e65eaa77da9484e265e8e821b26e0761d1455ad3a878d9"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314t-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "2910bd3b1d5a2ac21bde1fe4383a18ed",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 36943,
+        "upload_time": "2025-11-28T10:55:36",
+        "upload_time_iso_8601": "2025-11-28T10:55:36.983213Z",
+        "url": "https://files.pythonhosted.org/packages/91/87/8bf6f412f93c8b6dc14866a021b83321331fbdd17f6ab902a24dbf88773d/inflate64-1.0.4-cp314-cp314t-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "7d8533447bb3c4e3c0ae7b1fde3aadc52a18b2b0193cfcf4f585977e924c6463",
+          "md5": "cabb2d837aaf750e94d5667e349e87c3",
+          "sha256": "9ae3ee727235a06dc3cd353ee5761fdd8e3b56ad119c711f61680528972a6ced"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314t-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "cabb2d837aaf750e94d5667e349e87c3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 34846,
+        "upload_time": "2025-11-28T10:55:38",
+        "upload_time_iso_8601": "2025-11-28T10:55:38.433064Z",
+        "url": "https://files.pythonhosted.org/packages/7d/85/33447bb3c4e3c0ae7b1fde3aadc52a18b2b0193cfcf4f585977e924c6463/inflate64-1.0.4-cp314-cp314t-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "b87f700ede7474e72a1c0e2e8fe36624cd0225ca8b2875eca33d64aa2de75f4d",
+          "md5": "0698949218922ea2a11514f75a8de427",
+          "sha256": "eef87908c780439393d577a155868317f0a275b47b417db9f47d8633ec791745"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314-win32.whl",
+        "has_sig": false,
+        "md5_digest": "0698949218922ea2a11514f75a8de427",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 33691,
+        "upload_time": "2025-11-28T10:55:22",
+        "upload_time_iso_8601": "2025-11-28T10:55:22.515314Z",
+        "url": "https://files.pythonhosted.org/packages/b8/7f/700ede7474e72a1c0e2e8fe36624cd0225ca8b2875eca33d64aa2de75f4d/inflate64-1.0.4-cp314-cp314-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "dd51f2972df8cceecc9bf3afa3353d517ffc7125285198c844588e9aaf98f5d0",
+          "md5": "cb348923af30d1bea43c8580bca339d8",
+          "sha256": "fb2fdd63ef3933b67af98b3f2ee2f57e7787278041d7ba4821382fedd729b68a"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "cb348923af30d1bea43c8580bca339d8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 36304,
+        "upload_time": "2025-11-28T10:55:24",
+        "upload_time_iso_8601": "2025-11-28T10:55:24.005086Z",
+        "url": "https://files.pythonhosted.org/packages/dd/51/f2972df8cceecc9bf3afa3353d517ffc7125285198c844588e9aaf98f5d0/inflate64-1.0.4-cp314-cp314-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "297716200aced67215119fb30ec9a5889b48289ee2fa5ce5137623a9ad41b2c4",
+          "md5": "1f9bb3226012fa676a8e6390fac42260",
+          "sha256": "2e129669a0243ac7816fd526946ee01c25688fe81623a6d6bc95b3156d80f4fb"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp314-cp314-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "1f9bb3226012fa676a8e6390fac42260",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.9",
+        "size": 34491,
+        "upload_time": "2025-11-28T10:55:25",
+        "upload_time_iso_8601": "2025-11-28T10:55:25.068151Z",
+        "url": "https://files.pythonhosted.org/packages/29/77/16200aced67215119fb30ec9a5889b48289ee2fa5ce5137623a9ad41b2c4/inflate64-1.0.4-cp314-cp314-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "56ca227be262a608b03431a3ef59df3a1812e1e1da125c9130cbbe149d5f23b8",
+          "md5": "587be4a97d7e92286af035a7bdf46c72",
+          "sha256": "179e39069c56a69c37d3b939505254cf7e495a06fcbc0c4bd5a61fa8fc43c678"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp39-cp39-macosx_10_9_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "587be4a97d7e92286af035a7bdf46c72",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 58597,
+        "upload_time": "2025-11-28T10:55:39",
+        "upload_time_iso_8601": "2025-11-28T10:55:39.571725Z",
+        "url": "https://files.pythonhosted.org/packages/56/ca/227be262a608b03431a3ef59df3a1812e1e1da125c9130cbbe149d5f23b8/inflate64-1.0.4-cp39-cp39-macosx_10_9_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "ceda34c088a41a7a306e860ed59db1004c1340f89d314f65e969b10753c9c7d0",
+          "md5": "5030e0fcc26c12b4c79025a351e1237c",
+          "sha256": "067af498c34a8b69b2957d20dbce4d72affda23aed37ea231b1ea5ad9aab5731"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp39-cp39-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "5030e0fcc26c12b4c79025a351e1237c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 35852,
+        "upload_time": "2025-11-28T10:55:41",
+        "upload_time_iso_8601": "2025-11-28T10:55:41.063811Z",
+        "url": "https://files.pythonhosted.org/packages/ce/da/34c088a41a7a306e860ed59db1004c1340f89d314f65e969b10753c9c7d0/inflate64-1.0.4-cp39-cp39-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "dc25d708b395ff359db0dbef59e80d0580091d1a4e374070ad4172530f6c4742",
+          "md5": "87fc2a109a2c876fbad76629ff5b044f",
+          "sha256": "e408d3b667fb693d45448327dc8cab8c684c6627d4fd8e71819f212ab1435e81"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp39-cp39-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "87fc2a109a2c876fbad76629ff5b044f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 36003,
+        "upload_time": "2025-11-28T10:55:42",
+        "upload_time_iso_8601": "2025-11-28T10:55:42.155029Z",
+        "url": "https://files.pythonhosted.org/packages/dc/25/d708b395ff359db0dbef59e80d0580091d1a4e374070ad4172530f6c4742/inflate64-1.0.4-cp39-cp39-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "c4efe29010e6987c1e9a33197b86fb9a4ac50242b35e7edf4c41c3ee8a34fa13",
+          "md5": "aa49af6866eb9d3471d8c2071eb322e8",
+          "sha256": "5b5aa704141c9bad08b4e57bd722f68dd3a8cff62490b16a1605d2698e268fbd"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp39-cp39-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "aa49af6866eb9d3471d8c2071eb322e8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 94848,
+        "upload_time": "2025-11-28T10:55:43",
+        "upload_time_iso_8601": "2025-11-28T10:55:43.302453Z",
+        "url": "https://files.pythonhosted.org/packages/c4/ef/e29010e6987c1e9a33197b86fb9a4ac50242b35e7edf4c41c3ee8a34fa13/inflate64-1.0.4-cp39-cp39-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "520cb5cfb7ecef3b5fbdf4987d4f183c79b782e4a2f43b45abb09d5558ba0869",
+          "md5": "168604244c89b16db7cd04677905ff3f",
+          "sha256": "2a55295f493a40d7e68929f0ba54e489ab9b623b6aa968dc5d1389ba77a63eff"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp39-cp39-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "168604244c89b16db7cd04677905ff3f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 96457,
+        "upload_time": "2025-11-28T10:55:44",
+        "upload_time_iso_8601": "2025-11-28T10:55:44.657201Z",
+        "url": "https://files.pythonhosted.org/packages/52/0c/b5cfb7ecef3b5fbdf4987d4f183c79b782e4a2f43b45abb09d5558ba0869/inflate64-1.0.4-cp39-cp39-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "2f2fb6270ec5692bf91625ec6c24e194907a8d7e85c9037742c56e52df47ab89",
+          "md5": "e036ce163f935b0af87c6ab5e5f71d39",
+          "sha256": "e107d1d6e6d9b94409a68d1ac20522815996ad44269cc05a69c93d0f1c450f95"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp39-cp39-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "e036ce163f935b0af87c6ab5e5f71d39",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 92746,
+        "upload_time": "2025-11-28T10:55:45",
+        "upload_time_iso_8601": "2025-11-28T10:55:45.876163Z",
+        "url": "https://files.pythonhosted.org/packages/2f/2f/b6270ec5692bf91625ec6c24e194907a8d7e85c9037742c56e52df47ab89/inflate64-1.0.4-cp39-cp39-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "13e11072df128a4006ffc486edade23db2f483587de9dda9de84f9a46dc0ba9e"
+        },
+        "digests": {
+          "blake2b_256": "402172f4d835597d1254a1901b13a9fde019f23b1e7a16575abec10ee82412ad",
+          "md5": "c2fb6074550a5a305f427744046bc7bf",
+          "sha256": "19ffca993315ce7a4439efc388ffebdd395a20dbea2942b2445d87ec15373737"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp39-cp39-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "c2fb6074550a5a305f427744046bc7bf",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 95717,
+        "upload_time": "2025-11-28T10:55:47",
+        "upload_time_iso_8601": "2025-11-28T10:55:47.532999Z",
+        "url": "https://files.pythonhosted.org/packages/40/21/72f4d835597d1254a1901b13a9fde019f23b1e7a16575abec10ee82412ad/inflate64-1.0.4-cp39-cp39-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "7b90faa0868dbef82a752c7fe6cbe8d66947d96b8c6b4b43f1690a9fbd6898ab",
+          "md5": "432c2a2a9bf998aa602554e1fee604b4",
+          "sha256": "dd8fdb7350728aa488edabeb9d2afbac5273522b50665e8dc99844a7eb99925b"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp39-cp39-win32.whl",
+        "has_sig": false,
+        "md5_digest": "432c2a2a9bf998aa602554e1fee604b4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 32934,
+        "upload_time": "2025-11-28T10:55:48",
+        "upload_time_iso_8601": "2025-11-28T10:55:48.718056Z",
+        "url": "https://files.pythonhosted.org/packages/7b/90/faa0868dbef82a752c7fe6cbe8d66947d96b8c6b4b43f1690a9fbd6898ab/inflate64-1.0.4-cp39-cp39-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "f2b8b772f9db43c5f19632c22009756bf3742c9debb06650cae9395cfc09b12f",
+          "md5": "9de896e6abdff0953b4bbe8c1015b7b1",
+          "sha256": "4662b2a4bba73bd64f803c97ec5134d6fd19227c3b3d3785e1babb359f1b4c33"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp39-cp39-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "9de896e6abdff0953b4bbe8c1015b7b1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 35533,
+        "upload_time": "2025-11-28T10:55:49",
+        "upload_time_iso_8601": "2025-11-28T10:55:49.781593Z",
+        "url": "https://files.pythonhosted.org/packages/f2/b8/b772f9db43c5f19632c22009756bf3742c9debb06650cae9395cfc09b12f/inflate64-1.0.4-cp39-cp39-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "eae4cb6c7dcc2721f280e20bda4368b0d5fed5cbb13399f7fc7333c70ccd580f"
+        },
+        "digests": {
+          "blake2b_256": "6968c7c56cfdd9dd1db47e9a29c190e4da8941730748163997e4480e3af903f3",
+          "md5": "bf149b704aab8c03758e1e267150d140",
+          "sha256": "f5bb6c58c642859ecf5e23178b1e7e4724f3ce968fc49090919d59a5e186f3e6"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4-cp39-cp39-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "bf149b704aab8c03758e1e267150d140",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 33454,
+        "upload_time": "2025-11-28T10:55:50",
+        "upload_time_iso_8601": "2025-11-28T10:55:50.900202Z",
+        "url": "https://files.pythonhosted.org/packages/69/68/c7c56cfdd9dd1db47e9a29c190e4da8941730748163997e4480e3af903f3/inflate64-1.0.4-cp39-cp39-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "3ef341bb2901543abe7aad0b0b0284ae5854bb75f848cf406bf8a046bf525f67",
+          "md5": "0bcf1a2f40cccdc611fc05122dd71a6f",
+          "sha256": "b398c686960c029777afc0ed281a86f66adb956cfc3fbf6667cc6453f7b407ce"
+        },
+        "downloads": -1,
+        "filename": "inflate64-1.0.4.tar.gz",
+        "has_sig": false,
+        "md5_digest": "0bcf1a2f40cccdc611fc05122dd71a6f",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.9",
+        "size": 902542,
+        "upload_time": "2025-11-28T10:55:52",
+        "upload_time_iso_8601": "2025-11-28T10:55:52.641687Z",
+        "url": "https://files.pythonhosted.org/packages/3e/f3/41bb2901543abe7aad0b0b0284ae5854bb75f848cf406bf8a046bf525f67/inflate64-1.0.4.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "inflate64",
+    "version": "1.0.4",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "067af498c34a8b69b2957d20dbce4d72affda23aed37ea231b1ea5ad9aab5731",
+      "0d173a7a0e865bb7d19685c5b1ad2994712b8361b24136d7e94abeff58505647",
+      "118d8286f085e99a14341c76ef9fbffd56619ccc80318a9a204aea3dbfa71470",
+      "172b51da7bbfa66b33f0a5405e944807b9949e92cf4cd9f983c07af8152766df",
+      "179e39069c56a69c37d3b939505254cf7e495a06fcbc0c4bd5a61fa8fc43c678",
+      "19ffca993315ce7a4439efc388ffebdd395a20dbea2942b2445d87ec15373737",
+      "2725ccc14b138f0ad622d0322b769f177f9edfe016ee9ed3404102935d39e7de",
+      "2a55295f493a40d7e68929f0ba54e489ab9b623b6aa968dc5d1389ba77a63eff",
+      "2b263c619469f90a75f29c421c53d31b208ad494a078235a8f6db2bc96583fdc",
+      "2c6befdf83d088a6e0d10d0873a9d4bfde2ce00ad7a52c8189cf303306f98030",
+      "2e129669a0243ac7816fd526946ee01c25688fe81623a6d6bc95b3156d80f4fb",
+      "2ea7bdcad65e255b4596f84880f6e0c1756d6336d620e302653257defa407742",
+      "332051a9d7e50579b90a3f555d68f53414b06f636c9ffe82e97c0baae3c8fbcc",
+      "3983f53b590ff7d0ba243f664ce852aca882482f30f7a8eab33e10d769336d0c",
+      "4662b2a4bba73bd64f803c97ec5134d6fd19227c3b3d3785e1babb359f1b4c33",
+      "4d24112180c95d12f279cade9a1e21f8be7f4790c4109c293292edf87d061992",
+      "4f61925b2d4248eac2ebb15350a80aaa0d1f7f1dc770bd5ebbbb3b0db4a6a416",
+      "513201336fb3b0b7e2aee5dbbbe30a9f1b23291738b5ceb80076fc285f2ec2f1",
+      "5b01539fea372c6078b9707d9121c12cb321e587e193f50e257ce06cf5b15e41",
+      "5b5aa704141c9bad08b4e57bd722f68dd3a8cff62490b16a1605d2698e268fbd",
+      "5c098dab17821f466fc6e6a3d78fc6e0295bb51458015f03416b1d58d6a8df4f",
+      "61f51f80fa6f367288343c1a2cd20a42af454883087064e9274fd2a8c3a5a200",
+      "62d1aac3aba094ae42e27ce7581b414c90f218248be0953b6aeb11a127225e5d",
+      "6751758301936fbb38fa38eb5312e14e27b6a1abf568f83c17557fab2694373d",
+      "6bfcf806912ced77a21394f7363805ecacd626b79f93cba87d505a48e88ede78",
+      "6f0993214dea0738c557fa56c13cd9083aef0097a201d726c21984ad7f577514",
+      "7056148548c1f25dcb38251f88c19b4635a5f32af4c7bad00621c85509e3d8c0",
+      "7912927a509ca58d1a445ce4ff6e6e9f276dc1d72687386cdf7103bf590e785c",
+      "7d13b04cba65c12d21e65eaa77da9484e265e8e821b26e0761d1455ad3a878d9",
+      "8065166f355122484f004225b379d403346bdae69ec624786a9334f025580675",
+      "84ce3a97272ba745fce52b38363855c7201968f6402a794bbade774e64c657b9",
+      "8600478542e2354d1ee7b5c57c957006cabacd8b787b4046951f487a2216e5c0",
+      "89126ceb4d96e76842f4697017a9a3e750c34e029ddb360b3d8ca79a648d47f6",
+      "8bad992f2d034f5f7e36208e54502d1b0829ce772c898e5dc59109833420148a",
+      "8ca9a2985afd5a14fb48cd126a67e5944ccb7a0a6bdec58c4f796c8c88a84539",
+      "938ebc6b28578bfd365d1a9fdb18b7faab08321babeb2198e8025d07d8dc7fb5",
+      "94a95f32087d223d2e119ff5c7c264109e8d4cb7e421e7a688a899a6fe021b38",
+      "950dd7fe53474df5f4699b8f099980027e812d55fd82d8e167d599822c3d27d6",
+      "9ae3ee727235a06dc3cd353ee5761fdd8e3b56ad119c711f61680528972a6ced",
+      "a6baedc3288d7a4ff588951d3a9a97a5391dceed6255ff5b16e42cae7274bfa9",
+      "a846ce1f38845b20bef2625af1b512be83416d97824539524c5a34e7a729aec7",
+      "a984b9287ff0fb596eb058d66a9e94530556afd2b7c054b44f2e0aeeff894e8f",
+      "abddae8920b2eaef824254e14b8d4ff54afbe6194a1bbe9816584859f0c1244d",
+      "ad4fa490bb7dc2a4640a3adaa2d5950f4a465ba034bbcf184c2103646e58ad97",
+      "b17bf665d948dc4edeea0cd17752415d0cd7240c882b9c7e136ad4cc4321e9d4",
+      "b303132cc562a906543a56f35c4e164e3880da6ff041cb4a7b1df9f9d2b4bb69",
+      "b398c686960c029777afc0ed281a86f66adb956cfc3fbf6667cc6453f7b407ce",
+      "bad20de249d6336793f6267880668dbb286ca5c6e6991795aa6344c817588068",
+      "bccda9815b27623e805a34ee3ee4f46c93f0cc7ac621f9834d75f033fd79c27a",
+      "bf4e34e32a37a42e9cf8bd9681f89e3e37b218f97d8b8cc95bd065419bc8db13",
+      "c11e2a3cb9d9b49620c9b0c806dd0c55daec3b6bb665299b770a68f01bfc5432",
+      "c1acf18b08b32981a4a11ec5a112b8ad5d7c7a5b15cb5bdbdb5b19201e9aa180",
+      "c3f37540d0e64884a935fd62a7d17e40ab69f05ec63e815483b6513675d01bef",
+      "c8009e4a4918ee6c8cbc49e58fe159464895064cfdf0565fed3f49ca81e45272",
+      "cb93159cb60aee8cab62541aa70e4c460f13359660a27a1a486518bba0153535",
+      "d08cdda33341b4f992af60c12dc60e370e9993b80a936c17244a602711eeb727",
+      "d6a4136752aa2a544301059d8f13780aeb88c34d60770258436a87dacd3fc304",
+      "dcfafc572a642215894af1ec8d05949fa35eb7cb36d053aa97b11eccf1ae579e",
+      "dd8fdb7350728aa488edabeb9d2afbac5273522b50665e8dc99844a7eb99925b",
+      "e107d1d6e6d9b94409a68d1ac20522815996ad44269cc05a69c93d0f1c450f95",
+      "e408d3b667fb693d45448327dc8cab8c684c6627d4fd8e71819f212ab1435e81",
+      "e42def03ace8c58fd50b0df4f40241c45a2314c3876d020cce24acf958323c98",
+      "ec40c0383cbd84d845dcb785a48ae76eef43246c923f84fda380fdd5ea653d3c",
+      "eef87908c780439393d577a155868317f0a275b47b417db9f47d8633ec791745",
+      "f1a47837d4322e0684824f91eb635aa6fd1967584140c478b0a1aca7b11740d6",
+      "f5bb6c58c642859ecf5e23178b1e7e4724f3ce968fc49090919d59a5e186f3e6",
+      "f62a13d0327631778fa2a47c308ae2b07b2659b7bb8564783259ac65949f8c0c",
+      "f70e6692617ec82500b203eefac8765302298ce7e73584fcf995bb9e23184530",
+      "f8964ceaabea294bc20abc9ef408c6aae978a75c25c83168a76cd87a37c38938",
+      "fb2b5a62579d074f38352a3494c3c6ac1a90516b75c5793c39303547f1fea925",
+      "fb2fdd63ef3933b67af98b3f2ee2f57e7787278041d7ba4821382fedd729b68a"
+    ],
+    "retrieved_at": "2026-11-28T12:09:56+00:00",
+    "pypi_info": {
+      "license": "LGPL-2.1-or-later",
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)"
+      ],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "License :: OSI Approved :: GNU Lesser General Public License v2 or later (LGPLv2+)",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Topic :: Software Development :: Libraries :: Python Modules"
+      ],
+      "requires_python": ">=3.9",
+      "project_urls": {
+        "Bug Tracker": "https://github.com/miurahr/inflate64/issues",
+        "Changelog": "https://inflate64.readthedocs.io/en/latest/changelog.html",
+        "Documentation": "https://inflate64.readthedocs.io/en/stable/",
+        "Homepage": "https://inflate64.readthedocs.io/",
+        "Source": "https://github.com/miurahr/inflate64"
+      },
+      "home_page": null,
+      "summary": "deflate64 compression/decompression library",
+      "author": "Hiroshi Miura <miurahr@linux.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "inflate64-1.0.4-cp311-cp311-win_amd64.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "inflate64-1.0.4-cp311-cp311-win_amd64.whl",
+        "url": "https://files.pythonhosted.org/packages/8c/32/be5cac018960157d33d61278377d590d5cc34922222cb0c4dc3284ce6eeb/inflate64-1.0.4-cp311-cp311-win_amd64.whl",
+        "packagetype": "bdist_wheel",
+        "size": 35535,
+        "sha256_pypi": "7056148548c1f25dcb38251f88c19b4635a5f32af4c7bad00621c85509e3d8c0",
+        "sha256_verified": "7056148548c1f25dcb38251f88c19b4635a5f32af4c7bad00621c85509e3d8c0",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "inflate64-1.0.4-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/8c/32/be5cac018960157d33d61278377d590d5cc34922222cb0c4dc3284ce6eeb/inflate64-1.0.4-cp311-cp311-win_amd64.whl",
+      "packagetype": "bdist_wheel",
+      "size": 35535,
+      "sha256_pypi": "7056148548c1f25dcb38251f88c19b4635a5f32af4c7bad00621c85509e3d8c0",
+      "sha256_verified": "7056148548c1f25dcb38251f88c19b4635a5f32af4c7bad00621c85509e3d8c0",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "inflate64-1.0.4-cp311-cp311-win_amd64.whl::inflate64-1.0.4.dist-info/licenses/COPYING": {
+        "saved_as": "inflate64-1.0.4.dist-info_licenses_COPYING",
+        "sha256": "1e7e6bae5a5bde32f1ae5a7c37a082d1ab03cf89354f7f936ac40be9e39a6531",
+        "bytes": 27032,
+        "from_artifact": "inflate64-1.0.4-cp311-cp311-win_amd64.whl",
+        "artifact_sha256": "7056148548c1f25dcb38251f88c19b4635a5f32af4c7bad00621c85509e3d8c0"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

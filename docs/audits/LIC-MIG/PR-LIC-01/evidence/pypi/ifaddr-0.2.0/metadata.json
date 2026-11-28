@@ -1,0 +1,189 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": "Stefan C. Mueller",
+      "author_email": "scm@smurn.org",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Topic :: System :: Networking"
+      ],
+      "description": "ifaddr - Enumerate network interfaces/adapters and their IP addresses\n=====================================================================\n\n.. image:: https://github.com/pydron/ifaddr/workflows/CI/badge.svg\n    :target: https://github.com/pydron/ifaddr/actions?query=workflow%3ACI+branch%3Amaster\n\n.. image:: https://img.shields.io/pypi/v/ifaddr.svg\n    :target: https://pypi.python.org/pypi/ifaddr\n\n.. image:: https://codecov.io/gh/pydron/ifaddr/branch/master/graph/badge.svg\n  :target: https://codecov.io/gh/pydron/ifaddr\n\n`ifaddr` is a small Python library that allows you to find all the Ethernet and\nIP addresses of the computer. It is tested on **Linux**, **OS X**, and\n**Windows**. Other BSD derivatives like **OpenBSD**, **FreeBSD**, and\n**NetBSD** should work too, but I haven't personally tested those.\n**Solaris/Illumos** should also work.\n\nThis library is open source and released under the MIT License. It works\nwith Python 3.7+.\n\nYou can install it with `pip install ifaddr`. It doesn't need to\ncompile anything, so there shouldn't be any surprises. Even on Windows.\n\nProject links:\n\n* `ifaddr GitHub page <https://github.com/smurn/ifaddr>`_\n* `ifaddr documentation (although there isn't much to document) <http://pythonhosted.org/ifaddr/>`_\n* `ifaddr on PyPI <https://pypi.org/project/ifaddr/>`_\n\n\n----------------------\nLet's get going!\n----------------------\n\n.. code-block:: python\n\n    import ifaddr\n\n    adapters = ifaddr.get_adapters()\n\n    for adapter in adapters:\n        print(\"IPs of network adapter \" + adapter.nice_name)\n        for ip in adapter.ips:\n            print(\"   %s/%s\" % (ip.ip, ip.network_prefix))\n\nThis will print::\n\n    IPs of network adapter H5321 gw Mobile Broadband Driver\n       IP ('fe80::9:ebdf:30ab:39a3', 0L, 17L)/64\n       IP 169.254.57.163/16\n    IPs of network adapter Intel(R) Centrino(R) Advanced-N 6205\n       IP ('fe80::481f:3c9d:c3f6:93f8', 0L, 12L)/64\n       IP 192.168.0.51/24\n    IPs of network adapter Intel(R) 82579LM Gigabit Network Connection\n       IP ('fe80::85cd:e07e:4f7a:6aa6', 0L, 11L)/64\n       IP 192.168.0.53/24\n    IPs of network adapter Software Loopback Interface 1\n       IP ('::1', 0L, 0L)/128\n       IP 127.0.0.1/8\n\nYou get both IPv4 and IPv6 addresses. The later complete with\nflowinfo and scope_id.\n\nIf you wish to include network interfaces that do not have a configured IP\naddresss, pass the `include_unconfigured` parameter to `get_adapters()`.\nAdapters with no configured IP addresses will have an zero-length `ips`\nproperty.  For example:\n\n.. code-block:: python\n\n    import ifaddr\n\n    adapters = ifaddr.get_adapters(include_unconfigured=True)\n\n    for adapter in adapters:\n        print(\"IPs of network adapter \" + adapter.nice_name)\n        if adapter.ips:\n            for ip in adapter.ips:\n                print(\"   %s/%s\" % (ip.ip, ip.network_prefix))\n        else:\n            print(\"  No IPs configured\")\n\n\n---------\nChangelog\n---------\n\n0.2.0\n-----\n\n* Added an option to include IP-less adapters, thanks to memory\n* Fixed a bug where an interface's name was `bytes`, not `str`, on Windows\n* Added an implementation of `netifaces.interfaces()` (available through\n  `ifaddr.netifaces.interfaces()`)\n* Added type hints\n\nBackwards incompatible/breaking changes:\n\n* Dropped Python 3.6 support\n\n0.1.7\n-----\n\n* Fixed Python 3 compatibility in the examples, thanks to Tristan Stenner and Josef Schlehofer\n* Exposed network interface indexes in Adapter.index, thanks to Dmitry Tantsur\n* Added the license file to distributions on PyPI, thanks to Tomáš Chvátal\n* Fixed Illumos/Solaris compatibility based on a patch proposed by Jorge Schrauwen\n* Set up universal wheels, ifaddr will have both source and wheel distributions on PyPI from now on\n\n------------\nAlternatives\n------------\n\nAlastair Houghton develops `netifaces  <https://pypi.python.org/pypi/netifaces>`_\nwhich can do  everything this library can, and more. The only drawback is that it needs\nto be compiled, which can make the installation difficult.\n\nAs of ifaddr 0.2.0 we implement the equivalent of `netifaces.interfaces()`. It's available through\n`ifaddr.netifaces.interfaces()`.\n\n\n",
+      "description_content_type": "",
+      "docs_url": "https://pythonhosted.org/ifaddr/",
+      "download_url": "",
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": "https://github.com/pydron/ifaddr",
+      "keywords": "network interfaces,network adapters,network addresses,IP addresses",
+      "license": "MIT",
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": "",
+      "maintainer_email": "",
+      "name": "ifaddr",
+      "package_url": "https://pypi.org/project/ifaddr/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/ifaddr/",
+      "project_urls": {
+        "Homepage": "https://github.com/pydron/ifaddr"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/ifaddr/0.2.0/",
+      "requires_dist": null,
+      "requires_python": "",
+      "summary": "Cross-platform network interface and IP address enumeration library",
+      "version": "0.2.0",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 22149501,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "jstasiak"
+        },
+        {
+          "role": "Owner",
+          "user": "stefan.mueller"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": "",
+        "core-metadata": {
+          "sha256": "6c758feecb483677eafcb9a3db2b2b56a6c195c9b93d6a56a4a22eb8bbcfb2d7"
+        },
+        "digests": {
+          "blake2b_256": "9c1f19ebc343cc71a7ffa78f17018535adc5cbdd87afb31d7c34874680148b32",
+          "md5": "95a2475cabf59fce4e38a5ef334fa985",
+          "sha256": "085e0305cfe6f16ab12d72e2024030f5d52674afad6911bb1eee207177b8a748"
+        },
+        "downloads": -1,
+        "filename": "ifaddr-0.2.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "95a2475cabf59fce4e38a5ef334fa985",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": null,
+        "size": 12314,
+        "upload_time": "2022-06-15T21:40:25",
+        "upload_time_iso_8601": "2022-06-15T21:40:25.756202Z",
+        "url": "https://files.pythonhosted.org/packages/9c/1f/19ebc343cc71a7ffa78f17018535adc5cbdd87afb31d7c34874680148b32/ifaddr-0.2.0-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": "",
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "e8acfb4c578f4a3256561548cd825646680edcadb9440f3f68add95ade1eb791",
+          "md5": "b1cac02b5dc354d68dd6d853bc9565a7",
+          "sha256": "cc0cbfcaabf765d44595825fb96a99bb12c79716b73b44330ea38ee2b0c4aed4"
+        },
+        "downloads": -1,
+        "filename": "ifaddr-0.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b1cac02b5dc354d68dd6d853bc9565a7",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": null,
+        "size": 10485,
+        "upload_time": "2022-06-15T21:40:27",
+        "upload_time_iso_8601": "2022-06-15T21:40:27.561828Z",
+        "url": "https://files.pythonhosted.org/packages/e8/ac/fb4c578f4a3256561548cd825646680edcadb9440f3f68add95ade1eb791/ifaddr-0.2.0.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "ifaddr",
+    "version": "0.2.0",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "085e0305cfe6f16ab12d72e2024030f5d52674afad6911bb1eee207177b8a748",
+      "cc0cbfcaabf765d44595825fb96a99bb12c79716b73b44330ea38ee2b0c4aed4"
+    ],
+    "retrieved_at": "2026-11-28T12:09:56+00:00",
+    "pypi_info": {
+      "license": "MIT",
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: MIT License"
+      ],
+      "classifiers_all": [
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
+        "Topic :: System :: Networking"
+      ],
+      "requires_python": "",
+      "project_urls": {
+        "Homepage": "https://github.com/pydron/ifaddr"
+      },
+      "home_page": "https://github.com/pydron/ifaddr",
+      "summary": "Cross-platform network interface and IP address enumeration library",
+      "author": "scm@smurn.org"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "ifaddr-0.2.0-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "ifaddr-0.2.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/9c/1f/19ebc343cc71a7ffa78f17018535adc5cbdd87afb31d7c34874680148b32/ifaddr-0.2.0-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 12314,
+        "sha256_pypi": "085e0305cfe6f16ab12d72e2024030f5d52674afad6911bb1eee207177b8a748",
+        "sha256_verified": "085e0305cfe6f16ab12d72e2024030f5d52674afad6911bb1eee207177b8a748",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "ifaddr-0.2.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/9c/1f/19ebc343cc71a7ffa78f17018535adc5cbdd87afb31d7c34874680148b32/ifaddr-0.2.0-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 12314,
+      "sha256_pypi": "085e0305cfe6f16ab12d72e2024030f5d52674afad6911bb1eee207177b8a748",
+      "sha256_verified": "085e0305cfe6f16ab12d72e2024030f5d52674afad6911bb1eee207177b8a748",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "ifaddr-0.2.0-py3-none-any.whl::ifaddr-0.2.0.dist-info/LICENSE.txt": {
+        "saved_as": "ifaddr-0.2.0.dist-info_LICENSE.txt",
+        "sha256": "8700856576ae2bc80c63bc970250510d9213fb02fed006d5f22742c9ddde24d7",
+        "bytes": 1084,
+        "from_artifact": "ifaddr-0.2.0-py3-none-any.whl",
+        "artifact_sha256": "085e0305cfe6f16ab12d72e2024030f5d52674afad6911bb1eee207177b8a748"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

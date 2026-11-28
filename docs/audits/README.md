@@ -23,6 +23,7 @@ ejecución. Un hallazgo puede haber sido corregido después. Antes de actuar:
 
 Archivos actuales:
 
+- `LIC-MIG/PR-LIC-01/` (atribuciones, licencias de terceros y procedencia para la redistribución del `.exe`: matriz de 124 componentes × 23 campos, auditoría de lo efectivamente vendorizado, procedencia de gráficos y fuentes, fronteras MO2/Auto Parallax, borrador de `THIRD_PARTY_NOTICES`, obligaciones no resueltas, implementation brief y criterios de aceptación; dictamen `PR_LIC_01_READY_FOR_IMPLEMENTATION` con la limitación declarada de que el inventario y el Analysis TOC del artefacto no están disponibles; holds `GPL_MIGRATION_HOLD` y `RELEASE_PUBLICATION_HOLD` vigentes; `SHA256SUMS.txt` sella 306 archivos)
 - `2026-11-21_pr977_gateway_agent_reconnect.md` (revisión adversarial del PR #977, `server.js` del gateway Node: el `close` del socket reemplazado ya no borra al agente activo; dictamen `DONE`, con dos hallazgos de la primera versión refutados en la verificación independiente)
 - `2026-11-12_p7_authorization_boundary.md` (P7: el binder consume una aprobación que liga la instancia y el INI de MO2; cierra el residual R-1 y la ventana del INI aprobado, Codex sobre #908; no habilita la emisión productiva)
 - `2026-11-11_p7_a5_pr3_hitl_wiring_scope_audit.md` (P7-A5 PR 3: auditoría de alcance del consumidor HITL en `autorizacion_hitl_transicion.py`, invariantes de `ApprovalScope` y límite respecto a PR 4)

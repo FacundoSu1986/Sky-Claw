@@ -1,0 +1,187 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "Taneli Hukkinen <hukkin@users.noreply.github.com>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: MacOS",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Typing :: Typed"
+      ],
+      "description": "[![Build Status](https://github.com/hukkin/tomli-w/actions/workflows/tests.yaml/badge.svg?branch=master)](https://github.com/hukkin/tomli-w/actions?query=workflow%3ATests+branch%3Amaster+event%3Apush)\n[![codecov.io](https://codecov.io/gh/hukkin/tomli-w/branch/master/graph/badge.svg)](https://codecov.io/gh/hukkin/tomli-w)\n[![PyPI version](https://img.shields.io/pypi/v/tomli-w)](https://pypi.org/project/tomli-w)\n\n# Tomli-W\n\n> A lil' TOML writer\n\n**Table of Contents** *generated with [mdformat-toc](https://github.com/hukkin/mdformat-toc)*\n\n<!-- mdformat-toc start --slug=github --maxlevel=6 --minlevel=2 -->\n\n- [Intro](#intro)\n- [Installation](#installation)\n- [Usage](#usage)\n  - [Write to string](#write-to-string)\n  - [Write to file](#write-to-file)\n- [FAQ](#faq)\n  - [Does Tomli-W sort the document?](#does-tomli-w-sort-the-document)\n  - [Does Tomli-W support writing documents with comments?](#does-tomli-w-support-writing-documents-with-comments)\n  - [Can I customize insignificant whitespace?](#can-i-customize-insignificant-whitespace)\n  - [Why does Tomli-W not write a multi-line string if the string value contains newlines?](#why-does-tomli-w-not-write-a-multi-line-string-if-the-string-value-contains-newlines)\n  - [Is Tomli-W output guaranteed to be valid TOML?](#is-tomli-w-output-guaranteed-to-be-valid-toml)\n\n<!-- mdformat-toc end -->\n\n## Intro<a name=\"intro\"></a>\n\nTomli-W is a Python library for writing [TOML](https://toml.io).\nIt is a write-only counterpart to [Tomli](https://github.com/hukkin/tomli),\nwhich is a read-only TOML parser.\nTomli-W is fully compatible with [TOML v1.0.0](https://toml.io/en/v1.0.0).\n\n## Installation<a name=\"installation\"></a>\n\n```bash\npip install tomli-w\n```\n\n## Usage<a name=\"usage\"></a>\n\n### Write to string<a name=\"write-to-string\"></a>\n\n```python\nimport tomli_w\n\ndoc = {\"table\": {\"nested\": {}, \"val3\": 3}, \"val2\": 2, \"val1\": 1}\nexpected_toml = \"\"\"\\\nval2 = 2\nval1 = 1\n\n[table]\nval3 = 3\n\n[table.nested]\n\"\"\"\nassert tomli_w.dumps(doc) == expected_toml\n```\n\n### Write to file<a name=\"write-to-file\"></a>\n\n```python\nimport tomli_w\n\ndoc = {\"one\": 1, \"two\": 2, \"pi\": 3}\nwith open(\"path_to_file/conf.toml\", \"wb\") as f:\n    tomli_w.dump(doc, f)\n```\n\n## FAQ<a name=\"faq\"></a>\n\n### Does Tomli-W sort the document?<a name=\"does-tomli-w-sort-the-document\"></a>\n\nNo, but it respects sort order of the input data,\nso one could sort the content of the `dict` (recursively) before calling `tomli_w.dumps`.\n\n### Does Tomli-W support writing documents with comments?<a name=\"does-tomli-w-support-writing-documents-with-comments\"></a>\n\nNo.\n\n### Can I customize insignificant whitespace?<a name=\"can-i-customize-insignificant-whitespace\"></a>\n\nIndent width of array content can be configured via the `indent` keyword argument.\n`indent` takes a non-negative integer, defaulting to 4.\n\n```python\nimport tomli_w\n\ndoc = {\"fruits\": [\"orange\", \"kiwi\", \"papaya\"]}\nexpected_toml = \"\"\"\\\nfruits = [\n \"orange\",\n \"kiwi\",\n \"papaya\",\n]\n\"\"\"\nassert tomli_w.dumps(doc, indent=1) == expected_toml\n```\n\n### Why does Tomli-W not write a multi-line string if the string value contains newlines?<a name=\"why-does-tomli-w-not-write-a-multi-line-string-if-the-string-value-contains-newlines\"></a>\n\nThis default was chosen to achieve lossless parse/write round-trips.\n\nTOML strings can contain newlines where exact bytes matter, e.g.\n\n```toml\ns = \"here's a newline\\r\\n\"\n```\n\nTOML strings also can contain newlines where exact byte representation is not relevant, e.g.\n\n```toml\ns = \"\"\"here's a newline\n\"\"\"\n```\n\nA parse/write round-trip that converts the former example to the latter does not preserve the original newline byte sequence.\nThis is why Tomli-W avoids writing multi-line strings.\n\nA keyword argument is provided for users who do not need newline bytes to be preserved:\n\n```python\nimport tomli_w\n\ndoc = {\"s\": \"here's a newline\\r\\n\"}\nexpected_toml = '''\\\ns = \"\"\"\nhere's a newline\n\"\"\"\n'''\nassert tomli_w.dumps(doc, multiline_strings=True) == expected_toml\n```\n\n### Is Tomli-W output guaranteed to be valid TOML?<a name=\"is-tomli-w-output-guaranteed-to-be-valid-toml\"></a>\n\nNo.\nIf there's a chance that your input data is bad and you need output validation,\nparse the output string once with `tomli.loads`.\nIf the parse is successful (does not raise `tomli.TOMLDecodeError`) then the string is valid TOML.\n\nExamples of bad input data that can lead to writing invalid TOML without an error being raised include:\n\n- A mapping where keys behave very much like strings, but aren't. E.g. a tuple of strings of length 1.\n- A mapping where a value is a subclass of a supported type, but which overrides the `__str__` method.\n\nGiven proper input (a mapping consisting of non-subclassed [types returned by Tomli](https://github.com/hukkin/tomli?tab=readme-ov-file#how-do-toml-types-map-into-python-types))\nthe output should be valid TOML.\n\n",
+      "description_content_type": "text/markdown",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": "toml, tomli",
+      "license": null,
+      "license_expression": null,
+      "license_files": null,
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "tomli-w",
+      "package_url": "https://pypi.org/project/tomli-w/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/tomli-w/",
+      "project_urls": {
+        "Changelog": "https://github.com/hukkin/tomli-w/blob/master/CHANGELOG.md",
+        "Homepage": "https://github.com/hukkin/tomli-w"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/tomli-w/1.2.0/",
+      "requires_dist": null,
+      "requires_python": ">=3.9",
+      "summary": "A lil' TOML writer",
+      "version": "1.2.0",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 26958266,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "hukkin"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": "",
+        "core-metadata": {
+          "sha256": "66e81ac2e41775b5ebddcfbb9f4ae77158e4c5739fd52d231e14f2fffda9c8de"
+        },
+        "digests": {
+          "blake2b_256": "c718c86eb8e0202e32dd3df50d43d7ff9854f8e0603945ff398974c1d91ac1ef",
+          "md5": "bc841067bc84a6501d60f7405728f8b3",
+          "sha256": "188306098d013b691fcadc011abd66727d3c414c571bb01b1a174ba8c983cf90"
+        },
+        "downloads": -1,
+        "filename": "tomli_w-1.2.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "bc841067bc84a6501d60f7405728f8b3",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": ">=3.9",
+        "size": 6675,
+        "upload_time": "2025-01-15T12:07:22",
+        "upload_time_iso_8601": "2025-01-15T12:07:22.074224Z",
+        "url": "https://files.pythonhosted.org/packages/c7/18/c86eb8e0202e32dd3df50d43d7ff9854f8e0603945ff398974c1d91ac1ef/tomli_w-1.2.0-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": "",
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "1975241269d1da26b624c0d5e110e8149093c759b7a286138f4efd61a60e75fe",
+          "md5": "bfc49ccce117afc20bcaf50e80fcecfe",
+          "sha256": "2dd14fac5a47c27be9cd4c976af5a12d87fb1f0b4512f81d69cce3b35ae25021"
+        },
+        "downloads": -1,
+        "filename": "tomli_w-1.2.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bfc49ccce117afc20bcaf50e80fcecfe",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.9",
+        "size": 7184,
+        "upload_time": "2025-01-15T12:07:24",
+        "upload_time_iso_8601": "2025-01-15T12:07:24.262974Z",
+        "url": "https://files.pythonhosted.org/packages/19/75/241269d1da26b624c0d5e110e8149093c759b7a286138f4efd61a60e75fe/tomli_w-1.2.0.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "tomli-w",
+    "version": "1.2.0",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "188306098d013b691fcadc011abd66727d3c414c571bb01b1a174ba8c983cf90",
+      "2dd14fac5a47c27be9cd4c976af5a12d87fb1f0b4512f81d69cce3b35ae25021"
+    ],
+    "retrieved_at": "2026-11-28T12:09:59+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": null,
+      "classifiers_license": [
+        "License :: OSI Approved :: MIT License"
+      ],
+      "classifiers_all": [
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: MacOS",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "Typing :: Typed"
+      ],
+      "requires_python": ">=3.9",
+      "project_urls": {
+        "Changelog": "https://github.com/hukkin/tomli-w/blob/master/CHANGELOG.md",
+        "Homepage": "https://github.com/hukkin/tomli-w"
+      },
+      "home_page": null,
+      "summary": "A lil' TOML writer",
+      "author": "Taneli Hukkinen <hukkin@users.noreply.github.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "tomli_w-1.2.0-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "tomli_w-1.2.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/c7/18/c86eb8e0202e32dd3df50d43d7ff9854f8e0603945ff398974c1d91ac1ef/tomli_w-1.2.0-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 6675,
+        "sha256_pypi": "188306098d013b691fcadc011abd66727d3c414c571bb01b1a174ba8c983cf90",
+        "sha256_verified": "188306098d013b691fcadc011abd66727d3c414c571bb01b1a174ba8c983cf90",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "tomli_w-1.2.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/c7/18/c86eb8e0202e32dd3df50d43d7ff9854f8e0603945ff398974c1d91ac1ef/tomli_w-1.2.0-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 6675,
+      "sha256_pypi": "188306098d013b691fcadc011abd66727d3c414c571bb01b1a174ba8c983cf90",
+      "sha256_verified": "188306098d013b691fcadc011abd66727d3c414c571bb01b1a174ba8c983cf90",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "tomli_w-1.2.0-py3-none-any.whl::tomli_w-1.2.0.dist-info/LICENSE": {
+        "saved_as": "tomli_w-1.2.0.dist-info_LICENSE",
+        "sha256": "b80816b0d530b8accb4c2211783790984a6e3b61922c2b5ee92f3372ab2742fe",
+        "bytes": 1072,
+        "from_artifact": "tomli_w-1.2.0-py3-none-any.whl",
+        "artifact_sha256": "188306098d013b691fcadc011abd66727d3c414c571bb01b1a174ba8c983cf90"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

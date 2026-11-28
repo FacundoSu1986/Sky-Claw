@@ -1,0 +1,254 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": "Zauberzeug GmbH",
+      "author_email": "info@zauberzeug.com",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Environment :: Web Environment",
+        "Framework :: AsyncIO",
+        "Framework :: FastAPI",
+        "Intended Audience :: Developers",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+        "Topic :: Software Development :: Libraries :: Application Frameworks",
+        "Topic :: Software Development :: User Interfaces",
+        "Topic :: Software Development :: Widget Sets",
+        "Typing :: Typed"
+      ],
+      "description": "<a href=\"https://nicegui.io/#about\">\n  <img src=\"https://raw.githubusercontent.com/zauberzeug/nicegui/main/screenshot.png\"\n    width=\"200\" align=\"right\" alt=\"Try online!\" />\n</a>\n\n# NiceGUI\n\nNiceGUI is an easy-to-use, Python-based UI framework, which shows up in your web browser.\nYou can create buttons, dialogs, Markdown, 3D scenes, plots and much more.\n\nIt is great for micro web apps, dashboards, robotics projects, smart home solutions and similar use cases.\nYou can also use it in development, for example when tweaking/configuring a machine learning algorithm or tuning motor controllers.\n\nNiceGUI is available as [PyPI package](https://pypi.org/project/nicegui/), [Docker image](https://hub.docker.com/r/zauberzeug/nicegui) and on [conda-forge](https://anaconda.org/conda-forge/nicegui) as well as [GitHub](https://github.com/zauberzeug/nicegui).\n\n[![PyPI](https://img.shields.io/pypi/v/nicegui?color=dark-green)](https://pypi.org/project/nicegui/)\n[![PyPI downloads](https://img.shields.io/pypi/dm/nicegui?color=dark-green)](https://pypi.org/project/nicegui/)\n[![Conda version](https://img.shields.io/conda/v/conda-forge/nicegui?color=green&label=conda-forge)](https://anaconda.org/conda-forge/nicegui)\n[![Conda downloads](https://img.shields.io/conda/dn/conda-forge/nicegui?color=green&label=downloads)](https://anaconda.org/conda-forge/nicegui)\n[![Docker pulls](https://img.shields.io/docker/pulls/zauberzeug/nicegui)](https://hub.docker.com/r/zauberzeug/nicegui)<br />\n[![GitHub license](https://img.shields.io/github/license/zauberzeug/nicegui?color=orange)](https://github.com/zauberzeug/nicegui/blob/main/LICENSE)\n[![GitHub commit activity](https://img.shields.io/github/commit-activity/m/zauberzeug/nicegui)](https://github.com/zauberzeug/nicegui/graphs/commit-activity)\n[![GitHub issues](https://img.shields.io/github/issues/zauberzeug/nicegui?color=blue)](https://github.com/zauberzeug/nicegui/issues)\n[![GitHub forks](https://img.shields.io/github/forks/zauberzeug/nicegui)](https://github.com/zauberzeug/nicegui/network)\n[![GitHub stars](https://img.shields.io/github/stars/zauberzeug/nicegui)](https://github.com/zauberzeug/nicegui/stargazers)\n[![DOI](https://zenodo.org/badge/365250183.svg)](https://doi.org/10.5281/zenodo.7785516)\n\n## Features\n\n- browser-based graphical user interface\n- implicit reload on code change\n- acts as webserver (accessed by the browser) or in native mode (eg. desktop window)\n- standard GUI elements like label, button, checkbox, switch, slider, input, file upload, ...\n- simple grouping with rows, columns, cards and dialogs\n- general-purpose HTML and Markdown elements\n- powerful high-level elements to\n  - plot graphs and charts,\n  - render 3D scenes,\n  - get steering events via virtual joysticks\n  - annotate and overlay images\n  - interact with tables\n  - navigate foldable tree structures\n  - embed video and audio files\n- built-in timer to refresh data in intervals (even every 10 ms)\n- straight-forward data binding and refreshable functions to write even less code\n- notifications, dialogs and menus to provide state of the art user interaction\n- shared and individual web pages\n- easy-to-use per-user and general persistence\n- ability to add custom routes and data responses\n- capture keyboard input for global shortcuts etc.\n- customize look by defining primary, secondary and accent colors\n- live-cycle events and session data\n- runs in Jupyter Notebooks and allows Python's interactive mode\n- auto-complete support for Tailwind CSS\n- SVG, Base64 and emoji favicon support\n- testing framework based on pytest\n\n## Installation\n\n```bash\npython3 -m pip install nicegui\n```\n\n## Usage\n\nWrite your nice GUI in a file `main.py`:\n\n```python\nfrom nicegui import ui\n\nui.label('Hello NiceGUI!')\nui.button('BUTTON', on_click=lambda: ui.notify('button was pressed'))\n\nui.run()\n```\n\nLaunch it with:\n\n```bash\npython3 main.py\n```\n\nThe GUI is now available through http://localhost:8080/ in your browser.\nNote: NiceGUI will automatically reload the page when you modify the code.\n\n## Documentation and Examples\n\nThe documentation is hosted at [https://nicegui.io/documentation](https://nicegui.io/documentation) and provides plenty of live demos.\nThe whole content of [https://nicegui.io](https://nicegui.io) is [implemented with NiceGUI itself](https://github.com/zauberzeug/nicegui/blob/main/main.py)\nand can be started locally with `docker run -p 8080:8080 zauberzeug/nicegui` or by executing `main.py` from this repository.\n\nYou may also have a look at our [in-depth examples](https://github.com/zauberzeug/nicegui/tree/main/examples) of what you can do with NiceGUI.\nIn our wiki we have a list of great [NiceGUI projects from the community](https://github.com/zauberzeug/nicegui/wiki#community-projects), a section with [Tutorials](https://github.com/zauberzeug/nicegui/wiki#tutorials) and a growing list of [FAQs](https://github.com/zauberzeug/nicegui/wiki/FAQs).\nWhen building NiceGUI projects with AI assistants, point them at [`nicegui/llms.md`](nicegui/llms.md) — a concise reference that ships with the package (also served at <https://nicegui.io/llms.txt>).\n\n## Why?\n\nWe at [Zauberzeug](https://zauberzeug.com) like [Streamlit](https://streamlit.io/)\nbut find it does [too much magic](https://github.com/zauberzeug/nicegui/issues/1#issuecomment-847413651) when it comes to state handling.\nIn search for an alternative nice library to write simple graphical user interfaces in Python we discovered [JustPy](https://justpy.io/).\nAlthough we liked the approach, it is too \"low-level HTML\" for our daily usage.\nBut it inspired us to use [Vue](https://vuejs.org/) and [Quasar](https://quasar.dev/) for the frontend.\n\nWe have built on top of [FastAPI](https://fastapi.tiangolo.com/),\nwhich itself is based on the ASGI framework [Starlette](https://www.starlette.io/)\nand the ASGI webserver [Uvicorn](https://www.uvicorn.org/)\nbecause of their great performance and ease of use.\n\n## Sponsors\n\nMaintenance of this project is made possible by all the [contributors](https://github.com/zauberzeug/nicegui/graphs/contributors) and [sponsors](https://github.com/sponsors/zauberzeug).\nIf you would like to support this project and have your avatar or company logo appear below, please [sponsor us](https://github.com/sponsors/zauberzeug). 💖\n\n<!-- SPONSORS -->\n\n<p align=\"center\">\n  <a href=\"https://github.com/lechler-gmbh\"><img src=\"https://github.com/lechler-gmbh.png\" width=\"50px\" alt=\"Lechler GmbH\" /></a>\n  <a href=\"https://github.com/Zhifeng2019\"><img src=\"https://github.com/Zhifeng2019.png\" width=\"50px\" alt=\"Zhifeng\" /></a>\n  <a href=\"https://github.com/whoulden\"><img src=\"https://github.com/whoulden.png\" width=\"50px\" alt=\"Wayne Houlden\" /></a>\n  <a href=\"https://github.com/digiquip\"><img src=\"https://github.com/digiquip.png\" width=\"50px\" alt=\"DigiQuip AS\" /></a>\n  <a href=\"https://github.com/aitech95\"><img src=\"https://github.com/aitech95.png\" width=\"50px\" alt=\"JACOB SHI \" /></a>\n  <a href=\"https://github.com/LambdaTest-Inc\"><img src=\"https://github.com/LambdaTest-Inc.png\" width=\"50px\" alt=\"TestMu AI Open Source Office (Formerly LambdaTest)\" /></a>\n  <a href=\"https://github.com/Zaga-Solutions\"><img src=\"https://github.com/Zaga-Solutions.png\" width=\"50px\" alt=\"Zaga Solutions\" /></a>\n</p>\n<!-- SPONSORS -->\n\nConsider this low-barrier form of contribution yourself.\nYour [support](https://github.com/sponsors/zauberzeug) is much appreciated.\n\n## Contributing\n\nThank you for your interest in contributing to NiceGUI! We are thrilled to have you on board and appreciate your efforts to make this project even better.\n\nAs a growing open-source project, we understand that it takes a community effort to achieve our goals. That's why we welcome all kinds of contributions, no matter how small or big they are. Whether it's adding new features, fixing bugs, improving documentation, or suggesting new ideas, we believe that every contribution counts and adds value to our project.\n\nWe have provided a detailed guide on how to contribute to NiceGUI in our [CONTRIBUTING.md](https://github.com/zauberzeug/nicegui/blob/main/CONTRIBUTING.md) file. We encourage you to read it carefully before making any contributions to ensure that your work aligns with the project's goals and standards.\n\nIf you have any questions or need help with anything, please don't hesitate to reach out to us. We are always here to support and guide you through the contribution process.\n\n## Included Web Dependencies\n\nSee [DEPENDENCIES.md](https://github.com/zauberzeug/nicegui/blob/main/DEPENDENCIES.md) for a list of web frameworks NiceGUI depends on.\n\n## Architecture\n\nNiceGUI is a Python framework for building web UIs with a **backend-first philosophy**.\nKey architectural decisions:\n\n- **Backend-first**: All UI logic lives in Python; the framework handles web details\n- **Tech stack**: Python/FastAPI backend, Vue/Quasar frontend, socket.io for communication\n- **Single worker**: Uses one uvicorn worker (thanks to full async support, no multi-process synchronization needed)\n- **Real-time communication**: WebSocket connection is established after initial page load, kept open for client-server communication\n- **User interactions**: All UI events are sent to backend and invoke Python functions, which can then generate UI updates\n- **Outbox**: Accumulates UI updates and sends them in batches to the client\n\n",
+      "description_content_type": "text/markdown",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": "gui, ui, web, interface, live",
+      "license": null,
+      "license_expression": "MIT",
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "nicegui",
+      "package_url": "https://pypi.org/project/nicegui/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/nicegui/",
+      "project_urls": {
+        "Changelog": "https://github.com/zauberzeug/nicegui/releases",
+        "Documentation": "https://nicegui.io/documentation",
+        "Funding": "https://github.com/sponsors/zauberzeug",
+        "Homepage": "https://nicegui.io",
+        "Issues": "https://github.com/zauberzeug/nicegui/issues",
+        "Repository": "https://github.com/zauberzeug/nicegui"
+      },
+      "provides_extra": [
+        "altair",
+        "anywidget",
+        "highcharts",
+        "matplotlib",
+        "native",
+        "plotly",
+        "redis"
+      ],
+      "release_url": "https://pypi.org/project/nicegui/3.12.0/",
+      "requires_dist": [
+        "Pygments<3.0.0,>=2.20.0",
+        "aiofiles>=23.1.0",
+        "aiohttp>=3.13.4",
+        "altair>=6.0.0; extra == \"altair\"",
+        "anywidget>=0.9.21; extra == \"anywidget\"",
+        "certifi>=2024.7.4",
+        "docutils>=0.19.0",
+        "fastapi!=0.123.5,>=0.109.1",
+        "fonttools>=4.60.2; extra == \"matplotlib\"",
+        "h11>=0.16.0",
+        "httpx>=0.24.0",
+        "ifaddr>=0.2.0",
+        "itsdangerous<3,>=2.1.2",
+        "jinja2<4,>=3.1.6",
+        "lxml>=6.1.0",
+        "lxml-html-clean>=0.4.4",
+        "markdown2!=2.4.11,>=2.4.7",
+        "matplotlib<4,>=3.5.0; extra == \"matplotlib\"",
+        "nicegui-highcharts<4,>=3.2.1; extra == \"highcharts\"",
+        "orjson>=3.11.5; platform_machine != \"i386\" and platform_machine != \"i686\" and platform_python_implementation != \"PyPy\"",
+        "pillow>=12.2.0; extra == \"matplotlib\"",
+        "plotly<7.0,>=5.13; extra == \"plotly\"",
+        "pydantic-core>=2.35.0",
+        "python-dotenv>=1.2.2",
+        "python-engineio>=4.12.0",
+        "python-multipart>=0.0.27",
+        "python-socketio[asyncio-client]>=5.14.0",
+        "pywebview<7,>=5.0.1; extra == \"native\"",
+        "redis>=4.0.0; extra == \"redis\"",
+        "starlette>=0.49.1",
+        "tinycss2<2,>=1.4.0",
+        "typing-extensions>=4.0.0",
+        "uvicorn[standard]>=0.22.0",
+        "watchfiles>=0.18.1"
+      ],
+      "requires_python": "<4,>=3.10",
+      "summary": "Create web-based user interfaces with Python. The nice way.",
+      "version": "3.12.0",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 44106219,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "zauberzeug"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1a224315cd53d42d1f37e1f8527794ddd8de13e0dd110f6cde8a6e979f08b0db"
+        },
+        "digests": {
+          "blake2b_256": "c73d222879aa74d30cd7fe057df5638623b9818de535064e0c8f02117e0b69ce",
+          "md5": "3cf13068384d155372a9679feb5b5484",
+          "sha256": "1bdc6ef423f091afddc05ea3bcf5beac1b3c3d27081b0df243aaccf03e612434"
+        },
+        "downloads": -1,
+        "filename": "nicegui-3.12.0-py3-none-any.whl",
+        "has_sig": false,
+        "md5_digest": "3cf13068384d155372a9679feb5b5484",
+        "packagetype": "bdist_wheel",
+        "python_version": "py3",
+        "requires_python": "<4,>=3.10",
+        "size": 20186344,
+        "upload_time": "2026-05-12T14:22:06",
+        "upload_time_iso_8601": "2026-05-12T14:22:06.794730Z",
+        "url": "https://files.pythonhosted.org/packages/c7/3d/222879aa74d30cd7fe057df5638623b9818de535064e0c8f02117e0b69ce/nicegui-3.12.0-py3-none-any.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "d31048a16e8c2a2d4c1b1efdcb9c3898a50db3d016fab86a972e3fe083bce206",
+          "md5": "d2cea2c395decae2032c37b0eb011b0a",
+          "sha256": "f90d091a2b4855e090a9bad8d8ad10396799f7c7792a0846447a11aea396ead3"
+        },
+        "downloads": -1,
+        "filename": "nicegui-3.12.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "d2cea2c395decae2032c37b0eb011b0a",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": "<4,>=3.10",
+        "size": 19602588,
+        "upload_time": "2026-05-12T14:22:02",
+        "upload_time_iso_8601": "2026-05-12T14:22:02.317181Z",
+        "url": "https://files.pythonhosted.org/packages/d3/10/48a16e8c2a2d4c1b1efdcb9c3898a50db3d016fab86a972e3fe083bce206/nicegui-3.12.0.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "nicegui",
+    "version": "3.12.0",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "1bdc6ef423f091afddc05ea3bcf5beac1b3c3d27081b0df243aaccf03e612434",
+      "f90d091a2b4855e090a9bad8d8ad10396799f7c7792a0846447a11aea396ead3"
+    ],
+    "retrieved_at": "2026-11-28T12:09:56+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": "MIT",
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Environment :: Web Environment",
+        "Framework :: AsyncIO",
+        "Framework :: FastAPI",
+        "Intended Audience :: Developers",
+        "Operating System :: OS Independent",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+        "Topic :: Software Development :: Libraries :: Application Frameworks",
+        "Topic :: Software Development :: User Interfaces",
+        "Topic :: Software Development :: Widget Sets",
+        "Typing :: Typed"
+      ],
+      "requires_python": "<4,>=3.10",
+      "project_urls": {
+        "Changelog": "https://github.com/zauberzeug/nicegui/releases",
+        "Documentation": "https://nicegui.io/documentation",
+        "Funding": "https://github.com/sponsors/zauberzeug",
+        "Homepage": "https://nicegui.io",
+        "Issues": "https://github.com/zauberzeug/nicegui/issues",
+        "Repository": "https://github.com/zauberzeug/nicegui"
+      },
+      "home_page": null,
+      "summary": "Create web-based user interfaces with Python. The nice way.",
+      "author": "info@zauberzeug.com"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "nicegui-3.12.0-py3-none-any.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "nicegui-3.12.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/c7/3d/222879aa74d30cd7fe057df5638623b9818de535064e0c8f02117e0b69ce/nicegui-3.12.0-py3-none-any.whl",
+        "packagetype": "bdist_wheel",
+        "size": 20186344,
+        "sha256_pypi": "1bdc6ef423f091afddc05ea3bcf5beac1b3c3d27081b0df243aaccf03e612434",
+        "sha256_verified": "1bdc6ef423f091afddc05ea3bcf5beac1b3c3d27081b0df243aaccf03e612434",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "nicegui-3.12.0-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/c7/3d/222879aa74d30cd7fe057df5638623b9818de535064e0c8f02117e0b69ce/nicegui-3.12.0-py3-none-any.whl",
+      "packagetype": "bdist_wheel",
+      "size": 20186344,
+      "sha256_pypi": "1bdc6ef423f091afddc05ea3bcf5beac1b3c3d27081b0df243aaccf03e612434",
+      "sha256_verified": "1bdc6ef423f091afddc05ea3bcf5beac1b3c3d27081b0df243aaccf03e612434",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "nicegui-3.12.0-py3-none-any.whl::nicegui-3.12.0.dist-info/licenses/LICENSE": {
+        "saved_as": "nicegui-3.12.0.dist-info_licenses_LICENSE",
+        "sha256": "41c065c2081141886f7d3004e3cd4000c1507cc4bf37a063f12be1d53e9db272",
+        "bytes": 1072,
+        "from_artifact": "nicegui-3.12.0-py3-none-any.whl",
+        "artifact_sha256": "1bdc6ef423f091afddc05ea3bcf5beac1b3c3d27081b0df243aaccf03e612434"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

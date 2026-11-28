@@ -1,0 +1,1707 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "Hiroshi Miura <miurahr@linux.com>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Topic :: Software Development :: Libraries :: Python Modules"
+      ],
+      "description": "PyPPMd\n======\n\n\n.. image:: https://badge.fury.io/py/pyppmd.svg\n  :target: https://badge.fury.io/py/pyppmd\n\n.. image:: https://img.shields.io/conda/vn/conda-forge/pyppmd\n  :target: https://anaconda.org/conda-forge/pyppmd\n\n.. image:: https://readthedocs.org/projects/pyppmd/badge/?version=latest\n  :target: https://pyppmd.readthedocs.io/en/latest/?badge=latest\n\n.. image:: https://dev.azure.com/miurahr/CodeBerg/_apis/build/status%2FCodeBerg-pyppmd-CI?branchName=main\n  :target: https://dev.azure.com/miurahr/CodeBerg/_build/latest?definitionId=29&branchName=main\n\nIntroduction\n------------\n\n``pyppmd`` module provides classes and functions for compressing and decompressing text data,\nusing PPM(Prediction by partial matching) compression algorithm which has several variations of implementations.\nPPMd is the implementation by Dmitry Shkarin.\nPyPPMD use Igor Pavlov's range coder introduced in 7-zip.\n\nThe API is similar to Python's bz2/lzma/zlib module.\n\nSome parts of th codes are derived from ``7-zip``, ``pyzstd`` and ``ppmd-cffi``.\n\n\nDevelopment status\n------------------\n\nA project status is considered as ``Stable``.\n\nExtra input byte\n----------------\n\n``PPMd`` algorithm and implementation is designed to use ``Extra`` input byte.\nThe encoder will omit a last null (b\"\\0\") byte when last byte is b\"\\0\".\nYou may need to provide an extra null byte when you don't get expected size of\nextracted data.\n\nYou can do like as:\n\n.. code-block::\n\n    dec = pyppmd.Ppmd7Decoder(max_order=6, mem_size=16 << 10)\n    result = dec.decode(compressed, length)\n    if len(result) < length:\n        if dec.needs_input:\n            # ppmd need an extra null byte\n            result += dec.decode(b\"\\0\", length - len(result))\n        else:\n            result += dec.decode(b\"\", length - len(result))\n\n\n.. warning::\n   When use it on MSYS2/MINGW64 environment, you should set environment variable ``SETUPTOOLS_USE_DISTUTILS=stdlib``\n\nCopyright and License\n---------------------\n\nSome codes are derived from p7zip/7zip and pyzstd project.\nDetails are shown in LicenseNotices.rst\n\n- SPDX-License-Identifier: LGPL-2.1-or-later\n- SPDX-URL: https://spdx.org/licenses/LGPL-2.1-or-later.html\n\nPyPPMd is licensed under GNU Lesser General Public License v2.1 or later.\n\n- Copyright (C) 2020-2023 Hiroshi Miura\n- Copyright (C) 2020-2021 Ma Lin\n- Copyright (C) 2010-2012 Lockless Inc.\n- Copyright (C) 1999-2017 Igor Pavlov\n\nThis library is free software; you can redistribute it and/or\nmodify it under the terms of the GNU Lesser General Public\nLicense as published by the Free Software Foundation; either\nversion 2.1 of the License, or (at your option) any later version.\n\nThis library is distributed in the hope that it will be useful,\nbut WITHOUT ANY WARRANTY; without even the implied warranty of\nMERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU\nLesser General Public License for more details.\n\nYou should have received a copy of the GNU Lesser General Public\nLicense along with this library; if not, write to the Free Software\nFoundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA\n",
+      "description_content_type": "text/x-rst",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": [
+        "License-File"
+      ],
+      "home_page": null,
+      "keywords": null,
+      "license": "LGPL-2.1-or-later",
+      "license_expression": null,
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "pyppmd",
+      "package_url": "https://pypi.org/project/pyppmd/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/pyppmd/",
+      "project_urls": {
+        "Bug Tracker": "https://github.com/miurahr/pyppmd/issues",
+        "Changelog": "https://pyppmd.readthedocs.io/en/latest/changelog.html",
+        "Documentation": "https://pyppmd.readthedocs.io/en/stable/",
+        "Homepage": "https://pyppmd.readthedocs.io/",
+        "Source": "https://github.com/miurahr/pyppmd"
+      },
+      "provides_extra": [
+        "test",
+        "check",
+        "docs",
+        "fuzzer"
+      ],
+      "release_url": "https://pypi.org/project/pyppmd/1.3.1/",
+      "requires_dist": [
+        "pytest>=6.0; extra == \"test\"",
+        "pytest-benchmark; extra == \"test\"",
+        "pytest-cov; extra == \"test\"",
+        "pytest-timeout; extra == \"test\"",
+        "hypothesis; extra == \"test\"",
+        "coverage[toml]>=5.2; extra == \"test\"",
+        "mypy>=1.10.0; extra == \"check\"",
+        "check-manifest; extra == \"check\"",
+        "flake8; extra == \"check\"",
+        "flake8-isort; extra == \"check\"",
+        "flake8-black; extra == \"check\"",
+        "readme-renderer; extra == \"check\"",
+        "pygments; extra == \"check\"",
+        "sphinx; extra == \"docs\"",
+        "sphinx_rtd_theme; extra == \"docs\"",
+        "atheris; extra == \"fuzzer\"",
+        "hypothesis; extra == \"fuzzer\""
+      ],
+      "requires_python": ">=3.10",
+      "summary": "PPMd compression/decompression library",
+      "version": "1.3.1",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 32662616,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "miurahr"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "c4f2175dbdc56178d5d00caa73df79f98f72fab80f5c01a7467aff3ed245f739",
+          "md5": "88bb04e8ab0d472662b477d13e56d254",
+          "sha256": "041f46fbeb0a59888c0a94d6b9a557c652935633a104be1c31c12de491b5f448"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp310-cp310-macosx_10_9_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "88bb04e8ab0d472662b477d13e56d254",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 77545,
+        "upload_time": "2025-11-27T22:07:22",
+        "upload_time_iso_8601": "2025-11-27T22:07:22.938171Z",
+        "url": "https://files.pythonhosted.org/packages/c4/f2/175dbdc56178d5d00caa73df79f98f72fab80f5c01a7467aff3ed245f739/pyppmd-1.3.1-cp310-cp310-macosx_10_9_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "61a0729139273084dd574b3b529cd4b006ca9d2dc42d8bd3b65adf66ae8dffd8",
+          "md5": "cc19a49e1652af50d2968e6039b2cf3d",
+          "sha256": "9512a8b39740923559c26eb16266bf8b70d4eab6ad27a9b39cd2465e60e0acfa"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp310-cp310-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "cc19a49e1652af50d2968e6039b2cf3d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 47997,
+        "upload_time": "2025-11-27T22:07:24",
+        "upload_time_iso_8601": "2025-11-27T22:07:24.437357Z",
+        "url": "https://files.pythonhosted.org/packages/61/a0/729139273084dd574b3b529cd4b006ca9d2dc42d8bd3b65adf66ae8dffd8/pyppmd-1.3.1-cp310-cp310-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "3fbbeab338c9fa00ddeb3f54552360949ac503f3cd77debc71857c07263eba20",
+          "md5": "6c6ed4b6eff6ce00450c0a26bdf5edcf",
+          "sha256": "8966f26b91ba7cdff3cfec5512d39d1f8bf4a8dbb75c44085e33b564566fea66"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp310-cp310-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "6c6ed4b6eff6ce00450c0a26bdf5edcf",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 48437,
+        "upload_time": "2025-11-27T22:07:25",
+        "upload_time_iso_8601": "2025-11-27T22:07:25.558842Z",
+        "url": "https://files.pythonhosted.org/packages/3f/bb/eab338c9fa00ddeb3f54552360949ac503f3cd77debc71857c07263eba20/pyppmd-1.3.1-cp310-cp310-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "965bf098d68ce887d25a47e95a1aaa6443436cb21bb4bcc3cd73f332135a214d",
+          "md5": "d3925156166cf1c3075670b5691ede79",
+          "sha256": "0d1cff657e85655c67426c29c90c78a6210148b207993e643fc351c72c60d188"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "d3925156166cf1c3075670b5691ede79",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 139198,
+        "upload_time": "2025-11-27T22:07:27",
+        "upload_time_iso_8601": "2025-11-27T22:07:27.086889Z",
+        "url": "https://files.pythonhosted.org/packages/96/5b/f098d68ce887d25a47e95a1aaa6443436cb21bb4bcc3cd73f332135a214d/pyppmd-1.3.1-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "1c1e59757d7e3aba883b2e446baee07055a069c9e17143fd4bd297fe590dd461",
+          "md5": "ae0f155ab7fe0601974531a48bf0949b",
+          "sha256": "9de2cdcc3932e7c23a54beb48dfe1b5ab7b4aedd5ffaae1e4871bd213d630cb3"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "ae0f155ab7fe0601974531a48bf0949b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 140959,
+        "upload_time": "2025-11-27T22:07:28",
+        "upload_time_iso_8601": "2025-11-27T22:07:28.817158Z",
+        "url": "https://files.pythonhosted.org/packages/1c/1e/59757d7e3aba883b2e446baee07055a069c9e17143fd4bd297fe590dd461/pyppmd-1.3.1-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "ed6c4d1aeea9bcb8293dada21b51e2d20eff49d24ddf512ec611b47d2440846a",
+          "md5": "94877add5cee0101af618ee8b3c7cbaa",
+          "sha256": "1e1985461219c30d4576070b7e2de718dbb6f32637d1e658d25f838dfda2a4bb"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp310-cp310-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "94877add5cee0101af618ee8b3c7cbaa",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 136301,
+        "upload_time": "2025-11-27T22:07:30",
+        "upload_time_iso_8601": "2025-11-27T22:07:30.523627Z",
+        "url": "https://files.pythonhosted.org/packages/ed/6c/4d1aeea9bcb8293dada21b51e2d20eff49d24ddf512ec611b47d2440846a/pyppmd-1.3.1-cp310-cp310-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "3cb7f6a46a60b092b5fb9a9631be408e447ea87cce4d656197736586ba082975",
+          "md5": "233460d7a9e8137e8616802b8af8d77c",
+          "sha256": "20d9d1aa4d0f32118c8094c212c66b7af50e55f47e7c6dffa5f35a8ac391faca"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp310-cp310-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "233460d7a9e8137e8616802b8af8d77c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 139126,
+        "upload_time": "2025-11-27T22:07:32",
+        "upload_time_iso_8601": "2025-11-27T22:07:32.274235Z",
+        "url": "https://files.pythonhosted.org/packages/3c/b7/f6a46a60b092b5fb9a9631be408e447ea87cce4d656197736586ba082975/pyppmd-1.3.1-cp310-cp310-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "d4edcf1f4ac5248ddcb19cf18ef8acb256d909912a5c5684fcfe400fb42d778d",
+          "md5": "840fa71849191a4fdafe4f4c8f5d0e16",
+          "sha256": "44d25e7dede2abb614bc023fe87835365fdd5865981c2273b70bfad71b84db29"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp310-cp310-win32.whl",
+        "has_sig": false,
+        "md5_digest": "840fa71849191a4fdafe4f4c8f5d0e16",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 42019,
+        "upload_time": "2025-11-27T22:07:33",
+        "upload_time_iso_8601": "2025-11-27T22:07:33.442691Z",
+        "url": "https://files.pythonhosted.org/packages/d4/ed/cf1f4ac5248ddcb19cf18ef8acb256d909912a5c5684fcfe400fb42d778d/pyppmd-1.3.1-cp310-cp310-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "1b931e035bd1ef405ca024be1fc4d9eb7d603eb03960d7010515ddf155dcccd2",
+          "md5": "0e3ff58a0a0c4ff0ca115e9cd8f2c1b7",
+          "sha256": "1e503a28c9a275d31f24af9b735d2cca543b62f438b064e2833e9833e758bdbc"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp310-cp310-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "0e3ff58a0a0c4ff0ca115e9cd8f2c1b7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 46860,
+        "upload_time": "2025-11-27T22:07:34",
+        "upload_time_iso_8601": "2025-11-27T22:07:34.873063Z",
+        "url": "https://files.pythonhosted.org/packages/1b/93/1e035bd1ef405ca024be1fc4d9eb7d603eb03960d7010515ddf155dcccd2/pyppmd-1.3.1-cp310-cp310-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "232f236f7bf2f8b8ccfd93f0505692b9ad10a249fa00ce4671c50049c69ea414",
+          "md5": "2c3a6a9c0ebe839890627d923a794a71",
+          "sha256": "3fb3708d7b2b38e2999385a2f02c8e68e0f5a364d94f94e475e2e8b09e9338fc"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp310-cp310-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "2c3a6a9c0ebe839890627d923a794a71",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": ">=3.10",
+        "size": 45253,
+        "upload_time": "2025-11-27T22:07:36",
+        "upload_time_iso_8601": "2025-11-27T22:07:36.406011Z",
+        "url": "https://files.pythonhosted.org/packages/23/2f/236f7bf2f8b8ccfd93f0505692b9ad10a249fa00ce4671c50049c69ea414/pyppmd-1.3.1-cp310-cp310-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "0440580b99818c9db3a09cbae8e3740f9b5127ef7fd7314daf009c487ab02eb6",
+          "md5": "63e16c5898bae4d8a8a64f5e4d0eb368",
+          "sha256": "fdf55aa6ee7aef492f6896464e7a5a528f8615bb9e435f55bc8dff226fcc8292"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp311-cp311-macosx_10_9_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "63e16c5898bae4d8a8a64f5e4d0eb368",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 77550,
+        "upload_time": "2025-11-27T22:07:37",
+        "upload_time_iso_8601": "2025-11-27T22:07:37.839776Z",
+        "url": "https://files.pythonhosted.org/packages/04/40/580b99818c9db3a09cbae8e3740f9b5127ef7fd7314daf009c487ab02eb6/pyppmd-1.3.1-cp311-cp311-macosx_10_9_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "8da3f7b4c49ef920f5b2c9812f8f54f48e01435433cb6b46ec82b1b4e740714d",
+          "md5": "3e21a27875d974389da3e75f0547196d",
+          "sha256": "aa820aac385ac4ee57160b26d92862c69d31c08f92272dbef05fe8e619cea8d1"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp311-cp311-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3e21a27875d974389da3e75f0547196d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 48000,
+        "upload_time": "2025-11-27T22:07:38",
+        "upload_time_iso_8601": "2025-11-27T22:07:38.983055Z",
+        "url": "https://files.pythonhosted.org/packages/8d/a3/f7b4c49ef920f5b2c9812f8f54f48e01435433cb6b46ec82b1b4e740714d/pyppmd-1.3.1-cp311-cp311-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "bcc330de6f7892e77b83350e55d54a6913420591cc2c5c4d2394c219a4c461ac",
+          "md5": "9324a1982a289de93c23f8f3e3bc56ea",
+          "sha256": "e16593ba4ca0a85821ae698ef06847a52937662f5ce1b130c39cca2979a4e8cd"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp311-cp311-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "9324a1982a289de93c23f8f3e3bc56ea",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 48439,
+        "upload_time": "2025-11-27T22:07:40",
+        "upload_time_iso_8601": "2025-11-27T22:07:40.428340Z",
+        "url": "https://files.pythonhosted.org/packages/bc/c3/30de6f7892e77b83350e55d54a6913420591cc2c5c4d2394c219a4c461ac/pyppmd-1.3.1-cp311-cp311-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "392233889cbe22a617c42df2199be54e9e1bf88393fd8643fe911eb9f982849c",
+          "md5": "4a14b6facedae881238cc8731cc4f35c",
+          "sha256": "486dde2294ff9b30465ab5bb0f213b20bd5ac0e4adf21be801a1ceb29aa75d9d"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "4a14b6facedae881238cc8731cc4f35c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 141737,
+        "upload_time": "2025-11-27T22:07:41",
+        "upload_time_iso_8601": "2025-11-27T22:07:41.641610Z",
+        "url": "https://files.pythonhosted.org/packages/39/22/33889cbe22a617c42df2199be54e9e1bf88393fd8643fe911eb9f982849c/pyppmd-1.3.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "0cf7940ab2fd78caaef3a9e9833adb36e17b9d03016d8b45ae110cbb4bfc83d1",
+          "md5": "9b8c023914ef21740ce04e8e25882ab6",
+          "sha256": "89730cf026416ae2546c92738966ecf117c8176d52c229ad621a61c34643818b"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9b8c023914ef21740ce04e8e25882ab6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 143643,
+        "upload_time": "2025-11-27T22:07:42",
+        "upload_time_iso_8601": "2025-11-27T22:07:42.892928Z",
+        "url": "https://files.pythonhosted.org/packages/0c/f7/940ab2fd78caaef3a9e9833adb36e17b9d03016d8b45ae110cbb4bfc83d1/pyppmd-1.3.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "7551129ce02d2b28a4f6788bccfe6d0ae1defc45db10eb1c4e4389cde8994ec7",
+          "md5": "3a1b7f7c3c097a11843f83b14ba9911e",
+          "sha256": "e77f5a6770950d464b50da760d53e67bce308a3abc8e3bd51db620b3f8cf1fa8"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "3a1b7f7c3c097a11843f83b14ba9911e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 138625,
+        "upload_time": "2025-11-27T22:07:44",
+        "upload_time_iso_8601": "2025-11-27T22:07:44.540992Z",
+        "url": "https://files.pythonhosted.org/packages/75/51/129ce02d2b28a4f6788bccfe6d0ae1defc45db10eb1c4e4389cde8994ec7/pyppmd-1.3.1-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "3a89f8390d1a21951d3d4619c854a839f7b1431746997cd98b475f614a658305",
+          "md5": "15caa3eebbdac7d51c369c5115c52f83",
+          "sha256": "8e3bf8deef44f8e03612689a6067a4a3dd7e50d2ef00af4cf987c59b62ff3006"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "15caa3eebbdac7d51c369c5115c52f83",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 141663,
+        "upload_time": "2025-11-27T22:07:45",
+        "upload_time_iso_8601": "2025-11-27T22:07:45.814781Z",
+        "url": "https://files.pythonhosted.org/packages/3a/89/f8390d1a21951d3d4619c854a839f7b1431746997cd98b475f614a658305/pyppmd-1.3.1-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "fa3fb58dd8875ebbb78436f87567547967bebdf3a5586f5f243c735fc4460843",
+          "md5": "0f9c03d4ca739ba7d72c376d60c8fc71",
+          "sha256": "a3509b3f881409ebc5522942438108c48a78f8df88bcf3f9d907b74131b9431c"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp311-cp311-win32.whl",
+        "has_sig": false,
+        "md5_digest": "0f9c03d4ca739ba7d72c376d60c8fc71",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 42014,
+        "upload_time": "2025-11-27T22:07:47",
+        "upload_time_iso_8601": "2025-11-27T22:07:47.058161Z",
+        "url": "https://files.pythonhosted.org/packages/fa/3f/b58dd8875ebbb78436f87567547967bebdf3a5586f5f243c735fc4460843/pyppmd-1.3.1-cp311-cp311-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "b5d35fe05bdccdd7af04461c25a3dc34799f48ad3e9a2bd591aaec9afbc1d10a",
+          "md5": "fb0e72a0e53c52f5043b057fc29e9227",
+          "sha256": "23b83799f33f9a24577f22e092b0feecda8cd1ea33871ad8610a58629874f7bc"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp311-cp311-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "fb0e72a0e53c52f5043b057fc29e9227",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 46862,
+        "upload_time": "2025-11-27T22:07:48",
+        "upload_time_iso_8601": "2025-11-27T22:07:48.162538Z",
+        "url": "https://files.pythonhosted.org/packages/b5/d3/5fe05bdccdd7af04461c25a3dc34799f48ad3e9a2bd591aaec9afbc1d10a/pyppmd-1.3.1-cp311-cp311-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "d4ba6414cbe8407c23bacce906dad0599f155b2baf6082da104e64d7f1573717",
+          "md5": "e819314c2ada8f3ee25f3c810fd4f897",
+          "sha256": "234489036a1758670655d1ceafd4caeb93b858bd4c0ca39686837d38aef044c0"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp311-cp311-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "e819314c2ada8f3ee25f3c810fd4f897",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.10",
+        "size": 45249,
+        "upload_time": "2025-11-27T22:07:49",
+        "upload_time_iso_8601": "2025-11-27T22:07:49.261472Z",
+        "url": "https://files.pythonhosted.org/packages/d4/ba/6414cbe8407c23bacce906dad0599f155b2baf6082da104e64d7f1573717/pyppmd-1.3.1-cp311-cp311-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "3e89696046e53c7aea98bb563aed3f15c3e2fa20c33e3d6c9de3c20992c586cc",
+          "md5": "a760166f0a27099ca0b6173685ca39f5",
+          "sha256": "3faa58ab2ebe3b13ec23b1904639d687fb727270d2962fd2d239ca00fd6eb865"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp312-cp312-macosx_10_13_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "a760166f0a27099ca0b6173685ca39f5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 77796,
+        "upload_time": "2025-11-27T22:07:50",
+        "upload_time_iso_8601": "2025-11-27T22:07:50.362761Z",
+        "url": "https://files.pythonhosted.org/packages/3e/89/696046e53c7aea98bb563aed3f15c3e2fa20c33e3d6c9de3c20992c586cc/pyppmd-1.3.1-cp312-cp312-macosx_10_13_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "f1c5a708cdb58e76889bc65201eda12211486548ffe00ecddc5dfbdce6d4d252",
+          "md5": "9e371fdf1747bb52e5f6169725044dae",
+          "sha256": "27703f041ee96912a5410fd3ce31c5cde32f9323bd67f72f100bd960ee67bf13"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp312-cp312-macosx_10_13_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9e371fdf1747bb52e5f6169725044dae",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 48185,
+        "upload_time": "2025-11-27T22:07:51",
+        "upload_time_iso_8601": "2025-11-27T22:07:51.736078Z",
+        "url": "https://files.pythonhosted.org/packages/f1/c5/a708cdb58e76889bc65201eda12211486548ffe00ecddc5dfbdce6d4d252/pyppmd-1.3.1-cp312-cp312-macosx_10_13_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "9e5df299535c18009addb866d89a7044f1086e4eecf50542e57ff5bb15840195",
+          "md5": "ee80946d545863c459a15d9caf0e7cc4",
+          "sha256": "e773d8353b36f7e7973a43526993fb276b98a97839cb5dc8f4e6465ad873f41a"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp312-cp312-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "ee80946d545863c459a15d9caf0e7cc4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 48496,
+        "upload_time": "2025-11-27T22:07:52",
+        "upload_time_iso_8601": "2025-11-27T22:07:52.866476Z",
+        "url": "https://files.pythonhosted.org/packages/9e/5d/f299535c18009addb866d89a7044f1086e4eecf50542e57ff5bb15840195/pyppmd-1.3.1-cp312-cp312-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "aa9d4a59b73ea8e305f9192ee26ceb7c3d57e17ccb9bcca0e99ef335db29fcf7",
+          "md5": "1930dea92eb1a634b85e3036f2366321",
+          "sha256": "37b1883accf840cb0b711785d353f8548853a1401d381da007c0aec362f3ffac"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "1930dea92eb1a634b85e3036f2366321",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 142620,
+        "upload_time": "2025-11-27T22:07:54",
+        "upload_time_iso_8601": "2025-11-27T22:07:54.411939Z",
+        "url": "https://files.pythonhosted.org/packages/aa/9d/4a59b73ea8e305f9192ee26ceb7c3d57e17ccb9bcca0e99ef335db29fcf7/pyppmd-1.3.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "88d7fe32c2a4f8539365e6292aed25545830a5e718a510cdb4caddd6fd8d8056",
+          "md5": "2947d4aabe313a97a2bacb61629d386a",
+          "sha256": "1bd6d179ad39b6191ca0cbe62fb9592f33f49277b4384ad7bc5eb0e6ca27ebee"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "2947d4aabe313a97a2bacb61629d386a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 144306,
+        "upload_time": "2025-11-27T22:07:55",
+        "upload_time_iso_8601": "2025-11-27T22:07:55.727970Z",
+        "url": "https://files.pythonhosted.org/packages/88/d7/fe32c2a4f8539365e6292aed25545830a5e718a510cdb4caddd6fd8d8056/pyppmd-1.3.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "2020e3907cf263b58f4ed4c5315bc1ac91721c85332fd0d73a89e3e2752904ef",
+          "md5": "6b8e1af4da6f152f96390a67334c4901",
+          "sha256": "806cf8d33606e44bf5ff5786c57891f57993f1eef1c763da3c58ea97de3a13c8"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "6b8e1af4da6f152f96390a67334c4901",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 139522,
+        "upload_time": "2025-11-27T22:07:57",
+        "upload_time_iso_8601": "2025-11-27T22:07:57.034868Z",
+        "url": "https://files.pythonhosted.org/packages/20/20/e3907cf263b58f4ed4c5315bc1ac91721c85332fd0d73a89e3e2752904ef/pyppmd-1.3.1-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "0a0322d5f93251e481f23bf741dde7f59cfc3e315f60b32b63f215a2d7bb8944",
+          "md5": "bc5c80fe86816c13bc9cf542b338d4c8",
+          "sha256": "1826cbce9a2c944aa08df79310a7e6d4a61fd20636b6dff64a77ea4bc43da30f"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "bc5c80fe86816c13bc9cf542b338d4c8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 142340,
+        "upload_time": "2025-11-27T22:07:58",
+        "upload_time_iso_8601": "2025-11-27T22:07:58.490835Z",
+        "url": "https://files.pythonhosted.org/packages/0a/03/22d5f93251e481f23bf741dde7f59cfc3e315f60b32b63f215a2d7bb8944/pyppmd-1.3.1-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "348838d36c1394d5e331db9708dae08863c87c059bd5b6e43b20234be02a0503",
+          "md5": "66e4684a0e3a537a543d9deed38a7705",
+          "sha256": "d3ff96671319318d941dd34300d641745048e8a3251b077bddf98652d6ddc513"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp312-cp312-win32.whl",
+        "has_sig": false,
+        "md5_digest": "66e4684a0e3a537a543d9deed38a7705",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 42102,
+        "upload_time": "2025-11-27T22:08:00",
+        "upload_time_iso_8601": "2025-11-27T22:08:00.124601Z",
+        "url": "https://files.pythonhosted.org/packages/34/88/38d36c1394d5e331db9708dae08863c87c059bd5b6e43b20234be02a0503/pyppmd-1.3.1-cp312-cp312-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "ee291398c6f67dfb66367babeed2980caee837d0a488705e3dff7ff159e017e7",
+          "md5": "0ce92229d2f30ca51f840c2dd88a1226",
+          "sha256": "c8c1ad39e7ebde71bf5a54cf61f489bf4790f1dd0beb70dc2e8f5ad3329d7ca7"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp312-cp312-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "0ce92229d2f30ca51f840c2dd88a1226",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 46957,
+        "upload_time": "2025-11-27T22:08:01",
+        "upload_time_iso_8601": "2025-11-27T22:08:01.587641Z",
+        "url": "https://files.pythonhosted.org/packages/ee/29/1398c6f67dfb66367babeed2980caee837d0a488705e3dff7ff159e017e7/pyppmd-1.3.1-cp312-cp312-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "d241ee3193c16472a5a1c5f1965abb8fa87a7ad455c39688e9a0c2d87d6a7027",
+          "md5": "670e0a6bcf6fe492ab21a43931fcfb32",
+          "sha256": "391b2bf76d7dc45b343781754d0b734dcbf539b92667986a343f5488c4bf9ca0"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp312-cp312-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "670e0a6bcf6fe492ab21a43931fcfb32",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.10",
+        "size": 45214,
+        "upload_time": "2025-11-27T22:08:02",
+        "upload_time_iso_8601": "2025-11-27T22:08:02.721625Z",
+        "url": "https://files.pythonhosted.org/packages/d2/41/ee3193c16472a5a1c5f1965abb8fa87a7ad455c39688e9a0c2d87d6a7027/pyppmd-1.3.1-cp312-cp312-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "f0017cc3854b0e1304b90d2435e946db5e1c42e103adf840a68400002fc838b4",
+          "md5": "826d0393643cbf1ae077c789110169cf",
+          "sha256": "4b4edb3e9619fd0bc39c1a07eb03e8731db833a93b23134f36c7ef581a94b37a"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp313-cp313-macosx_10_13_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "826d0393643cbf1ae077c789110169cf",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 77800,
+        "upload_time": "2025-11-27T22:08:03",
+        "upload_time_iso_8601": "2025-11-27T22:08:03.856670Z",
+        "url": "https://files.pythonhosted.org/packages/f0/01/7cc3854b0e1304b90d2435e946db5e1c42e103adf840a68400002fc838b4/pyppmd-1.3.1-cp313-cp313-macosx_10_13_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "dd02caf6305224b9432ea7373670d101392f620c1ce741d6f95458b1fb9a16a4",
+          "md5": "2656d893718d6aee546fbac356bf0704",
+          "sha256": "b8b5c813e462c91048b88e2adfbcc0c69f2c905f70097001d32066f86f675bd4"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp313-cp313-macosx_10_13_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "2656d893718d6aee546fbac356bf0704",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 48195,
+        "upload_time": "2025-11-27T22:08:05",
+        "upload_time_iso_8601": "2025-11-27T22:08:05.323982Z",
+        "url": "https://files.pythonhosted.org/packages/dd/02/caf6305224b9432ea7373670d101392f620c1ce741d6f95458b1fb9a16a4/pyppmd-1.3.1-cp313-cp313-macosx_10_13_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "45828c5d3f0f738a3cf5c209d1471efda105a16417c0aaa91a2ad39efb3d4efb",
+          "md5": "ad6764fd2added6b29f9e5fc973acbf1",
+          "sha256": "e8d372d9fac382183e0371cf0c2d736b494b1857a1befe98d563342b1205265b"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp313-cp313-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "ad6764fd2added6b29f9e5fc973acbf1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 48482,
+        "upload_time": "2025-11-27T22:08:06",
+        "upload_time_iso_8601": "2025-11-27T22:08:06.441063Z",
+        "url": "https://files.pythonhosted.org/packages/45/82/8c5d3f0f738a3cf5c209d1471efda105a16417c0aaa91a2ad39efb3d4efb/pyppmd-1.3.1-cp313-cp313-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "769c09ab8b4f00473f210284dacf837cae8355ad900f3fd8fd98b2bba12de4fa",
+          "md5": "b8db19914218ce2e1de04f58ba6448d8",
+          "sha256": "3b765ae21f7ed2f4ea8f32bfd9e3a4a8d738e73fc8f8dcddec9cbe2c898d60be"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "b8db19914218ce2e1de04f58ba6448d8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 142828,
+        "upload_time": "2025-11-27T22:08:07",
+        "upload_time_iso_8601": "2025-11-27T22:08:07.611986Z",
+        "url": "https://files.pythonhosted.org/packages/76/9c/09ab8b4f00473f210284dacf837cae8355ad900f3fd8fd98b2bba12de4fa/pyppmd-1.3.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "64fd673d429df719affa1445611288aab6111c0bc87e51eb4677fe2421a1dd64",
+          "md5": "57be9a9b45d072998ddc6993ed1dd231",
+          "sha256": "bd00522ddfcc292304577386b6c217758c0c10e1fb9ce7877ad7d3b7b821a808"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "57be9a9b45d072998ddc6993ed1dd231",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 144502,
+        "upload_time": "2025-11-27T22:08:08",
+        "upload_time_iso_8601": "2025-11-27T22:08:08.869971Z",
+        "url": "https://files.pythonhosted.org/packages/64/fd/673d429df719affa1445611288aab6111c0bc87e51eb4677fe2421a1dd64/pyppmd-1.3.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "cf0f64dad213f56eaf23210ac7d3a5dedb19ad8f186f8b8682f65e7d51d9fa4a",
+          "md5": "3dc7f8f7a47c8dc470386dac6aaaa6a3",
+          "sha256": "3de62099ff2ca876c2d39bc547bcba6f7b878988663abd782a5bad4edac3bb44"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "3dc7f8f7a47c8dc470386dac6aaaa6a3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 139718,
+        "upload_time": "2025-11-27T22:08:10",
+        "upload_time_iso_8601": "2025-11-27T22:08:10.114251Z",
+        "url": "https://files.pythonhosted.org/packages/cf/0f/64dad213f56eaf23210ac7d3a5dedb19ad8f186f8b8682f65e7d51d9fa4a/pyppmd-1.3.1-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "7461bd5dbe8d7374748687d48f0bc44e6b930470e09552b1bbc65ef899ab673e",
+          "md5": "5b7742a53e7672a1e3bcc13f8bdb17a3",
+          "sha256": "011f845de195d60fe973a635a1f4be981b7d80f357a8acb1b2d83bdf5087c808"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "5b7742a53e7672a1e3bcc13f8bdb17a3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 142578,
+        "upload_time": "2025-11-27T22:08:11",
+        "upload_time_iso_8601": "2025-11-27T22:08:11.388374Z",
+        "url": "https://files.pythonhosted.org/packages/74/61/bd5dbe8d7374748687d48f0bc44e6b930470e09552b1bbc65ef899ab673e/pyppmd-1.3.1-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "42ae0af00a9b1cd59b6821eb182413033d5ddbe05dfcde7511e3a6b1a5b83f6d",
+          "md5": "ccddba307ed7d86a617247c16ce7f662",
+          "sha256": "7d61bd01f25289b6ae54832db4254602fb0c6d105f6e6bf0aee39b803b698b98"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp313-cp313-win32.whl",
+        "has_sig": false,
+        "md5_digest": "ccddba307ed7d86a617247c16ce7f662",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 42102,
+        "upload_time": "2025-11-27T22:08:13",
+        "upload_time_iso_8601": "2025-11-27T22:08:13.297555Z",
+        "url": "https://files.pythonhosted.org/packages/42/ae/0af00a9b1cd59b6821eb182413033d5ddbe05dfcde7511e3a6b1a5b83f6d/pyppmd-1.3.1-cp313-cp313-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "6c6d311d8faca142f39b4d158c94ed7eb237a197d41dd7eb67f53442a7904e04",
+          "md5": "560b1b9f5dae73e99a3883e26a2df8ce",
+          "sha256": "df8d84ab72381058a964ba66e5e81ed52dbd0b5ad734a5ef8353452983506098"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp313-cp313-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "560b1b9f5dae73e99a3883e26a2df8ce",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 46962,
+        "upload_time": "2025-11-27T22:08:14",
+        "upload_time_iso_8601": "2025-11-27T22:08:14.759258Z",
+        "url": "https://files.pythonhosted.org/packages/6c/6d/311d8faca142f39b4d158c94ed7eb237a197d41dd7eb67f53442a7904e04/pyppmd-1.3.1-cp313-cp313-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "bb4224b59b6bb73a3fec96c7f81521d146c2ac89ffcb89cf9e848f62e0660381",
+          "md5": "46c1dcefa2541b9e59b9700c5a885a38",
+          "sha256": "124a04aab6936ba011f9ad57067798c7f052fdb1848b0cc4318606eea55475e6"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp313-cp313-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "46c1dcefa2541b9e59b9700c5a885a38",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.10",
+        "size": 45209,
+        "upload_time": "2025-11-27T22:08:15",
+        "upload_time_iso_8601": "2025-11-27T22:08:15.933742Z",
+        "url": "https://files.pythonhosted.org/packages/bb/42/24b59b6bb73a3fec96c7f81521d146c2ac89ffcb89cf9e848f62e0660381/pyppmd-1.3.1-cp313-cp313-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "6510ac2a011af1c7c40b6482e60d85d267ac5923fb8794b51bfddbb56b04d1ec",
+          "md5": "4dbd417b0608d42ad81e039226a37560",
+          "sha256": "ea53f71ac16e113599b8441a9d8b6dcd71cfdf15cdb33ba5151810b8e656c5ec"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314-macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "4dbd417b0608d42ad81e039226a37560",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 77897,
+        "upload_time": "2025-11-27T22:08:17",
+        "upload_time_iso_8601": "2025-11-27T22:08:17.104107Z",
+        "url": "https://files.pythonhosted.org/packages/65/10/ac2a011af1c7c40b6482e60d85d267ac5923fb8794b51bfddbb56b04d1ec/pyppmd-1.3.1-cp314-cp314-macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "2013737f4dac06685865d23f51b7061dbe9373c7bcc60b5b6456cd08301bc807",
+          "md5": "2572b00c5dc780c317603410f213dded",
+          "sha256": "985c8703b53e5f68fe17f653e96748d60b1f855676c852a6e67cd472eb853671"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "2572b00c5dc780c317603410f213dded",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 48268,
+        "upload_time": "2025-11-27T22:08:18",
+        "upload_time_iso_8601": "2025-11-27T22:08:18.263282Z",
+        "url": "https://files.pythonhosted.org/packages/20/13/737f4dac06685865d23f51b7061dbe9373c7bcc60b5b6456cd08301bc807/pyppmd-1.3.1-cp314-cp314-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "c2d3c50ebaee8b8a064fe9a534e98df5051e309efb705728aadff4e6893cd87f",
+          "md5": "a2c9734c165613ff734defee4cee01ea",
+          "sha256": "33daa996ad5203c665c0b55aff6329817b2cb7fa95f2c33a2e83ed0121b400cb"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "a2c9734c165613ff734defee4cee01ea",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 48521,
+        "upload_time": "2025-11-27T22:08:19",
+        "upload_time_iso_8601": "2025-11-27T22:08:19.742637Z",
+        "url": "https://files.pythonhosted.org/packages/c2/d3/c50ebaee8b8a064fe9a534e98df5051e309efb705728aadff4e6893cd87f/pyppmd-1.3.1-cp314-cp314-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "806c4a97c0a0ab7640aeddde4843cb6381b80ecb71fe2c6c48b9032d60586b11",
+          "md5": "b5118acb74c4a54169e3c5d8e7ee274e",
+          "sha256": "b49870c6d7194f6eb80f30335ca03596d153e02fcde2c222e4f1202ac25f7fcf"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "b5118acb74c4a54169e3c5d8e7ee274e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 142892,
+        "upload_time": "2025-11-27T22:08:20",
+        "upload_time_iso_8601": "2025-11-27T22:08:20.972702Z",
+        "url": "https://files.pythonhosted.org/packages/80/6c/4a97c0a0ab7640aeddde4843cb6381b80ecb71fe2c6c48b9032d60586b11/pyppmd-1.3.1-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "8f22744c32c7da3de171d9e62a1b2cb4104544ac778358565a3dbc06a2253324",
+          "md5": "6725b58661d68b49a4ec756a3ab70c25",
+          "sha256": "385e92c97c42e8a6f0bfc0e4acfc6c074cb1ba3a2f650f292696dd9f19e2e603"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "6725b58661d68b49a4ec756a3ab70c25",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 144550,
+        "upload_time": "2025-11-27T22:08:22",
+        "upload_time_iso_8601": "2025-11-27T22:08:22.594964Z",
+        "url": "https://files.pythonhosted.org/packages/8f/22/744c32c7da3de171d9e62a1b2cb4104544ac778358565a3dbc06a2253324/pyppmd-1.3.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "4a1884af6808e0754923062122d3ee9f0532050f1612069d558bb5d53978e67a",
+          "md5": "2571e9ac6a2be9b6e96f0e0728ebd6fc",
+          "sha256": "017a1e2903f1c3147a1046db486990d401e8a25eb52c320b1fc2fb3e7b83cbeb"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "2571e9ac6a2be9b6e96f0e0728ebd6fc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 139850,
+        "upload_time": "2025-11-27T22:08:23",
+        "upload_time_iso_8601": "2025-11-27T22:08:23.863189Z",
+        "url": "https://files.pythonhosted.org/packages/4a/18/84af6808e0754923062122d3ee9f0532050f1612069d558bb5d53978e67a/pyppmd-1.3.1-cp314-cp314-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "205edc6166ea7929d442625301289d99313a5b358e3cb2e927a6bd913047e8ee",
+          "md5": "0f30e98d46559e49c21bb645ef35f482",
+          "sha256": "f2770a4b777c0c5236b3d9294b7bf4bc15538c95d45b2079eb8ebc1298e62e37"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "0f30e98d46559e49c21bb645ef35f482",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 142589,
+        "upload_time": "2025-11-27T22:08:25",
+        "upload_time_iso_8601": "2025-11-27T22:08:25.228927Z",
+        "url": "https://files.pythonhosted.org/packages/20/5e/dc6166ea7929d442625301289d99313a5b358e3cb2e927a6bd913047e8ee/pyppmd-1.3.1-cp314-cp314-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "a75f3150227624f374b06e331a7f67ae3383e796dd90973ee17ec3e35d30524c",
+          "md5": "0b650e0f3fce3ae8a51f463a7acff619",
+          "sha256": "2d77ed79662c32e2551748d59763cfe3dcd10855bf3495937e3d5e5917507818"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314t-macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "0b650e0f3fce3ae8a51f463a7acff619",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 78876,
+        "upload_time": "2025-11-27T22:08:30",
+        "upload_time_iso_8601": "2025-11-27T22:08:30.635935Z",
+        "url": "https://files.pythonhosted.org/packages/a7/5f/3150227624f374b06e331a7f67ae3383e796dd90973ee17ec3e35d30524c/pyppmd-1.3.1-cp314-cp314t-macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "2b8111a3bba62d1d92050f4dd86db810062b506ec76d20b6e00b4ab567ff15e4",
+          "md5": "9b238480641e800d6dae6662879bdb73",
+          "sha256": "6a1f92b94635c23d85270bb26db25cc0db544e436af86efc1cf58302d71d5af1"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314t-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9b238480641e800d6dae6662879bdb73",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 48830,
+        "upload_time": "2025-11-27T22:08:32",
+        "upload_time_iso_8601": "2025-11-27T22:08:32.087516Z",
+        "url": "https://files.pythonhosted.org/packages/2b/81/11a3bba62d1d92050f4dd86db810062b506ec76d20b6e00b4ab567ff15e4/pyppmd-1.3.1-cp314-cp314t-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "2447e8f50cf89c689543d5a16c7be3df3c4afd43cbeb1a019b84ff9e82f13415",
+          "md5": "9332c55c57a5d9c3548f99ef6be3a881",
+          "sha256": "610f214f2405e27eb5a3dad7fa15f385cfc42141a01cda71995d9c1e0b09fab9"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314t-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "9332c55c57a5d9c3548f99ef6be3a881",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 48956,
+        "upload_time": "2025-11-27T22:08:33",
+        "upload_time_iso_8601": "2025-11-27T22:08:33.567832Z",
+        "url": "https://files.pythonhosted.org/packages/24/47/e8f50cf89c689543d5a16c7be3df3c4afd43cbeb1a019b84ff9e82f13415/pyppmd-1.3.1-cp314-cp314t-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "0b0f944b30679a8dea3ea95a66531ee30cb6feb5d011ec7fd6832069d9130bf3",
+          "md5": "c033cb8a9b82ef6072fbfb7c4b81536f",
+          "sha256": "ae81a14895498d9a23429d92114c98da478b74b8e33251527d7cff3e01c09de0"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "c033cb8a9b82ef6072fbfb7c4b81536f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 152872,
+        "upload_time": "2025-11-27T22:08:35",
+        "upload_time_iso_8601": "2025-11-27T22:08:35.098939Z",
+        "url": "https://files.pythonhosted.org/packages/0b/0f/944b30679a8dea3ea95a66531ee30cb6feb5d011ec7fd6832069d9130bf3/pyppmd-1.3.1-cp314-cp314t-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "ae871e48ea92994f4c72dc9b5520a6a386b21c524d3d2969c2c2a5c325929ad7",
+          "md5": "69bb92933beb5a26b0bc68af19da6d21",
+          "sha256": "d1683e6d1ba09e377e0ae02de3a518191a3d63ccdb0b6037c74e6ddf577b5644"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "69bb92933beb5a26b0bc68af19da6d21",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 154210,
+        "upload_time": "2025-11-27T22:08:36",
+        "upload_time_iso_8601": "2025-11-27T22:08:36.368649Z",
+        "url": "https://files.pythonhosted.org/packages/ae/87/1e48ea92994f4c72dc9b5520a6a386b21c524d3d2969c2c2a5c325929ad7/pyppmd-1.3.1-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "3f21650911f98c4cb360442724bbdade27cb3679b0587ea77e73512693d2918d",
+          "md5": "2ad5f93ebd71bbd2f04192761c3a9a51",
+          "sha256": "e4d74fa0f3531e9dadc56e0ace41bce82d3c0babed47b3f224101dc0dbde7287"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314t-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "2ad5f93ebd71bbd2f04192761c3a9a51",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 147636,
+        "upload_time": "2025-11-27T22:08:37",
+        "upload_time_iso_8601": "2025-11-27T22:08:37.657465Z",
+        "url": "https://files.pythonhosted.org/packages/3f/21/650911f98c4cb360442724bbdade27cb3679b0587ea77e73512693d2918d/pyppmd-1.3.1-cp314-cp314t-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "2ee435812f1a0c50364ed4296a250e2dcf3f6c304806d3ff1c55d3775926b8c9"
+        },
+        "digests": {
+          "blake2b_256": "7c294f8cfc1dd67b04ced8c10669fa14c4e35a42cf4a84e1101793735a82d5f0",
+          "md5": "5ef253afa0c0889d2cced9be08fa2ac6",
+          "sha256": "7f8d6375b18b9c79127fee0885cfd52e2e983edb67041464309426571d38dcd4"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314t-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "5ef253afa0c0889d2cced9be08fa2ac6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 150998,
+        "upload_time": "2025-11-27T22:08:38",
+        "upload_time_iso_8601": "2025-11-27T22:08:38.951355Z",
+        "url": "https://files.pythonhosted.org/packages/7c/29/4f8cfc1dd67b04ced8c10669fa14c4e35a42cf4a84e1101793735a82d5f0/pyppmd-1.3.1-cp314-cp314t-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "c4dadc9e5e10bc56056bd8c33e533517cb327752cbaf172688bba3c23f6b2318",
+          "md5": "f528c1ee2e6bf3c6ceccd11b8fe00395",
+          "sha256": "de87f7acd575fb07a4ff42d41bcc071570fe759a36f345f1f54f574ecfccfc5b"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314t-win32.whl",
+        "has_sig": false,
+        "md5_digest": "f528c1ee2e6bf3c6ceccd11b8fe00395",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 43016,
+        "upload_time": "2025-11-27T22:08:40",
+        "upload_time_iso_8601": "2025-11-27T22:08:40.234972Z",
+        "url": "https://files.pythonhosted.org/packages/c4/da/dc9e5e10bc56056bd8c33e533517cb327752cbaf172688bba3c23f6b2318/pyppmd-1.3.1-cp314-cp314t-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "faa046dc15549ad2c0427a9825730e6bdf342045ad410543368afd4389a16f36",
+          "md5": "bc1e3a570f20f2a318ca13cd6b83710f",
+          "sha256": "76e4800aa67292b4cc80058fd29b39e02a5dded721af9fe5654f356ef24307f4"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314t-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "bc1e3a570f20f2a318ca13cd6b83710f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 48636,
+        "upload_time": "2025-11-27T22:08:41",
+        "upload_time_iso_8601": "2025-11-27T22:08:41.450682Z",
+        "url": "https://files.pythonhosted.org/packages/fa/a0/46dc15549ad2c0427a9825730e6bdf342045ad410543368afd4389a16f36/pyppmd-1.3.1-cp314-cp314t-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "a17b7e9a83848de928c26f0ab3ee105c0da63a932a0804a94807205e6313e73a",
+          "md5": "ea368bb3b5010f17bb59ebfe47b99a8b",
+          "sha256": "e066cbf1d335fe20480cd8ecc10848ba78d99fe6d1e44ea00def48feaf46afdf"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314t-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "ea368bb3b5010f17bb59ebfe47b99a8b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 46402,
+        "upload_time": "2025-11-27T22:08:42",
+        "upload_time_iso_8601": "2025-11-27T22:08:42.804813Z",
+        "url": "https://files.pythonhosted.org/packages/a1/7b/7e9a83848de928c26f0ab3ee105c0da63a932a0804a94807205e6313e73a/pyppmd-1.3.1-cp314-cp314t-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "7792adc6b12ddf11173a02fd631010f88ad4fe4c532363959638d5d53583a3d9",
+          "md5": "1697ab3496ef0b518c1e71a41d869dc0",
+          "sha256": "b9d54cd59ce97f2ba57be1da91b3d874d129faca21c9565d7afec111f942e6a1"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314-win32.whl",
+        "has_sig": false,
+        "md5_digest": "1697ab3496ef0b518c1e71a41d869dc0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 42761,
+        "upload_time": "2025-11-27T22:08:26",
+        "upload_time_iso_8601": "2025-11-27T22:08:26.917251Z",
+        "url": "https://files.pythonhosted.org/packages/77/92/adc6b12ddf11173a02fd631010f88ad4fe4c532363959638d5d53583a3d9/pyppmd-1.3.1-cp314-cp314-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "124c5003a413d9f2743298a070df6713a75dedccc470e7adeeced5b43cad7418",
+          "md5": "da83467b7c6f76706a63c0c01eabb1d6",
+          "sha256": "0e64247618cb150d2909beb0137da3084fef1d3479b4cc73b5b47fda7611abf9"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "da83467b7c6f76706a63c0c01eabb1d6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 47806,
+        "upload_time": "2025-11-27T22:08:28",
+        "upload_time_iso_8601": "2025-11-27T22:08:28.059019Z",
+        "url": "https://files.pythonhosted.org/packages/12/4c/5003a413d9f2743298a070df6713a75dedccc470e7adeeced5b43cad7418/pyppmd-1.3.1-cp314-cp314-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "55db4dedf805f85c50a4e3881b2d9ffecc40e5b5bd2232513571feedf15e95dc"
+        },
+        "digests": {
+          "blake2b_256": "07b7db927e1df7fc3132cb57960f4ea23bf174c7e86ccec22857e6a35cccdae7",
+          "md5": "95e245bce015c3b0daee59262b784d06",
+          "sha256": "d354d6e551d2630b0ac98f27e3ad63e86cdcac9ce2115b5dfe46e2c9d3f4e82c"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1-cp314-cp314-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "95e245bce015c3b0daee59262b784d06",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.10",
+        "size": 46122,
+        "upload_time": "2025-11-27T22:08:29",
+        "upload_time_iso_8601": "2025-11-27T22:08:29.191021Z",
+        "url": "https://files.pythonhosted.org/packages/07/b7/db927e1df7fc3132cb57960f4ea23bf174c7e86ccec22857e6a35cccdae7/pyppmd-1.3.1-cp314-cp314-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "81d7803232913cab9163a1a97ecf2236cd7135903c46ac8d49613448d88e8759",
+          "md5": "6f62bd66d4164a6eab4579614c5d220c",
+          "sha256": "ced527f08ade4408c1bfc5264e9f97ffac8d221c9d13eca4f35ec1ec0c7b6b2e"
+        },
+        "downloads": -1,
+        "filename": "pyppmd-1.3.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "6f62bd66d4164a6eab4579614c5d220c",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.10",
+        "size": 1351815,
+        "upload_time": "2025-11-27T22:08:44",
+        "upload_time_iso_8601": "2025-11-27T22:08:44.175461Z",
+        "url": "https://files.pythonhosted.org/packages/81/d7/803232913cab9163a1a97ecf2236cd7135903c46ac8d49613448d88e8759/pyppmd-1.3.1.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "pyppmd",
+    "version": "1.3.1",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "011f845de195d60fe973a635a1f4be981b7d80f357a8acb1b2d83bdf5087c808",
+      "017a1e2903f1c3147a1046db486990d401e8a25eb52c320b1fc2fb3e7b83cbeb",
+      "041f46fbeb0a59888c0a94d6b9a557c652935633a104be1c31c12de491b5f448",
+      "0d1cff657e85655c67426c29c90c78a6210148b207993e643fc351c72c60d188",
+      "0e64247618cb150d2909beb0137da3084fef1d3479b4cc73b5b47fda7611abf9",
+      "124a04aab6936ba011f9ad57067798c7f052fdb1848b0cc4318606eea55475e6",
+      "1826cbce9a2c944aa08df79310a7e6d4a61fd20636b6dff64a77ea4bc43da30f",
+      "1bd6d179ad39b6191ca0cbe62fb9592f33f49277b4384ad7bc5eb0e6ca27ebee",
+      "1e1985461219c30d4576070b7e2de718dbb6f32637d1e658d25f838dfda2a4bb",
+      "1e503a28c9a275d31f24af9b735d2cca543b62f438b064e2833e9833e758bdbc",
+      "20d9d1aa4d0f32118c8094c212c66b7af50e55f47e7c6dffa5f35a8ac391faca",
+      "234489036a1758670655d1ceafd4caeb93b858bd4c0ca39686837d38aef044c0",
+      "23b83799f33f9a24577f22e092b0feecda8cd1ea33871ad8610a58629874f7bc",
+      "27703f041ee96912a5410fd3ce31c5cde32f9323bd67f72f100bd960ee67bf13",
+      "2d77ed79662c32e2551748d59763cfe3dcd10855bf3495937e3d5e5917507818",
+      "33daa996ad5203c665c0b55aff6329817b2cb7fa95f2c33a2e83ed0121b400cb",
+      "37b1883accf840cb0b711785d353f8548853a1401d381da007c0aec362f3ffac",
+      "385e92c97c42e8a6f0bfc0e4acfc6c074cb1ba3a2f650f292696dd9f19e2e603",
+      "391b2bf76d7dc45b343781754d0b734dcbf539b92667986a343f5488c4bf9ca0",
+      "3b765ae21f7ed2f4ea8f32bfd9e3a4a8d738e73fc8f8dcddec9cbe2c898d60be",
+      "3de62099ff2ca876c2d39bc547bcba6f7b878988663abd782a5bad4edac3bb44",
+      "3faa58ab2ebe3b13ec23b1904639d687fb727270d2962fd2d239ca00fd6eb865",
+      "3fb3708d7b2b38e2999385a2f02c8e68e0f5a364d94f94e475e2e8b09e9338fc",
+      "44d25e7dede2abb614bc023fe87835365fdd5865981c2273b70bfad71b84db29",
+      "486dde2294ff9b30465ab5bb0f213b20bd5ac0e4adf21be801a1ceb29aa75d9d",
+      "4b4edb3e9619fd0bc39c1a07eb03e8731db833a93b23134f36c7ef581a94b37a",
+      "610f214f2405e27eb5a3dad7fa15f385cfc42141a01cda71995d9c1e0b09fab9",
+      "6a1f92b94635c23d85270bb26db25cc0db544e436af86efc1cf58302d71d5af1",
+      "76e4800aa67292b4cc80058fd29b39e02a5dded721af9fe5654f356ef24307f4",
+      "7d61bd01f25289b6ae54832db4254602fb0c6d105f6e6bf0aee39b803b698b98",
+      "7f8d6375b18b9c79127fee0885cfd52e2e983edb67041464309426571d38dcd4",
+      "806cf8d33606e44bf5ff5786c57891f57993f1eef1c763da3c58ea97de3a13c8",
+      "8966f26b91ba7cdff3cfec5512d39d1f8bf4a8dbb75c44085e33b564566fea66",
+      "89730cf026416ae2546c92738966ecf117c8176d52c229ad621a61c34643818b",
+      "8e3bf8deef44f8e03612689a6067a4a3dd7e50d2ef00af4cf987c59b62ff3006",
+      "9512a8b39740923559c26eb16266bf8b70d4eab6ad27a9b39cd2465e60e0acfa",
+      "985c8703b53e5f68fe17f653e96748d60b1f855676c852a6e67cd472eb853671",
+      "9de2cdcc3932e7c23a54beb48dfe1b5ab7b4aedd5ffaae1e4871bd213d630cb3",
+      "a3509b3f881409ebc5522942438108c48a78f8df88bcf3f9d907b74131b9431c",
+      "aa820aac385ac4ee57160b26d92862c69d31c08f92272dbef05fe8e619cea8d1",
+      "ae81a14895498d9a23429d92114c98da478b74b8e33251527d7cff3e01c09de0",
+      "b49870c6d7194f6eb80f30335ca03596d153e02fcde2c222e4f1202ac25f7fcf",
+      "b8b5c813e462c91048b88e2adfbcc0c69f2c905f70097001d32066f86f675bd4",
+      "b9d54cd59ce97f2ba57be1da91b3d874d129faca21c9565d7afec111f942e6a1",
+      "bd00522ddfcc292304577386b6c217758c0c10e1fb9ce7877ad7d3b7b821a808",
+      "c8c1ad39e7ebde71bf5a54cf61f489bf4790f1dd0beb70dc2e8f5ad3329d7ca7",
+      "ced527f08ade4408c1bfc5264e9f97ffac8d221c9d13eca4f35ec1ec0c7b6b2e",
+      "d1683e6d1ba09e377e0ae02de3a518191a3d63ccdb0b6037c74e6ddf577b5644",
+      "d354d6e551d2630b0ac98f27e3ad63e86cdcac9ce2115b5dfe46e2c9d3f4e82c",
+      "d3ff96671319318d941dd34300d641745048e8a3251b077bddf98652d6ddc513",
+      "de87f7acd575fb07a4ff42d41bcc071570fe759a36f345f1f54f574ecfccfc5b",
+      "df8d84ab72381058a964ba66e5e81ed52dbd0b5ad734a5ef8353452983506098",
+      "e066cbf1d335fe20480cd8ecc10848ba78d99fe6d1e44ea00def48feaf46afdf",
+      "e16593ba4ca0a85821ae698ef06847a52937662f5ce1b130c39cca2979a4e8cd",
+      "e4d74fa0f3531e9dadc56e0ace41bce82d3c0babed47b3f224101dc0dbde7287",
+      "e773d8353b36f7e7973a43526993fb276b98a97839cb5dc8f4e6465ad873f41a",
+      "e77f5a6770950d464b50da760d53e67bce308a3abc8e3bd51db620b3f8cf1fa8",
+      "e8d372d9fac382183e0371cf0c2d736b494b1857a1befe98d563342b1205265b",
+      "ea53f71ac16e113599b8441a9d8b6dcd71cfdf15cdb33ba5151810b8e656c5ec",
+      "f2770a4b777c0c5236b3d9294b7bf4bc15538c95d45b2079eb8ebc1298e62e37",
+      "fdf55aa6ee7aef492f6896464e7a5a528f8615bb9e435f55bc8dff226fcc8292"
+    ],
+    "retrieved_at": "2026-11-28T12:09:58+00:00",
+    "pypi_info": {
+      "license": "LGPL-2.1-or-later",
+      "license_expression": null,
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Operating System :: MacOS :: MacOS X",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Topic :: Software Development :: Libraries :: Python Modules"
+      ],
+      "requires_python": ">=3.10",
+      "project_urls": {
+        "Bug Tracker": "https://github.com/miurahr/pyppmd/issues",
+        "Changelog": "https://pyppmd.readthedocs.io/en/latest/changelog.html",
+        "Documentation": "https://pyppmd.readthedocs.io/en/stable/",
+        "Homepage": "https://pyppmd.readthedocs.io/",
+        "Source": "https://github.com/miurahr/pyppmd"
+      },
+      "home_page": null,
+      "summary": "PPMd compression/decompression library",
+      "author": "Hiroshi Miura <miurahr@linux.com>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "pyppmd-1.3.1-cp311-cp311-win_amd64.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "pyppmd-1.3.1-cp311-cp311-win_amd64.whl",
+        "url": "https://files.pythonhosted.org/packages/b5/d3/5fe05bdccdd7af04461c25a3dc34799f48ad3e9a2bd591aaec9afbc1d10a/pyppmd-1.3.1-cp311-cp311-win_amd64.whl",
+        "packagetype": "bdist_wheel",
+        "size": 46862,
+        "sha256_pypi": "23b83799f33f9a24577f22e092b0feecda8cd1ea33871ad8610a58629874f7bc",
+        "sha256_verified": "23b83799f33f9a24577f22e092b0feecda8cd1ea33871ad8610a58629874f7bc",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "pyppmd-1.3.1-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/b5/d3/5fe05bdccdd7af04461c25a3dc34799f48ad3e9a2bd591aaec9afbc1d10a/pyppmd-1.3.1-cp311-cp311-win_amd64.whl",
+      "packagetype": "bdist_wheel",
+      "size": 46862,
+      "sha256_pypi": "23b83799f33f9a24577f22e092b0feecda8cd1ea33871ad8610a58629874f7bc",
+      "sha256_verified": "23b83799f33f9a24577f22e092b0feecda8cd1ea33871ad8610a58629874f7bc",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "pyppmd-1.3.1-cp311-cp311-win_amd64.whl::pyppmd-1.3.1.dist-info/licenses/LICENSE": {
+        "saved_as": "pyppmd-1.3.1.dist-info_licenses_LICENSE",
+        "sha256": "1e7e6bae5a5bde32f1ae5a7c37a082d1ab03cf89354f7f936ac40be9e39a6531",
+        "bytes": 27032,
+        "from_artifact": "pyppmd-1.3.1-cp311-cp311-win_amd64.whl",
+        "artifact_sha256": "23b83799f33f9a24577f22e092b0feecda8cd1ea33871ad8610a58629874f7bc"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

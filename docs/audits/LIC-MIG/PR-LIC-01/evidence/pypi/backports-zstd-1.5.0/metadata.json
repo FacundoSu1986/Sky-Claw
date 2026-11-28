@@ -1,0 +1,2299 @@
+{
+  "pypi_json": {
+    "info": {
+      "author": null,
+      "author_email": "Rogdham <contact@rogdham.net>",
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Topic :: System :: Archiving :: Compression"
+      ],
+      "description": "<div align=\"center\" size=\"15px\">\n\n# backports.zstd\n\nBackport of [PEP-784 “adding Zstandard to the standard library”][PEP-784]\n\n[![GitHub build status](https://img.shields.io/github/actions/workflow/status/rogdham/backports.zstd/build.yml?branch=master)](https://github.com/rogdham/backports.zstd/actions?query=branch:master)\n[![Release on PyPI](https://img.shields.io/pypi/v/backports.zstd)](https://pypi.org/project/backports.zstd/)\n\n---\n\n[📖 PEP-784][PEP-784]&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;[📃 Changelog](./CHANGELOG.md)\n\n[PEP-784]: https://peps.python.org/pep-0784/\n\n</div>\n\n---\n\n## Install\n\nAdd the following dependency to your project:\n\n```\nbackports.zstd ; python_version<'3.14'\n```\n\n…or just run `pip install backports.zstd`.\n\n## Usage\n\nWhen importing a module needing Zstandard support, use a conditional import based on the\nversion of Python. See below for examples.\n\n### zstd\n\n```python\nimport sys\n\nif sys.version_info >= (3, 14):\n    from compression import zstd\nelse:\n    from backports import zstd\n\n\n# use the zstd module, for example:\nzstd.compress(b\"Hello, world!\")\n```\n\nRefer to the [official Python documentation][doc-zstd] for usage of the module.\n\n[doc-zstd]: https://docs.python.org/3.14/library/compression.zstd.html\n\n### tarfile\n\n```python\nimport sys\n\nif sys.version_info >= (3, 14):\n    import tarfile\nelse:\n    from backports.zstd import tarfile\n\n\n# use the tarfile module, for example:\nwith tarfile.open(\"archive.tar.zst\") as tar:\n    tar.list()\n```\n\nThis `tarfile` modules is backported from Python 3.14 and includes Zstandard-specific\nfeatures such as: explicit modes for opening files (e.g. `r:zstd`), specific arguments\n(e.g. `zstd_dict`)… refer to the [official Python documentation][doc-tarfile] for more\ninfo.\n\n[doc-tarfile]: https://docs.python.org/3.14/library/tarfile.html\n\nMoreover, the CLI is available as well: `python -m backports.zstd.tarfile`.\n\n### zipfile\n\n```python\nimport sys\n\nif sys.version_info >= (3, 14):\n    import zipfile\nelse:\n    from backports.zstd import zipfile\n\n\n# use the zipfile module, for example:\nwith zipfile.ZipFile(\"archive.zip\", \"w\") as zf:\n    zf.writestr(\"hello.txt\", \"Hi!\", zipfile.ZIP_ZSTANDARD)\n```\n\nThis `zipfile` modules is backported from Python 3.14 and includes Zstandard-specific\nfeatures such as the constant `ZIP_ZSTANDARD` to be used for `compress_type`… refer to\nthe [official Python documentation][doc-zipfile] for more info.\n\n[doc-zipfile]: https://docs.python.org/3.14/library/zipfile.html\n\nMoreover, the CLI is available as well: `python -m backports.zstd.zipfile`.\n\n### shutil\n\n```python\nimport shutil\nimport sys\n\nif sys.version_info < (3, 14):\n    from backports.zstd import register_shutil\n    register_shutil()\n\n# use the shutil module, for example\nshutil.unpack_archive('archive.tar.zst')\n```\n\nCalling the `register_shutil` function allows to create zstd'ed tar files using the\n`\"zstdtar\"` format, as well as unpack them.\n\nIt also overrides support for unpacking zip files, enabling the unpacking of zip\narchives that use Zstandard for compression.\n\nAlternatively, call `register_shutil(tar=False)` or `register_shutil(zip=False)` to\nchoose which archiving support to register.\n\n## FAQ\n\n### Who are you?\n\nThis project is created and maintained by [Rogdham](https://github.com/rogdham)\n(maintainer of [`pyzstd`](https://github.com/rogdham/pyzstd), who helped with [PEP-784]\nand integration of Zstandard into the standard library), with help from\n[Emma Smith](https://github.com/emmatyping) (author of [PEP-784], who did most of the\nwork of porting `pyzstd` into the standard library).\n\n### How is this backport constructed?\n\nThe aim is to be as close as possible to the upstream code of\n[CPython](https://github.com/python/cpython).\n\nThe runtime code comes from CPython 3.14, with minor changes to support older versions\nof Python. For PyPy users, the C code has been ported to CFFI.\n\nDuring the build phase, the project uses [`zstd`](https://github.com/facebook/zstd)\n(canonical implementation of Zstandard) as well as\n[`pythoncapi-compat`](https://github.com/python/pythoncapi-compat) (which handles some\nof the compatibility with older Python versions).\n\nTests come from CPython 3.14, with minor changes to support older versions of Python.\nAdditional tests have been written specifically for `backports.zstd`.\n\nThe type hints for the standard library have been contributed to\n[`typeshed`](https://github.com/python/typeshed) and also backported to\n`backports.zstd`.\n\n### Why can this library not be installed with Python 3.14?\n\nThis is [on purpose](https://github.com/Rogdham/backports.zstd/issues/50). For Python\n3.14 and later, use the `compression.zstd` module from the standard library.\n\nIf you want your code to be compatible with multiple Python versions, condition the\nusage of this library based on the Python version:\n\n- [During install](#install);\n- [When importing at runtime](#usage).\n\n### Can I use the libzstd version installed on my system?\n\nThe wheels distributed on PyPI include a static version of `libzstd` for ease of\ninstallation and reproducibility.\n\nIf you want to use `libzstd` installed on your system, pass the `--system-zstd` argument\nto the build backend. For example:\n\n```sh\npython -m pip install --config-settings=--build-option=--system-zstd ...\npython -m build --wheel --config-setting=--build-option=--system-zstd ...\n```\n\nIf you run the test suite, set the environment variable\n`BACKPORTSZSTD_SKIP_EXTENSION_TEST=1` to skip tests that may fail when using the system\nlibrary.\n\n### I found a bug\n\nIf you encounter any issues, please open a\n[GitHub issue](https://github.com/Rogdham/backports.zstd/issues/new) with a minimal\nreproducible example.\n\nWe will check if the issue is with `backports.zstd` or CPython. We have already reported\nand fixed a few issues in CPython this way!\n",
+      "description_content_type": "text/markdown",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": [
+        "License-File"
+      ],
+      "home_page": null,
+      "keywords": "backport, backports, pep-784, zstd",
+      "license": null,
+      "license_expression": "PSF-2.0",
+      "license_files": [
+        "LICENSE.txt",
+        "LICENSE_zstd.txt"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "backports.zstd",
+      "package_url": "https://pypi.org/project/backports.zstd/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/backports.zstd/",
+      "project_urls": {
+        "Homepage": "https://github.com/rogdham/backports.zstd",
+        "Source": "https://github.com/rogdham/backports.zstd"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/backports.zstd/1.5.0/",
+      "requires_dist": null,
+      "requires_python": "<3.14,>=3.10",
+      "summary": "Backport of compression.zstd",
+      "version": "1.5.0",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "last_serial": 44192310,
+    "ownership": {
+      "organization": null,
+      "roles": [
+        {
+          "role": "Owner",
+          "user": "rogdham"
+        }
+      ]
+    },
+    "urls": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "ea6ebc24b45e16381272db45bfe627c1762600fc5fbcd39cef3723c89425129e",
+          "md5": "b90d778be90b627e7944eaf31436d2e5",
+          "sha256": "09045a00d9dad12dab49e029b26c197637b882cf4adc737a373404ba2aaabbca"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "b90d778be90b627e7944eaf31436d2e5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 436832,
+        "upload_time": "2026-05-11T19:51:54",
+        "upload_time_iso_8601": "2026-05-11T19:51:54.343342Z",
+        "url": "https://files.pythonhosted.org/packages/ea/6e/bc24b45e16381272db45bfe627c1762600fc5fbcd39cef3723c89425129e/backports_zstd-1.5.0-cp310-cp310-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "e28785bc9b98bd0bbbe76af0aa19d423eb93906467110e4cdd4741fd8d26def5",
+          "md5": "ab9162ced8d55209e1a40e25c4bbf675",
+          "sha256": "e51edd66db6855bee020c951ca5c2e816777bfe77f87742fbbfae9a32d482fec"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "ab9162ced8d55209e1a40e25c4bbf675",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 363217,
+        "upload_time": "2026-05-11T19:51:56",
+        "upload_time_iso_8601": "2026-05-11T19:51:56.359154Z",
+        "url": "https://files.pythonhosted.org/packages/e2/87/85bc9b98bd0bbbe76af0aa19d423eb93906467110e4cdd4741fd8d26def5/backports_zstd-1.5.0-cp310-cp310-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "c161b461cf3620ee3a55e20d885ef61c5ab56a3745ccc0d422f74968337777ca",
+          "md5": "f38a51e8a8ee4bc58ca3a2a7d3d64b05",
+          "sha256": "73ff4ceb7e28538455e0a44f53e05a731bbdb9bfe2cab4a1637dd1f0093732e3"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-manylinux2010_i686.manylinux_2_12_i686.manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "f38a51e8a8ee4bc58ca3a2a7d3d64b05",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 507163,
+        "upload_time": "2026-05-11T19:51:57",
+        "upload_time_iso_8601": "2026-05-11T19:51:57.957460Z",
+        "url": "https://files.pythonhosted.org/packages/c1/61/b461cf3620ee3a55e20d885ef61c5ab56a3745ccc0d422f74968337777ca/backports_zstd-1.5.0-cp310-cp310-manylinux2010_i686.manylinux_2_12_i686.manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "edcb4e0063bf90d6fd17329ff271e131758d5d96a73061b6d45577a8be6ebf42",
+          "md5": "aa63982bbf007f0368f68b5417e89228",
+          "sha256": "a9526d69c8fbef03e04d74b33946e23f806399cb49e51550bb21d757fb2ce869"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "aa63982bbf007f0368f68b5417e89228",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 476728,
+        "upload_time": "2026-05-11T19:51:59",
+        "upload_time_iso_8601": "2026-05-11T19:51:59.822649Z",
+        "url": "https://files.pythonhosted.org/packages/ed/cb/4e0063bf90d6fd17329ff271e131758d5d96a73061b6d45577a8be6ebf42/backports_zstd-1.5.0-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "114aee0c81e24789781fcc8399817e5c82121001293dbbaf17629833ff0d34e8",
+          "md5": "5bdcfcca436728d4ab392fb2a1cd9004",
+          "sha256": "5e24ee1e1bbb4549a2ad63695b4a5776596aa171fdaf7c1e178e61e351faf0a9"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "5bdcfcca436728d4ab392fb2a1cd9004",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 582391,
+        "upload_time": "2026-05-11T19:52:01",
+        "upload_time_iso_8601": "2026-05-11T19:52:01.776535Z",
+        "url": "https://files.pythonhosted.org/packages/11/4a/ee0c81e24789781fcc8399817e5c82121001293dbbaf17629833ff0d34e8/backports_zstd-1.5.0-cp310-cp310-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "e3aa3c2c28492656af005ed9602beab4c20813346b53257413ae57bf88adbd41",
+          "md5": "e62c91f05ded4b704c57ea6706a32f27",
+          "sha256": "ebfbf7307d618d68deef905d3d6655339d4ce187e176023bff8fbd44ec1e20d0"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "e62c91f05ded4b704c57ea6706a32f27",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 642040,
+        "upload_time": "2026-05-11T19:52:03",
+        "upload_time_iso_8601": "2026-05-11T19:52:03.396705Z",
+        "url": "https://files.pythonhosted.org/packages/e3/aa/3c2c28492656af005ed9602beab4c20813346b53257413ae57bf88adbd41/backports_zstd-1.5.0-cp310-cp310-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "9ead9070e691597657bd3b983d8c8ba46bc6ee4d394608e7be969f2060f16899",
+          "md5": "b7466f16b930195ab8ada3480321d49c",
+          "sha256": "b82506a4da0977754335c727752411bbba1fe476a8662d96161218f275fba859"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "b7466f16b930195ab8ada3480321d49c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 492266,
+        "upload_time": "2026-05-11T19:52:05",
+        "upload_time_iso_8601": "2026-05-11T19:52:05.160975Z",
+        "url": "https://files.pythonhosted.org/packages/9e/ad/9070e691597657bd3b983d8c8ba46bc6ee4d394608e7be969f2060f16899/backports_zstd-1.5.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "9eec7222e9e8ca899cf9d538468b0fb6386da93dae94f6e60625a7ef99281672",
+          "md5": "fc52b7e5f59526a8daad454c834d54f6",
+          "sha256": "4cf8355cdfa7a2cba9c51655d56e6be39c751799286b142640be30fef2301a70"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "fc52b7e5f59526a8daad454c834d54f6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 566215,
+        "upload_time": "2026-05-11T19:52:07",
+        "upload_time_iso_8601": "2026-05-11T19:52:07.037061Z",
+        "url": "https://files.pythonhosted.org/packages/9e/ec/7222e9e8ca899cf9d538468b0fb6386da93dae94f6e60625a7ef99281672/backports_zstd-1.5.0-cp310-cp310-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "9ff8bf880d87cfb71ad9753142d2ad0802015ee4a343b8c080ea6f0eb6b05bfb",
+          "md5": "97dcc2ec9374472240e4c0f3ee572602",
+          "sha256": "f7de15f3871d21d6e761c5a309618b069fee5f225e64e4406956ac0209dc6917"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "97dcc2ec9374472240e4c0f3ee572602",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 482662,
+        "upload_time": "2026-05-11T19:52:08",
+        "upload_time_iso_8601": "2026-05-11T19:52:08.726476Z",
+        "url": "https://files.pythonhosted.org/packages/9f/f8/bf880d87cfb71ad9753142d2ad0802015ee4a343b8c080ea6f0eb6b05bfb/backports_zstd-1.5.0-cp310-cp310-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "6dedfc7144651682744b32de1e624bcad6d0bb72d6359e37a5d9e980f3d5a45b",
+          "md5": "62f0bef58372817411b5c968b53f85e6",
+          "sha256": "624825b9c290e6089cd9955d88da04b085528fe213adf3e4e8be5c0fffef6c65"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "62f0bef58372817411b5c968b53f85e6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 510592,
+        "upload_time": "2026-05-11T19:52:10",
+        "upload_time_iso_8601": "2026-05-11T19:52:10.244571Z",
+        "url": "https://files.pythonhosted.org/packages/6d/ed/fc7144651682744b32de1e624bcad6d0bb72d6359e37a5d9e980f3d5a45b/backports_zstd-1.5.0-cp310-cp310-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "f640436ee1aa915fa310d0e83c361f25757960f96ef798f532948351637125fd",
+          "md5": "e20ad4a2f32051d790ddb06b2f57f645",
+          "sha256": "7088a75f96d8f6b0d3523ec3a99d1472ce03c3524b2f7b485b80e115ef20055f"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "e20ad4a2f32051d790ddb06b2f57f645",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 586713,
+        "upload_time": "2026-05-11T19:52:12",
+        "upload_time_iso_8601": "2026-05-11T19:52:12.153080Z",
+        "url": "https://files.pythonhosted.org/packages/f6/40/436ee1aa915fa310d0e83c361f25757960f96ef798f532948351637125fd/backports_zstd-1.5.0-cp310-cp310-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "559b16573be05e8fe54cb356d9aa9aeb84d1e14fd49fe23ea7f261027e2e7f25",
+          "md5": "2552af54783bb0e43a993ca4ae016e5d",
+          "sha256": "97f4d29e99538b11313cbc7a6d9b3c2ce0d69fdc497699ab74953d0d5949ab88"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-musllinux_1_2_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "2552af54783bb0e43a993ca4ae016e5d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 564032,
+        "upload_time": "2026-05-11T19:52:13",
+        "upload_time_iso_8601": "2026-05-11T19:52:13.864467Z",
+        "url": "https://files.pythonhosted.org/packages/55/9b/16573be05e8fe54cb356d9aa9aeb84d1e14fd49fe23ea7f261027e2e7f25/backports_zstd-1.5.0-cp310-cp310-musllinux_1_2_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "95337cf01fb8b4cff1ea6c7fee19d64de8a1a8dec7b18703af2aca79c8f87864",
+          "md5": "17f0f62494e809837d9e3590ec53793c",
+          "sha256": "8b4e17632759a45a7d0c4cf31968d8d033eefbe1a3d81d8aaf519558371c3359"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-musllinux_1_2_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "17f0f62494e809837d9e3590ec53793c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 632604,
+        "upload_time": "2026-05-11T19:52:15",
+        "upload_time_iso_8601": "2026-05-11T19:52:15.469279Z",
+        "url": "https://files.pythonhosted.org/packages/95/33/7cf01fb8b4cff1ea6c7fee19d64de8a1a8dec7b18703af2aca79c8f87864/backports_zstd-1.5.0-cp310-cp310-musllinux_1_2_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "1a03547b4e0abf8e1c2f29314e1e3ed7a3e2054b22560b2bad843423fbb99140",
+          "md5": "27ab7e8e4ddaefcbbd8204ecee974d1b",
+          "sha256": "0075195c79c0508bc7313a3402b187bd9d27d4f9a376e8e2caac0fc2baeacbdf"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "27ab7e8e4ddaefcbbd8204ecee974d1b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 496272,
+        "upload_time": "2026-05-11T19:52:17",
+        "upload_time_iso_8601": "2026-05-11T19:52:17.064534Z",
+        "url": "https://files.pythonhosted.org/packages/1a/03/547b4e0abf8e1c2f29314e1e3ed7a3e2054b22560b2bad843423fbb99140/backports_zstd-1.5.0-cp310-cp310-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "4d28118cad1d6a8d3860e2cfb79a6e249df050e4cd490b59a12d0c360afb2295"
+        },
+        "digests": {
+          "blake2b_256": "cdff28c94189774b62c26ddf65ee54ec3591f6f0217d9545d20854f8600541b0",
+          "md5": "c4f8574a6b249af726fce97d6ac1857c",
+          "sha256": "11c694c9eef69c19a52df94466d4fd5c8b1bdfbaad350e95adc883b40d8b3be2"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-win32.whl",
+        "has_sig": false,
+        "md5_digest": "c4f8574a6b249af726fce97d6ac1857c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 289665,
+        "upload_time": "2026-05-11T19:52:18",
+        "upload_time_iso_8601": "2026-05-11T19:52:18.946851Z",
+        "url": "https://files.pythonhosted.org/packages/cd/ff/28c94189774b62c26ddf65ee54ec3591f6f0217d9545d20854f8600541b0/backports_zstd-1.5.0-cp310-cp310-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "4d28118cad1d6a8d3860e2cfb79a6e249df050e4cd490b59a12d0c360afb2295"
+        },
+        "digests": {
+          "blake2b_256": "180e579f193d023c099ecaf560aae72701bfa6bacc5486cf57f91236b9c1404e",
+          "md5": "4875351a5aed201613105b397bede203",
+          "sha256": "c1ea900765329a515020e4e66c65a826657cc1f110770cac3f71ec01b43f2d25"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "4875351a5aed201613105b397bede203",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 314698,
+        "upload_time": "2026-05-11T19:52:20",
+        "upload_time_iso_8601": "2026-05-11T19:52:20.734406Z",
+        "url": "https://files.pythonhosted.org/packages/18/0e/579f193d023c099ecaf560aae72701bfa6bacc5486cf57f91236b9c1404e/backports_zstd-1.5.0-cp310-cp310-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "4d28118cad1d6a8d3860e2cfb79a6e249df050e4cd490b59a12d0c360afb2295"
+        },
+        "digests": {
+          "blake2b_256": "7ef71cfc87f0171268ffb3eb479f0b8ef936164cbb6bddd1fbf1457e1ac8aecb",
+          "md5": "ffc1a6a233378860eda2ca5601c3de96",
+          "sha256": "0c473387025e233d123f401d09a17a57e0b9af2ec2423aae7f50f1c806887cb3"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp310-cp310-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "ffc1a6a233378860eda2ca5601c3de96",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 291362,
+        "upload_time": "2026-05-11T19:52:22",
+        "upload_time_iso_8601": "2026-05-11T19:52:22.486603Z",
+        "url": "https://files.pythonhosted.org/packages/7e/f7/1cfc87f0171268ffb3eb479f0b8ef936164cbb6bddd1fbf1457e1ac8aecb/backports_zstd-1.5.0-cp310-cp310-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "26bc083c0ebee316f4863ed288c4a5eaa1e98be115e82deb8855da8bab1c7701",
+          "md5": "86d67d3f4bb14fa16d8941da9abd5dcc",
+          "sha256": "fbaa5502617dc4f04327c7a2951f0fcdca7aaef93ddf32c15dc8b620208174fa"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-macosx_10_9_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "86d67d3f4bb14fa16d8941da9abd5dcc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 436838,
+        "upload_time": "2026-05-11T19:52:24",
+        "upload_time_iso_8601": "2026-05-11T19:52:24.349632Z",
+        "url": "https://files.pythonhosted.org/packages/26/bc/083c0ebee316f4863ed288c4a5eaa1e98be115e82deb8855da8bab1c7701/backports_zstd-1.5.0-cp311-cp311-macosx_10_9_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "cde5bf778667fff6598dbd0791745123ed964aee94753ae8e4e92aa1e07417b6",
+          "md5": "4737497c8960d1724ce96dcd87a2b799",
+          "sha256": "204f00d62e95aab987c7c019452b2373bdefb17252443765f2ede7f15b6e669a"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "4737497c8960d1724ce96dcd87a2b799",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 363215,
+        "upload_time": "2026-05-11T19:52:25",
+        "upload_time_iso_8601": "2026-05-11T19:52:25.887879Z",
+        "url": "https://files.pythonhosted.org/packages/cd/e5/bf778667fff6598dbd0791745123ed964aee94753ae8e4e92aa1e07417b6/backports_zstd-1.5.0-cp311-cp311-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "63a54fae78734dbefcb4b5386137c807e2107c4bc94e85c0d9eaae79206dde84",
+          "md5": "34eb1c6387296797e41589f9604f2ce0",
+          "sha256": "2c77c0d4c330afd26d2a98f3d689ab922ec3f046014a1614ddcaad437666ac05"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-manylinux2010_i686.manylinux_2_12_i686.manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "34eb1c6387296797e41589f9604f2ce0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 507161,
+        "upload_time": "2026-05-11T19:52:27",
+        "upload_time_iso_8601": "2026-05-11T19:52:27.480538Z",
+        "url": "https://files.pythonhosted.org/packages/63/a5/4fae78734dbefcb4b5386137c807e2107c4bc94e85c0d9eaae79206dde84/backports_zstd-1.5.0-cp311-cp311-manylinux2010_i686.manylinux_2_12_i686.manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "d8ecb64409f0cf56fb65181d6f5d9130058f19d5c3c9f8c581a5e2bd62642630",
+          "md5": "474970730acfa93006d79b0cc48ca96c",
+          "sha256": "6bb2f2d2c07358edeaa251cf804b993e9f0d5d93af8a7ea2414d80ff3c105e95"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "474970730acfa93006d79b0cc48ca96c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 476728,
+        "upload_time": "2026-05-11T19:52:29",
+        "upload_time_iso_8601": "2026-05-11T19:52:29.182702Z",
+        "url": "https://files.pythonhosted.org/packages/d8/ec/b64409f0cf56fb65181d6f5d9130058f19d5c3c9f8c581a5e2bd62642630/backports_zstd-1.5.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "4d104c1693cb4e129585a6e4cb565106cad7347e61c43c8375b9e9cadb00eb06",
+          "md5": "d714eb5f7c9b60cbd481925ccdee4601",
+          "sha256": "cb89f554abcebcb2c487024e63be8059083775c5fd351fec0cc2dc3e9f528714"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "d714eb5f7c9b60cbd481925ccdee4601",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 582388,
+        "upload_time": "2026-05-11T19:52:30",
+        "upload_time_iso_8601": "2026-05-11T19:52:30.908721Z",
+        "url": "https://files.pythonhosted.org/packages/4d/10/4c1693cb4e129585a6e4cb565106cad7347e61c43c8375b9e9cadb00eb06/backports_zstd-1.5.0-cp311-cp311-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "45b9dc748a0e7d21ce2228241f6e8af96d297c80ab69c4c49429309b8fa3beb8",
+          "md5": "29484c85581427fb45f222bb8d79d143",
+          "sha256": "ea969758af743000d822fc3a69dc9de059bbbb8d07d2f13e06ff49ac63cce74f"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "29484c85581427fb45f222bb8d79d143",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 642091,
+        "upload_time": "2026-05-11T19:52:32",
+        "upload_time_iso_8601": "2026-05-11T19:52:32.397162Z",
+        "url": "https://files.pythonhosted.org/packages/45/b9/dc748a0e7d21ce2228241f6e8af96d297c80ab69c4c49429309b8fa3beb8/backports_zstd-1.5.0-cp311-cp311-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "de5f02366ddae6e008d53df71605e4e3ca8dcea5d1dfcba29040b46883a23127",
+          "md5": "d485c85becfd5d817956ba777ee696e5",
+          "sha256": "775ad82d268923639bc924013fc61561df376c148506b241f0f80718b5bb3a2f"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "d485c85becfd5d817956ba777ee696e5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 492256,
+        "upload_time": "2026-05-11T19:52:34",
+        "upload_time_iso_8601": "2026-05-11T19:52:34.441227Z",
+        "url": "https://files.pythonhosted.org/packages/de/5f/02366ddae6e008d53df71605e4e3ca8dcea5d1dfcba29040b46883a23127/backports_zstd-1.5.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "c0c7c5e7824c17abc87dbb24c7c90dc43054d701533cf04d3531cb9b7105cdac",
+          "md5": "01fd29b37a10ac5acd40c44cfdbf8fea",
+          "sha256": "663128370bbc2ebcc436b8977bc434a7bf29919d92d91fee05ed6fb0fa807646"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "01fd29b37a10ac5acd40c44cfdbf8fea",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 566214,
+        "upload_time": "2026-05-11T19:52:35",
+        "upload_time_iso_8601": "2026-05-11T19:52:35.962443Z",
+        "url": "https://files.pythonhosted.org/packages/c0/c7/c5e7824c17abc87dbb24c7c90dc43054d701533cf04d3531cb9b7105cdac/backports_zstd-1.5.0-cp311-cp311-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "127bee7368c4ad8f5e00b3fd84fc566fb7714aa766c5672500793990e19efa00",
+          "md5": "528825cf2aef4083d70d28e2cc90814c",
+          "sha256": "572c76832e9a24da4084befa52c23f4c03fede2aa250ae6250cbc5a11b980f69"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "528825cf2aef4083d70d28e2cc90814c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 482666,
+        "upload_time": "2026-05-11T19:52:37",
+        "upload_time_iso_8601": "2026-05-11T19:52:37.675700Z",
+        "url": "https://files.pythonhosted.org/packages/12/7b/ee7368c4ad8f5e00b3fd84fc566fb7714aa766c5672500793990e19efa00/backports_zstd-1.5.0-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "77362826f9f04b6c91d5f707f49188ac6f5ec7487b36d73caedfa20db3307826",
+          "md5": "851862f9e812a94ec3c75f49cf5c8d10",
+          "sha256": "9410bcbcd3afd787a15a276d68f954d1703788c780faa421183a61d39da8b862"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "851862f9e812a94ec3c75f49cf5c8d10",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 510594,
+        "upload_time": "2026-05-11T19:52:39",
+        "upload_time_iso_8601": "2026-05-11T19:52:39.501993Z",
+        "url": "https://files.pythonhosted.org/packages/77/36/2826f9f04b6c91d5f707f49188ac6f5ec7487b36d73caedfa20db3307826/backports_zstd-1.5.0-cp311-cp311-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "843b95342baf0e301b7d06c6862389f8520a9d71f073a6c1a5b86182e7d89148",
+          "md5": "6467a8381fd8575b5adb6d0daf492d61",
+          "sha256": "0fab15e6895bef621041dd82d6306ffa24889257dd902c4b98b88e4260b3465d"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "6467a8381fd8575b5adb6d0daf492d61",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 586713,
+        "upload_time": "2026-05-11T19:52:41",
+        "upload_time_iso_8601": "2026-05-11T19:52:41.461668Z",
+        "url": "https://files.pythonhosted.org/packages/84/3b/95342baf0e301b7d06c6862389f8520a9d71f073a6c1a5b86182e7d89148/backports_zstd-1.5.0-cp311-cp311-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "bc3273d2b8f572960307406b084bb8932f4ebd9fcedb05d1502e04fecf25970a",
+          "md5": "44b8f018812124ae5dd89ae39a37a486",
+          "sha256": "2ffde637b6d0082f1c3356657002469cf199c7c12d50d9822a55b13425c778d3"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-musllinux_1_2_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "44b8f018812124ae5dd89ae39a37a486",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 564037,
+        "upload_time": "2026-05-11T19:52:43",
+        "upload_time_iso_8601": "2026-05-11T19:52:43.150034Z",
+        "url": "https://files.pythonhosted.org/packages/bc/32/73d2b8f572960307406b084bb8932f4ebd9fcedb05d1502e04fecf25970a/backports_zstd-1.5.0-cp311-cp311-musllinux_1_2_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "8fa46e319fa7fa5851c3ca9701cbded9522c16018432a01a33a95cc0fccb6b4a",
+          "md5": "fa34688aba4f00928357c6699865df68",
+          "sha256": "c01d377c1489cb2230bf6a9ff01c73c42863cc96ee648c49923d4f6d4ea4e2d5"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-musllinux_1_2_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "fa34688aba4f00928357c6699865df68",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 632626,
+        "upload_time": "2026-05-11T19:52:45",
+        "upload_time_iso_8601": "2026-05-11T19:52:45.017672Z",
+        "url": "https://files.pythonhosted.org/packages/8f/a4/6e319fa7fa5851c3ca9701cbded9522c16018432a01a33a95cc0fccb6b4a/backports_zstd-1.5.0-cp311-cp311-musllinux_1_2_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "675c10df0444db05f9276b286d230a3d6948ad47c593fc22925b8fe551d34b26",
+          "md5": "944f99fd95ff86754ca1e06dacc95916",
+          "sha256": "4080bb9c8a51bb2bf8caf8018d78278cd49eb924cb06a54f56a411095e2ac912"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "944f99fd95ff86754ca1e06dacc95916",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 496270,
+        "upload_time": "2026-05-11T19:52:46",
+        "upload_time_iso_8601": "2026-05-11T19:52:46.558407Z",
+        "url": "https://files.pythonhosted.org/packages/67/5c/10df0444db05f9276b286d230a3d6948ad47c593fc22925b8fe551d34b26/backports_zstd-1.5.0-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "4d28118cad1d6a8d3860e2cfb79a6e249df050e4cd490b59a12d0c360afb2295"
+        },
+        "digests": {
+          "blake2b_256": "f1ad6cd1de5cd858ac653833098f13a4643a4c9db484072350d3dbf299cc46f1",
+          "md5": "d9e93dcc99d8509afd7da5eb968fc77d",
+          "sha256": "9f4fe3fd82c8c6e8a9fdc5c71f92f9fe2442d02e7f59fddef25a955e189e3f38"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-win32.whl",
+        "has_sig": false,
+        "md5_digest": "d9e93dcc99d8509afd7da5eb968fc77d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 289754,
+        "upload_time": "2026-05-11T19:52:48",
+        "upload_time_iso_8601": "2026-05-11T19:52:48.232011Z",
+        "url": "https://files.pythonhosted.org/packages/f1/ad/6cd1de5cd858ac653833098f13a4643a4c9db484072350d3dbf299cc46f1/backports_zstd-1.5.0-cp311-cp311-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "4d28118cad1d6a8d3860e2cfb79a6e249df050e4cd490b59a12d0c360afb2295"
+        },
+        "digests": {
+          "blake2b_256": "1d1bdf94ad1cb79705d717f7e1063da642c538a6d7ce6443c8e60355fa507ea4",
+          "md5": "4ba14c84774abf0e85575f38783d528c",
+          "sha256": "e7c0372fa036751109604c70a8c87e59faaacc195d519c8cb9e0e527ee2b5478"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "4ba14c84774abf0e85575f38783d528c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 314829,
+        "upload_time": "2026-05-11T19:52:50",
+        "upload_time_iso_8601": "2026-05-11T19:52:50.031586Z",
+        "url": "https://files.pythonhosted.org/packages/1d/1b/df94ad1cb79705d717f7e1063da642c538a6d7ce6443c8e60355fa507ea4/backports_zstd-1.5.0-cp311-cp311-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "4d28118cad1d6a8d3860e2cfb79a6e249df050e4cd490b59a12d0c360afb2295"
+        },
+        "digests": {
+          "blake2b_256": "e8e724e60da7cc89b9ed1c5b474678e316dd0ddfe7cd1de39b23d04452ca5946",
+          "md5": "0f5b1458c5a7755fd980951cc753b425",
+          "sha256": "264a66137555bb4648f7e64cfc514d820758072684f373269fcdd2e8d4a90306"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp311-cp311-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "0f5b1458c5a7755fd980951cc753b425",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 291497,
+        "upload_time": "2026-05-11T19:52:51",
+        "upload_time_iso_8601": "2026-05-11T19:52:51.729932Z",
+        "url": "https://files.pythonhosted.org/packages/e8/e7/24e60da7cc89b9ed1c5b474678e316dd0ddfe7cd1de39b23d04452ca5946/backports_zstd-1.5.0-cp311-cp311-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "247129ed213344f8f62b7520745d7df3752d88db456aff9d8b706bdf5eb99a3c",
+          "md5": "3e8c591fc945ca02afd55a819a025b98",
+          "sha256": "1858cacdb3e50105a1b60acdc3dd5b18650077d12dce243e19d5c88e8172bd71"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-macosx_10_13_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3e8c591fc945ca02afd55a819a025b98",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 437170,
+        "upload_time": "2026-05-11T19:52:53",
+        "upload_time_iso_8601": "2026-05-11T19:52:53.204727Z",
+        "url": "https://files.pythonhosted.org/packages/24/71/29ed213344f8f62b7520745d7df3752d88db456aff9d8b706bdf5eb99a3c/backports_zstd-1.5.0-cp312-cp312-macosx_10_13_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "d0e3a58a3eb8fc54d4e3e4f684ed7b1f688da02e5bda5ae5e2809e94cf2ead2f",
+          "md5": "5529534543bb0d25976c475bd7bd7596",
+          "sha256": "ccffc0a1974ecc2cc42afa4c15f56d036a4b2bae0abc46e6ba9b3358d9b1c037"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "5529534543bb0d25976c475bd7bd7596",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 363265,
+        "upload_time": "2026-05-11T19:52:55",
+        "upload_time_iso_8601": "2026-05-11T19:52:55.153434Z",
+        "url": "https://files.pythonhosted.org/packages/d0/e3/a58a3eb8fc54d4e3e4f684ed7b1f688da02e5bda5ae5e2809e94cf2ead2f/backports_zstd-1.5.0-cp312-cp312-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "3f039d13840d206dec1c4698c803f61c58379b3578cb9dc6140ba5fa4ce2f31d",
+          "md5": "3e5f90d0df272c082c90f9ad452047dd",
+          "sha256": "ab3430ab4d4ac3fb1bc1e4174d137731e51363b6abd5e51a1599690fe9c7d61d"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-manylinux2010_i686.manylinux_2_12_i686.manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "3e5f90d0df272c082c90f9ad452047dd",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 507527,
+        "upload_time": "2026-05-11T19:52:57",
+        "upload_time_iso_8601": "2026-05-11T19:52:57.256273Z",
+        "url": "https://files.pythonhosted.org/packages/3f/03/9d13840d206dec1c4698c803f61c58379b3578cb9dc6140ba5fa4ce2f31d/backports_zstd-1.5.0-cp312-cp312-manylinux2010_i686.manylinux_2_12_i686.manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "6a8f8dc4b5736dca218cbca9609549a8f6dc202990abdb49afdc6112442f5360",
+          "md5": "75be2ce181d982422a731ce7e7372792",
+          "sha256": "c737c1cb4a10c2d0f6cba9a347522858094f0a737b4558c67a777bcaa4a795cd"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "75be2ce181d982422a731ce7e7372792",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 477352,
+        "upload_time": "2026-05-11T19:52:59",
+        "upload_time_iso_8601": "2026-05-11T19:52:59.425066Z",
+        "url": "https://files.pythonhosted.org/packages/6a/8f/8dc4b5736dca218cbca9609549a8f6dc202990abdb49afdc6112442f5360/backports_zstd-1.5.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "962c65a66976a761b5b62eacbaed5ed418c694b24b5c480399315d799751de62",
+          "md5": "c4eb9a65a312a3444905c1055c51015d",
+          "sha256": "0379c66510681a6b2780d3f3ef2cff54d01204b52448d64bde1855d40f856a04"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "c4eb9a65a312a3444905c1055c51015d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 582799,
+        "upload_time": "2026-05-11T19:53:01",
+        "upload_time_iso_8601": "2026-05-11T19:53:01.303414Z",
+        "url": "https://files.pythonhosted.org/packages/96/2c/65a66976a761b5b62eacbaed5ed418c694b24b5c480399315d799751de62/backports_zstd-1.5.0-cp312-cp312-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "d3e9ee93a66cd28cb3ad7f3c04d1105325a5428671b18bd41ba9ed8b43bc44cf",
+          "md5": "642200676a6cd08c9ca6e1fc3a90a08b",
+          "sha256": "7c7474b291e264c9609358d3875cf539623f7a65339c2b533020992b1a4c095b"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "642200676a6cd08c9ca6e1fc3a90a08b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 641530,
+        "upload_time": "2026-05-11T19:53:03",
+        "upload_time_iso_8601": "2026-05-11T19:53:03.082032Z",
+        "url": "https://files.pythonhosted.org/packages/d3/e9/ee93a66cd28cb3ad7f3c04d1105325a5428671b18bd41ba9ed8b43bc44cf/backports_zstd-1.5.0-cp312-cp312-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "e44b2cecd4d6679f175f28ae02022bd2050ff4023e38902fae104dbe2e231911",
+          "md5": "3ab057ce86c5515fd685e59ae162ffe4",
+          "sha256": "bb73c22444617bc5a3abf32dd27b3f2085898cfe3b95e6855300e9189898a3bd"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "3ab057ce86c5515fd685e59ae162ffe4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 495324,
+        "upload_time": "2026-05-11T19:53:05",
+        "upload_time_iso_8601": "2026-05-11T19:53:05.005014Z",
+        "url": "https://files.pythonhosted.org/packages/e4/4b/2cecd4d6679f175f28ae02022bd2050ff4023e38902fae104dbe2e231911/backports_zstd-1.5.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "4d20ee21e4e791e31f38f7a70b3961eb64b350d9be802a335e7a04c02b41b197",
+          "md5": "4d1dc01a22243683457b11a0c97d70ab",
+          "sha256": "6cd7f6c33afd89354f74469e315e72754e3040f91f7b685061e225d9e36e3e8e"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "4d1dc01a22243683457b11a0c97d70ab",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 569796,
+        "upload_time": "2026-05-11T19:53:07",
+        "upload_time_iso_8601": "2026-05-11T19:53:07.011651Z",
+        "url": "https://files.pythonhosted.org/packages/4d/20/ee21e4e791e31f38f7a70b3961eb64b350d9be802a335e7a04c02b41b197/backports_zstd-1.5.0-cp312-cp312-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "76da86c9a2ea384885b60638b3e47113198449568d0e36ef3834d1f969623092",
+          "md5": "f38a762d5c96ab33bfa7a1354479965f",
+          "sha256": "2106309071f279b38d3663c55c7fed192733b4f332b50eb3fa707e54bad6967a"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "f38a762d5c96ab33bfa7a1354479965f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 483367,
+        "upload_time": "2026-05-11T19:53:08",
+        "upload_time_iso_8601": "2026-05-11T19:53:08.674266Z",
+        "url": "https://files.pythonhosted.org/packages/76/da/86c9a2ea384885b60638b3e47113198449568d0e36ef3834d1f969623092/backports_zstd-1.5.0-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "5df0c95c6e4dd28fc314547782a482839e422283d62c2aaf45d30672109a4a1e",
+          "md5": "4aa3169b37992b306c92de09d9117132",
+          "sha256": "56fffa80be74cb11ac843333bbdc56e466c87967706886b3efd6b16d83830d90"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "4aa3169b37992b306c92de09d9117132",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 510976,
+        "upload_time": "2026-05-11T19:53:10",
+        "upload_time_iso_8601": "2026-05-11T19:53:10.339374Z",
+        "url": "https://files.pythonhosted.org/packages/5d/f0/c95c6e4dd28fc314547782a482839e422283d62c2aaf45d30672109a4a1e/backports_zstd-1.5.0-cp312-cp312-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "0ea272777b7e1872228a13b09b0bf77ae6cf626008d462cc2e1a0ae64721fd55",
+          "md5": "2f128293f8df49b4b20db14349f1d796",
+          "sha256": "5e8b8251eec80e67e30ec79dfc5b3b1ada069b9ac48b56b102f3e2c6f8281062"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "2f128293f8df49b4b20db14349f1d796",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 587190,
+        "upload_time": "2026-05-11T19:53:12",
+        "upload_time_iso_8601": "2026-05-11T19:53:12.205916Z",
+        "url": "https://files.pythonhosted.org/packages/0e/a2/72777b7e1872228a13b09b0bf77ae6cf626008d462cc2e1a0ae64721fd55/backports_zstd-1.5.0-cp312-cp312-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "f5a1db5d1aee59da308eadeaa189764a4ec68e98495c309a13dcb8da5718fef1",
+          "md5": "97a88c32d134b69b3a9c0a8ca628ee19",
+          "sha256": "f334dd17ffead361aa9090e40151bd123507ce213a62733121b7145c6711cbde"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-musllinux_1_2_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "97a88c32d134b69b3a9c0a8ca628ee19",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 567395,
+        "upload_time": "2026-05-11T19:53:14",
+        "upload_time_iso_8601": "2026-05-11T19:53:14.245317Z",
+        "url": "https://files.pythonhosted.org/packages/f5/a1/db5d1aee59da308eadeaa189764a4ec68e98495c309a13dcb8da5718fef1/backports_zstd-1.5.0-cp312-cp312-musllinux_1_2_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "000f39ca1a6e8c5c2dc81da9e06c44d1990cc464f4b16dae214e877afd7adfc0",
+          "md5": "b2c5f200cdc89b6ce6567892eb174b47",
+          "sha256": "78cbfd061255fef6de5070a54e0f9c00e8aabad5c99dd2ad884a3a7d1acc09ae"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-musllinux_1_2_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "b2c5f200cdc89b6ce6567892eb174b47",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 632048,
+        "upload_time": "2026-05-11T19:53:16",
+        "upload_time_iso_8601": "2026-05-11T19:53:16.234130Z",
+        "url": "https://files.pythonhosted.org/packages/00/0f/39ca1a6e8c5c2dc81da9e06c44d1990cc464f4b16dae214e877afd7adfc0/backports_zstd-1.5.0-cp312-cp312-musllinux_1_2_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "73fda438ee4fc615016dbe96112b709b6805ee19eb215f46e208c8fbce086d8d",
+          "md5": "2e332f7a877f54eaa56291ae17f92872",
+          "sha256": "2f55d70df44f49d599e20033013bc1ae705202735c45d4bca8eb963b225e15fd"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "2e332f7a877f54eaa56291ae17f92872",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 499833,
+        "upload_time": "2026-05-11T19:53:17",
+        "upload_time_iso_8601": "2026-05-11T19:53:17.850796Z",
+        "url": "https://files.pythonhosted.org/packages/73/fd/a438ee4fc615016dbe96112b709b6805ee19eb215f46e208c8fbce086d8d/backports_zstd-1.5.0-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "4d28118cad1d6a8d3860e2cfb79a6e249df050e4cd490b59a12d0c360afb2295"
+        },
+        "digests": {
+          "blake2b_256": "f742f544fde4de32687e28c514288ae3c11106ba644e9dd580992cbd704bbb49",
+          "md5": "298d12b2f2c6c239a8daa98042304f90",
+          "sha256": "a8b096e0383a3bcab34f8c97b79e1a52051189d11258bbc2bc1145997a15dd1d"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-win32.whl",
+        "has_sig": false,
+        "md5_digest": "298d12b2f2c6c239a8daa98042304f90",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 289876,
+        "upload_time": "2026-05-11T19:53:19",
+        "upload_time_iso_8601": "2026-05-11T19:53:19.486226Z",
+        "url": "https://files.pythonhosted.org/packages/f7/42/f544fde4de32687e28c514288ae3c11106ba644e9dd580992cbd704bbb49/backports_zstd-1.5.0-cp312-cp312-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "4d28118cad1d6a8d3860e2cfb79a6e249df050e4cd490b59a12d0c360afb2295"
+        },
+        "digests": {
+          "blake2b_256": "ad319c29cd3175892e5ee909f5e8d14707fa07815301ff24b5c697d1cea62a77",
+          "md5": "af7080ac2a7442ece31120bbc0612e95",
+          "sha256": "e2802899ba4ef1a062ffe4bb1292c5df32011a54b4c3004c54f46ec975f39554"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "af7080ac2a7442ece31120bbc0612e95",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 314933,
+        "upload_time": "2026-05-11T19:53:20",
+        "upload_time_iso_8601": "2026-05-11T19:53:20.942798Z",
+        "url": "https://files.pythonhosted.org/packages/ad/31/9c29cd3175892e5ee909f5e8d14707fa07815301ff24b5c697d1cea62a77/backports_zstd-1.5.0-cp312-cp312-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "4d28118cad1d6a8d3860e2cfb79a6e249df050e4cd490b59a12d0c360afb2295"
+        },
+        "digests": {
+          "blake2b_256": "11ee1a50acd6446c0d57c4f93ad6ce68e1a631ad920737a6b2d0bbbc47de7f42",
+          "md5": "5b386851bd42ac617525564020b7c3f2",
+          "sha256": "3c0353e66942afbd45518788cfbd1e9e117828ceb390fa50517f46f291850d8e"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp312-cp312-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "5b386851bd42ac617525564020b7c3f2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": "<3.14,>=3.10",
+        "size": 291665,
+        "upload_time": "2026-05-11T19:53:22",
+        "upload_time_iso_8601": "2026-05-11T19:53:22.686301Z",
+        "url": "https://files.pythonhosted.org/packages/11/ee/1a50acd6446c0d57c4f93ad6ce68e1a631ad920737a6b2d0bbbc47de7f42/backports_zstd-1.5.0-cp312-cp312-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "c6e6252521e3a847eb200bc0a1d528542d651b9c8dc7953e231c39ed2890d5ff",
+          "md5": "b4e53a1cd7a66ef3d10e5dfbb92ddb91",
+          "sha256": "02a57ee8598dd863c0b11c7af00042ce6bc045bf6f4249fa4c322c62614ca1fd"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-android_21_arm64_v8a.whl",
+        "has_sig": false,
+        "md5_digest": "b4e53a1cd7a66ef3d10e5dfbb92ddb91",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 400134,
+        "upload_time": "2026-05-11T19:53:24",
+        "upload_time_iso_8601": "2026-05-11T19:53:24.280863Z",
+        "url": "https://files.pythonhosted.org/packages/c6/e6/252521e3a847eb200bc0a1d528542d651b9c8dc7953e231c39ed2890d5ff/backports_zstd-1.5.0-cp313-cp313-android_21_arm64_v8a.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "364327ef105ffa2da3d52218d4a7b2e14037974283953b3ee790358af6e9b4df",
+          "md5": "6b128dc43f1016deffbf1cb98d462bce",
+          "sha256": "c56c11eb3173d540e1fb0216f7ab477cbd3a204eca41f5f329059ee8a5d2ad47"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-android_21_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "6b128dc43f1016deffbf1cb98d462bce",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 454225,
+        "upload_time": "2026-05-11T19:53:25",
+        "upload_time_iso_8601": "2026-05-11T19:53:25.874812Z",
+        "url": "https://files.pythonhosted.org/packages/36/43/27ef105ffa2da3d52218d4a7b2e14037974283953b3ee790358af6e9b4df/backports_zstd-1.5.0-cp313-cp313-android_21_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "0ec9cdcba1244347500d00567ce2cd6bf04c92d1b0fb6405fb8e13c07715eb46",
+          "md5": "c1a6ba033e1b4659479f6e099e15fa41",
+          "sha256": "ef98f632026aa8e6ce05d786977092798efbe78677aa71219f22d31787809c90"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-ios_13_0_arm64_iphoneos.whl",
+        "has_sig": false,
+        "md5_digest": "c1a6ba033e1b4659479f6e099e15fa41",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 357229,
+        "upload_time": "2026-05-11T19:53:27",
+        "upload_time_iso_8601": "2026-05-11T19:53:27.661696Z",
+        "url": "https://files.pythonhosted.org/packages/0e/c9/cdcba1244347500d00567ce2cd6bf04c92d1b0fb6405fb8e13c07715eb46/backports_zstd-1.5.0-cp313-cp313-ios_13_0_arm64_iphoneos.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "dfdacea04dab3ffb940bde9a59866bde6f2594a7b3ef2948a63fb3898f73d311",
+          "md5": "7e151a74cd4dfab16253340e5a0dd6de",
+          "sha256": "c3712300b18f9d07f788b03594b2f34dfad89d77df96938a640c5007522a6b69"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-ios_13_0_arm64_iphonesimulator.whl",
+        "has_sig": false,
+        "md5_digest": "7e151a74cd4dfab16253340e5a0dd6de",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 365907,
+        "upload_time": "2026-05-11T19:53:29",
+        "upload_time_iso_8601": "2026-05-11T19:53:29.241191Z",
+        "url": "https://files.pythonhosted.org/packages/df/da/cea04dab3ffb940bde9a59866bde6f2594a7b3ef2948a63fb3898f73d311/backports_zstd-1.5.0-cp313-cp313-ios_13_0_arm64_iphonesimulator.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "dac46a71df2e65033f9b7d8017d77ea2bb572fc2ebc814ea383fdcda4187597a",
+          "md5": "288c71f2737bdb3948141440669211cb",
+          "sha256": "bdbc75d1f54df70b65bcfbc8aa0cac21475f79665bb045960af606dc07b56090"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-ios_13_0_x86_64_iphonesimulator.whl",
+        "has_sig": false,
+        "md5_digest": "288c71f2737bdb3948141440669211cb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 446453,
+        "upload_time": "2026-05-11T19:53:30",
+        "upload_time_iso_8601": "2026-05-11T19:53:30.888696Z",
+        "url": "https://files.pythonhosted.org/packages/da/c4/6a71df2e65033f9b7d8017d77ea2bb572fc2ebc814ea383fdcda4187597a/backports_zstd-1.5.0-cp313-cp313-ios_13_0_x86_64_iphonesimulator.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "66e7f98ad1a6a249c27884df9d28cf6ebc3c368e0e3288a741c1d51a572bb3d7",
+          "md5": "206946b333ee5e25699824772275d563",
+          "sha256": "93d306300d25e59f1cbe98cda494bf295be03a20e8b2c5602ee5ddc03ded29f2"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-macosx_10_13_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "206946b333ee5e25699824772275d563",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 436634,
+        "upload_time": "2026-05-11T19:53:32",
+        "upload_time_iso_8601": "2026-05-11T19:53:32.484066Z",
+        "url": "https://files.pythonhosted.org/packages/66/e7/f98ad1a6a249c27884df9d28cf6ebc3c368e0e3288a741c1d51a572bb3d7/backports_zstd-1.5.0-cp313-cp313-macosx_10_13_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "ba42d0393ecc64e2ab6ae1b5ca7edbe26e3fe5196885f15d6cc4bce7254e29cd",
+          "md5": "9e3fb8b742fbe9a5138210b1102d0a4a",
+          "sha256": "305d2e4ae9a595d0fd9d5bea5a7a2163306c6c4dcc5eec35ecd5008219d4580e"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "9e3fb8b742fbe9a5138210b1102d0a4a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 362867,
+        "upload_time": "2026-05-11T19:53:34",
+        "upload_time_iso_8601": "2026-05-11T19:53:34.385697Z",
+        "url": "https://files.pythonhosted.org/packages/ba/42/d0393ecc64e2ab6ae1b5ca7edbe26e3fe5196885f15d6cc4bce7254e29cd/backports_zstd-1.5.0-cp313-cp313-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "41fe87aa9404763bada695d06e5cb9d0575bae033cbf3a2e4e3bd648760178f7",
+          "md5": "11ea157a0cd3ae2992712151379050ab",
+          "sha256": "c8f0967bf8d806b250fb1e905a6b8190e7ae83656d5308989243f84e01fa3774"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-manylinux2010_i686.manylinux_2_12_i686.manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "11ea157a0cd3ae2992712151379050ab",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 506844,
+        "upload_time": "2026-05-11T19:53:36",
+        "upload_time_iso_8601": "2026-05-11T19:53:36.023137Z",
+        "url": "https://files.pythonhosted.org/packages/41/fe/87aa9404763bada695d06e5cb9d0575bae033cbf3a2e4e3bd648760178f7/backports_zstd-1.5.0-cp313-cp313-manylinux2010_i686.manylinux_2_12_i686.manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "56943af7ce637d148e0b0acb1298b61afe9a934ed425bad9ff05e87afbf6766d",
+          "md5": "93ed32391e042c7f8556a90d77ea6efd",
+          "sha256": "76b7314ca9a253171e3e9524960e9e6411997323cf10aecbbc330faa7a90278d"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "93ed32391e042c7f8556a90d77ea6efd",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 476975,
+        "upload_time": "2026-05-11T19:53:37",
+        "upload_time_iso_8601": "2026-05-11T19:53:37.885879Z",
+        "url": "https://files.pythonhosted.org/packages/56/94/3af7ce637d148e0b0acb1298b61afe9a934ed425bad9ff05e87afbf6766d/backports_zstd-1.5.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "aa6cdc2aa1b48296ac6effc3bacb5a3061d40ed74bf73082dfe38eed2ba8362b",
+          "md5": "1f402e836b73aa85ab34ef78922668c3",
+          "sha256": "b1d0bf16bba86b1071731ced389f184e8de61c1afcafa584244f7f726632f92f"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "1f402e836b73aa85ab34ef78922668c3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 582496,
+        "upload_time": "2026-05-11T19:53:39",
+        "upload_time_iso_8601": "2026-05-11T19:53:39.812935Z",
+        "url": "https://files.pythonhosted.org/packages/aa/6c/dc2aa1b48296ac6effc3bacb5a3061d40ed74bf73082dfe38eed2ba8362b/backports_zstd-1.5.0-cp313-cp313-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "f638dd49d3dd27eda9b165ccd63d70538fea016a3e9e42923bbbc1d89fae8a43",
+          "md5": "ede4b4d62a17d89412d3cb4e66e89fb5",
+          "sha256": "96709d27d406008575ef759405169d538040156704b457d8c0ac035127a46b67"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "ede4b4d62a17d89412d3cb4e66e89fb5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 643257,
+        "upload_time": "2026-05-11T19:53:41",
+        "upload_time_iso_8601": "2026-05-11T19:53:41.819063Z",
+        "url": "https://files.pythonhosted.org/packages/f6/38/dd49d3dd27eda9b165ccd63d70538fea016a3e9e42923bbbc1d89fae8a43/backports_zstd-1.5.0-cp313-cp313-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "597578e819272450aec2462f97a1bceb90bde481f9dba435bf9e76d580b4dec4",
+          "md5": "56118c7035431170c505847aa6e75f22",
+          "sha256": "5737402c29b2bd5bc661d4cde08aed531ed326f2b59a7ad98dc07650dc99a2c9"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "56118c7035431170c505847aa6e75f22",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 491958,
+        "upload_time": "2026-05-11T19:53:43",
+        "upload_time_iso_8601": "2026-05-11T19:53:43.501241Z",
+        "url": "https://files.pythonhosted.org/packages/59/75/78e819272450aec2462f97a1bceb90bde481f9dba435bf9e76d580b4dec4/backports_zstd-1.5.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "62aed860f9cf21cb59d583a12166353bf71a439538e2b669f4a7736e400ca596",
+          "md5": "dd280fcccf54d4d193c221414367b92d",
+          "sha256": "2b65f37ddd375114dbf84658e7dd168e10f5a93394940bfefa7fafc2d3234450"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "dd280fcccf54d4d193c221414367b92d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 567198,
+        "upload_time": "2026-05-11T19:53:45",
+        "upload_time_iso_8601": "2026-05-11T19:53:45.226610Z",
+        "url": "https://files.pythonhosted.org/packages/62/ae/d860f9cf21cb59d583a12166353bf71a439538e2b669f4a7736e400ca596/backports_zstd-1.5.0-cp313-cp313-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "387cb175d4c9ff60f964c8f6dd43211de905227cfde5a41eb5f654df58483025",
+          "md5": "590db71e8bf8c72d1e6e4ad54639ec6e",
+          "sha256": "4fae7825dde4f81c28b4c66b1e997f893e296c3f1668351952b3ed085eb9f8cd"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "590db71e8bf8c72d1e6e4ad54639ec6e",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 482792,
+        "upload_time": "2026-05-11T19:53:47",
+        "upload_time_iso_8601": "2026-05-11T19:53:47.323957Z",
+        "url": "https://files.pythonhosted.org/packages/38/7c/b175d4c9ff60f964c8f6dd43211de905227cfde5a41eb5f654df58483025/backports_zstd-1.5.0-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "ebe3f7b50cf891a10da5f9c412ed4a9c4a772df4d4186d98a41e75c9b462f148",
+          "md5": "e3561e2d9dbad7b88b27d1c6fadc60e9",
+          "sha256": "3aa10e77c0e712d2dfb950910b50591c2fb11f0f1328814e23acc0b4950766df"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "e3561e2d9dbad7b88b27d1c6fadc60e9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 510363,
+        "upload_time": "2026-05-11T19:53:49",
+        "upload_time_iso_8601": "2026-05-11T19:53:49.523280Z",
+        "url": "https://files.pythonhosted.org/packages/eb/e3/f7b50cf891a10da5f9c412ed4a9c4a772df4d4186d98a41e75c9b462f148/backports_zstd-1.5.0-cp313-cp313-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "be50e7841fd4a65661d527697a0e2dab97295868965ccd4e3e12474472719a60",
+          "md5": "a42cc779f371042f768c28e3a6fd46ec",
+          "sha256": "518b2ef54ce0fee6d29379cfd64ef66e639456f1b18943466e929b19677f135f"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-musllinux_1_2_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "a42cc779f371042f768c28e3a6fd46ec",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 586917,
+        "upload_time": "2026-05-11T19:53:51",
+        "upload_time_iso_8601": "2026-05-11T19:53:51.741668Z",
+        "url": "https://files.pythonhosted.org/packages/be/50/e7841fd4a65661d527697a0e2dab97295868965ccd4e3e12474472719a60/backports_zstd-1.5.0-cp313-cp313-musllinux_1_2_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "c67c57e985dbd621f0307b8c57cabb258eb976793f2aeaf8a5bc020e15b4a793",
+          "md5": "42910dd34c1a34449480668ad2741740",
+          "sha256": "673a1e5fdaa6cb0c7a967eb33066b6dd564871b3498a93e11e2972998047d11f"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-musllinux_1_2_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "42910dd34c1a34449480668ad2741740",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 565004,
+        "upload_time": "2026-05-11T19:53:53",
+        "upload_time_iso_8601": "2026-05-11T19:53:53.774942Z",
+        "url": "https://files.pythonhosted.org/packages/c6/7c/57e985dbd621f0307b8c57cabb258eb976793f2aeaf8a5bc020e15b4a793/backports_zstd-1.5.0-cp313-cp313-musllinux_1_2_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "2f8f855ffcd1ee0fcf44c3fe62e36db8e7362292d450cc7c4b3f43edccbcd37a",
+          "md5": "d5560d704805ca26f11a446119cd4453",
+          "sha256": "1277c07ff2d731586aa05aebd946a1b30184620d886a735dd5d5bf94a4a1061e"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-musllinux_1_2_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "d5560d704805ca26f11a446119cd4453",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 633737,
+        "upload_time": "2026-05-11T19:53:56",
+        "upload_time_iso_8601": "2026-05-11T19:53:56.036994Z",
+        "url": "https://files.pythonhosted.org/packages/2f/8f/855ffcd1ee0fcf44c3fe62e36db8e7362292d450cc7c4b3f43edccbcd37a/backports_zstd-1.5.0-cp313-cp313-musllinux_1_2_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "2039c4129a03d268699200dfebe1ccab97c7c332d2794571afb372a62e4ed098",
+          "md5": "e0c634c27f2e46c9c663f85eb9337ce6",
+          "sha256": "aff334c7c38b4aea2a899f3138a99c1d58f0686ad7815c74bff506ecf4333296"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "e0c634c27f2e46c9c663f85eb9337ce6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 496309,
+        "upload_time": "2026-05-11T19:53:57",
+        "upload_time_iso_8601": "2026-05-11T19:53:57.591247Z",
+        "url": "https://files.pythonhosted.org/packages/20/39/c4129a03d268699200dfebe1ccab97c7c332d2794571afb372a62e4ed098/backports_zstd-1.5.0-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "4d28118cad1d6a8d3860e2cfb79a6e249df050e4cd490b59a12d0c360afb2295"
+        },
+        "digests": {
+          "blake2b_256": "8e3334152316dd244dcd43d5300ded3cf6e1b46d343e4e92620c23e533fa91df",
+          "md5": "2a2c8364ed0f99a9b78d166a9d429601",
+          "sha256": "b932834c4d85360f46d1e7fbf3eee1e26ba594e0eb5c3ee1281e89bc1d48d06f"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-win32.whl",
+        "has_sig": false,
+        "md5_digest": "2a2c8364ed0f99a9b78d166a9d429601",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 289560,
+        "upload_time": "2026-05-11T19:53:59",
+        "upload_time_iso_8601": "2026-05-11T19:53:59.274796Z",
+        "url": "https://files.pythonhosted.org/packages/8e/33/34152316dd244dcd43d5300ded3cf6e1b46d343e4e92620c23e533fa91df/backports_zstd-1.5.0-cp313-cp313-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "4d28118cad1d6a8d3860e2cfb79a6e249df050e4cd490b59a12d0c360afb2295"
+        },
+        "digests": {
+          "blake2b_256": "71c5f759bc87fd77c88f4fdad2d878535fb7e9537c6a05876d206e6690bf33c6",
+          "md5": "974875490854e35c9e9c0f8df3933bd5",
+          "sha256": "c71dfbeced720326a8917a6edf921c568dc2396228c6432205c6d7e7fe7f3707"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "974875490854e35c9e9c0f8df3933bd5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 314812,
+        "upload_time": "2026-05-11T19:54:00",
+        "upload_time_iso_8601": "2026-05-11T19:54:00.909862Z",
+        "url": "https://files.pythonhosted.org/packages/71/c5/f759bc87fd77c88f4fdad2d878535fb7e9537c6a05876d206e6690bf33c6/backports_zstd-1.5.0-cp313-cp313-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "4d28118cad1d6a8d3860e2cfb79a6e249df050e4cd490b59a12d0c360afb2295"
+        },
+        "digests": {
+          "blake2b_256": "4796d7970dbb2fef34b549b34146090f48f41903cc7268b1ed1c7542eaa1852e",
+          "md5": "da619a09cc95ecc09bb70b5403cd5cae",
+          "sha256": "7b5798b20ffff71ee4620a01f56fe0b50271724b4251db08c90a069446cc4752"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-cp313-cp313-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "da619a09cc95ecc09bb70b5403cd5cae",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": "<3.14,>=3.10",
+        "size": 291411,
+        "upload_time": "2026-05-11T19:54:02",
+        "upload_time_iso_8601": "2026-05-11T19:54:02.541544Z",
+        "url": "https://files.pythonhosted.org/packages/47/96/d7970dbb2fef34b549b34146090f48f41903cc7268b1ed1c7542eaa1852e/backports_zstd-1.5.0-cp313-cp313-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "5b35294ce0d818455191ee9a0f21d987d6061d4f844ca34ca44a8b1daaaba3ca",
+          "md5": "f325be33c01166c9d28cedd255024921",
+          "sha256": "9685586eb67fa2e59eab8027d48e8275ce90e404b6dc737b508f741853ba6cb7"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-pp310-pypy310_pp73-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "f325be33c01166c9d28cedd255024921",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 410912,
+        "upload_time": "2026-05-11T19:54:04",
+        "upload_time_iso_8601": "2026-05-11T19:54:04.031001Z",
+        "url": "https://files.pythonhosted.org/packages/5b/35/294ce0d818455191ee9a0f21d987d6061d4f844ca34ca44a8b1daaaba3ca/backports_zstd-1.5.0-pp310-pypy310_pp73-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "1a5c99fba38e6d57cf238362d4ac568823b1fb75e20f75b58cd062a3da4d9a7a",
+          "md5": "e2ee9fa30af2a30b692230ef27f0af0c",
+          "sha256": "1a68ab446d007d34e12f5a812e6f7d1c120a3d15cb5d4e62b7568926a6da6fb7"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-pp310-pypy310_pp73-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "e2ee9fa30af2a30b692230ef27f0af0c",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 340429,
+        "upload_time": "2026-05-11T19:54:05",
+        "upload_time_iso_8601": "2026-05-11T19:54:05.632470Z",
+        "url": "https://files.pythonhosted.org/packages/1a/5c/99fba38e6d57cf238362d4ac568823b1fb75e20f75b58cd062a3da4d9a7a/backports_zstd-1.5.0-pp310-pypy310_pp73-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "e1bc146fdb7b0bf39817e1b706e34be46f2cf11d5465668e1912747dd45fd71b",
+          "md5": "a103bc80982fc981b0e416b6b2f42f58",
+          "sha256": "627973d4375a42500a66cc2ea912f6223249a6cdfeb56cc340b0d20b5a3475d0"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-pp310-pypy310_pp73-manylinux2010_i686.manylinux_2_12_i686.manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "a103bc80982fc981b0e416b6b2f42f58",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 421477,
+        "upload_time": "2026-05-11T19:54:07",
+        "upload_time_iso_8601": "2026-05-11T19:54:07.499673Z",
+        "url": "https://files.pythonhosted.org/packages/e1/bc/146fdb7b0bf39817e1b706e34be46f2cf11d5465668e1912747dd45fd71b/backports_zstd-1.5.0-pp310-pypy310_pp73-manylinux2010_i686.manylinux_2_12_i686.manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "f42e6e43d94a3414d0113439c5e9ae6b04311797cfef5d04dc1d3aa0bcbff057",
+          "md5": "03942d04a7feace8ef061426e8b21da6",
+          "sha256": "8c077639e99de02a679dca9c6a189f60a76e7d0096977c0ebd070c31de8df57a"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-pp310-pypy310_pp73-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "03942d04a7feace8ef061426e8b21da6",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 395021,
+        "upload_time": "2026-05-11T19:54:09",
+        "upload_time_iso_8601": "2026-05-11T19:54:09.171868Z",
+        "url": "https://files.pythonhosted.org/packages/f4/2e/6e43d94a3414d0113439c5e9ae6b04311797cfef5d04dc1d3aa0bcbff057/backports_zstd-1.5.0-pp310-pypy310_pp73-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "b141d599f31e5152f43397f837c6911bffee8626d6d079bcaafab04d1a8a07ad",
+          "md5": "c3bec6714a2b1a3384452616092a82bd",
+          "sha256": "2ac2b3895fc9b1f0b0e71bffa179b48930dc27643b7e4885869afd295e7dfe1e"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-pp310-pypy310_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "c3bec6714a2b1a3384452616092a82bd",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 414986,
+        "upload_time": "2026-05-11T19:54:10",
+        "upload_time_iso_8601": "2026-05-11T19:54:10.986089Z",
+        "url": "https://files.pythonhosted.org/packages/b1/41/d599f31e5152f43397f837c6911bffee8626d6d079bcaafab04d1a8a07ad/backports_zstd-1.5.0-pp310-pypy310_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "4d28118cad1d6a8d3860e2cfb79a6e249df050e4cd490b59a12d0c360afb2295"
+        },
+        "digests": {
+          "blake2b_256": "2662006a63d5a13a04384b9cd35e35f78944a75c975f5a71c25e81cc766d53d7",
+          "md5": "ba01d821a973a8765503edd9531c8d59",
+          "sha256": "41b23cbd72f503aedcaaaa23d55d2d98d449e5938154d2b3f57832c73b286cee"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-pp310-pypy310_pp73-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "ba01d821a973a8765503edd9531c8d59",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp310",
+        "requires_python": "<3.14,>=3.10",
+        "size": 300853,
+        "upload_time": "2026-05-11T19:54:12",
+        "upload_time_iso_8601": "2026-05-11T19:54:12.593943Z",
+        "url": "https://files.pythonhosted.org/packages/26/62/006a63d5a13a04384b9cd35e35f78944a75c975f5a71c25e81cc766d53d7/backports_zstd-1.5.0-pp310-pypy310_pp73-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "89928e8769e1e3ebec16d39f455e317a0f137a191b1f122853d0377c660666ce",
+          "md5": "998a06f5afce1e608be4c22f14e7fdf9",
+          "sha256": "0ca2d4ac4901eada2cfb86fda692e5d4a1e09485d9f2ec5777dc6cd3154b3b46"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-pp311-pypy311_pp73-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "998a06f5afce1e608be4c22f14e7fdf9",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 410809,
+        "upload_time": "2026-05-11T19:54:14",
+        "upload_time_iso_8601": "2026-05-11T19:54:14.117705Z",
+        "url": "https://files.pythonhosted.org/packages/89/92/8e8769e1e3ebec16d39f455e317a0f137a191b1f122853d0377c660666ce/backports_zstd-1.5.0-pp311-pypy311_pp73-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "635c741a2923020c45b85cad4dffffcb86dbfa2d4aaed27f18ee793428ef4c24",
+          "md5": "97ffd62c5cbcd49e9bdab0576e527b5d",
+          "sha256": "20796211a623ec6e0061cef4d7cca760e9e0a0a951bb30dc9ba89ed4a3fea5e4"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-pp311-pypy311_pp73-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "97ffd62c5cbcd49e9bdab0576e527b5d",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 340342,
+        "upload_time": "2026-05-11T19:54:16",
+        "upload_time_iso_8601": "2026-05-11T19:54:16.165704Z",
+        "url": "https://files.pythonhosted.org/packages/63/5c/741a2923020c45b85cad4dffffcb86dbfa2d4aaed27f18ee793428ef4c24/backports_zstd-1.5.0-pp311-pypy311_pp73-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "c83b68c4fe8a551d3f47ed75ddcf15dc7c777bb9d869fc0e0f5b7cacc9f158f5",
+          "md5": "81019ae1392c506bf96aed5402302c7c",
+          "sha256": "5232cd2a58c60da4ceb0e09e42dbc579b92dda4a9301a756af0c738223a23487"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-pp311-pypy311_pp73-manylinux2010_i686.manylinux_2_12_i686.manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "81019ae1392c506bf96aed5402302c7c",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 421476,
+        "upload_time": "2026-05-11T19:54:17",
+        "upload_time_iso_8601": "2026-05-11T19:54:17.709796Z",
+        "url": "https://files.pythonhosted.org/packages/c8/3b/68c4fe8a551d3f47ed75ddcf15dc7c777bb9d869fc0e0f5b7cacc9f158f5/backports_zstd-1.5.0-pp311-pypy311_pp73-manylinux2010_i686.manylinux_2_12_i686.manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "a84dab5dcd6ab9a7ac02ec42c4507211da7dadb9498abb655115c296077e2b8b",
+          "md5": "6c0f67efd54573b688dc197883779f20",
+          "sha256": "012d88a9ae08f331e1adc03dfbda4ff2ae7f76ea62455975827b215677a11aec"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-pp311-pypy311_pp73-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "6c0f67efd54573b688dc197883779f20",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 395020,
+        "upload_time": "2026-05-11T19:54:19",
+        "upload_time_iso_8601": "2026-05-11T19:54:19.566512Z",
+        "url": "https://files.pythonhosted.org/packages/a8/4d/ab5dcd6ab9a7ac02ec42c4507211da7dadb9498abb655115c296077e2b8b/backports_zstd-1.5.0-pp311-pypy311_pp73-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "1718302fc6d39d70251f12614c2aa2dd57409f4504e54f05b015412a88973d3c"
+        },
+        "digests": {
+          "blake2b_256": "55aaec512a0d14552bbb4e75693f7065434b865956abd045ceb67f0574146241",
+          "md5": "11f96cfc5e84cb87f7f46444a86e830d",
+          "sha256": "cbb7d79f8e43b6e0e17616961e425b9f8b32d9933e1db69242baa6e21f44a978"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-pp311-pypy311_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "11f96cfc5e84cb87f7f46444a86e830d",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 414985,
+        "upload_time": "2026-05-11T19:54:21",
+        "upload_time_iso_8601": "2026-05-11T19:54:21.136355Z",
+        "url": "https://files.pythonhosted.org/packages/55/aa/ec512a0d14552bbb4e75693f7065434b865956abd045ceb67f0574146241/backports_zstd-1.5.0-pp311-pypy311_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "4d28118cad1d6a8d3860e2cfb79a6e249df050e4cd490b59a12d0c360afb2295"
+        },
+        "digests": {
+          "blake2b_256": "aa31759d077aa680555e17c9d2bb09edf4c3428d895fe5d35a8df67684401b84",
+          "md5": "67c3d678837f4ade241e84e3b59ee1fa",
+          "sha256": "6172dcdd664ef243e55a35e6b45f1c866767c61043f0ddcd908abd14df662065"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0-pp311-pypy311_pp73-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "67c3d678837f4ade241e84e3b59ee1fa",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": "<3.14,>=3.10",
+        "size": 300853,
+        "upload_time": "2026-05-11T19:54:23",
+        "upload_time_iso_8601": "2026-05-11T19:54:23.100093Z",
+        "url": "https://files.pythonhosted.org/packages/aa/31/759d077aa680555e17c9d2bb09edf4c3428d895fe5d35a8df67684401b84/backports_zstd-1.5.0-pp311-pypy311_pp73-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "d405480d439b482edf59b786bc19b474d990c61942e372f5de3dc14acac8154d",
+          "md5": "a285106b38f25d7cfb46b78c7915b1da",
+          "sha256": "a5e622a82eb183b4fbe18032755ce0a15fa9a82f2adb9b621620b91247aaedb7"
+        },
+        "downloads": -1,
+        "filename": "backports_zstd-1.5.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "a285106b38f25d7cfb46b78c7915b1da",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": "<3.14,>=3.10",
+        "size": 998556,
+        "upload_time": "2026-05-11T19:54:24",
+        "upload_time_iso_8601": "2026-05-11T19:54:24.923990Z",
+        "url": "https://files.pythonhosted.org/packages/d4/05/480d439b482edf59b786bc19b474d990c61942e372f5de3dc14acac8154d/backports_zstd-1.5.0.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "vulnerabilities": []
+  },
+  "registro": {
+    "name": "backports-zstd",
+    "version": "1.5.0",
+    "profiles": [
+      "base",
+      "native-parallax"
+    ],
+    "lock_hashes": [
+      "0075195c79c0508bc7313a3402b187bd9d27d4f9a376e8e2caac0fc2baeacbdf",
+      "012d88a9ae08f331e1adc03dfbda4ff2ae7f76ea62455975827b215677a11aec",
+      "02a57ee8598dd863c0b11c7af00042ce6bc045bf6f4249fa4c322c62614ca1fd",
+      "0379c66510681a6b2780d3f3ef2cff54d01204b52448d64bde1855d40f856a04",
+      "09045a00d9dad12dab49e029b26c197637b882cf4adc737a373404ba2aaabbca",
+      "0c473387025e233d123f401d09a17a57e0b9af2ec2423aae7f50f1c806887cb3",
+      "0ca2d4ac4901eada2cfb86fda692e5d4a1e09485d9f2ec5777dc6cd3154b3b46",
+      "0fab15e6895bef621041dd82d6306ffa24889257dd902c4b98b88e4260b3465d",
+      "11c694c9eef69c19a52df94466d4fd5c8b1bdfbaad350e95adc883b40d8b3be2",
+      "1277c07ff2d731586aa05aebd946a1b30184620d886a735dd5d5bf94a4a1061e",
+      "1858cacdb3e50105a1b60acdc3dd5b18650077d12dce243e19d5c88e8172bd71",
+      "1a68ab446d007d34e12f5a812e6f7d1c120a3d15cb5d4e62b7568926a6da6fb7",
+      "204f00d62e95aab987c7c019452b2373bdefb17252443765f2ede7f15b6e669a",
+      "20796211a623ec6e0061cef4d7cca760e9e0a0a951bb30dc9ba89ed4a3fea5e4",
+      "2106309071f279b38d3663c55c7fed192733b4f332b50eb3fa707e54bad6967a",
+      "264a66137555bb4648f7e64cfc514d820758072684f373269fcdd2e8d4a90306",
+      "2ac2b3895fc9b1f0b0e71bffa179b48930dc27643b7e4885869afd295e7dfe1e",
+      "2b65f37ddd375114dbf84658e7dd168e10f5a93394940bfefa7fafc2d3234450",
+      "2c77c0d4c330afd26d2a98f3d689ab922ec3f046014a1614ddcaad437666ac05",
+      "2f55d70df44f49d599e20033013bc1ae705202735c45d4bca8eb963b225e15fd",
+      "2ffde637b6d0082f1c3356657002469cf199c7c12d50d9822a55b13425c778d3",
+      "305d2e4ae9a595d0fd9d5bea5a7a2163306c6c4dcc5eec35ecd5008219d4580e",
+      "3aa10e77c0e712d2dfb950910b50591c2fb11f0f1328814e23acc0b4950766df",
+      "3c0353e66942afbd45518788cfbd1e9e117828ceb390fa50517f46f291850d8e",
+      "4080bb9c8a51bb2bf8caf8018d78278cd49eb924cb06a54f56a411095e2ac912",
+      "41b23cbd72f503aedcaaaa23d55d2d98d449e5938154d2b3f57832c73b286cee",
+      "4cf8355cdfa7a2cba9c51655d56e6be39c751799286b142640be30fef2301a70",
+      "4fae7825dde4f81c28b4c66b1e997f893e296c3f1668351952b3ed085eb9f8cd",
+      "518b2ef54ce0fee6d29379cfd64ef66e639456f1b18943466e929b19677f135f",
+      "5232cd2a58c60da4ceb0e09e42dbc579b92dda4a9301a756af0c738223a23487",
+      "56fffa80be74cb11ac843333bbdc56e466c87967706886b3efd6b16d83830d90",
+      "572c76832e9a24da4084befa52c23f4c03fede2aa250ae6250cbc5a11b980f69",
+      "5737402c29b2bd5bc661d4cde08aed531ed326f2b59a7ad98dc07650dc99a2c9",
+      "5e24ee1e1bbb4549a2ad63695b4a5776596aa171fdaf7c1e178e61e351faf0a9",
+      "5e8b8251eec80e67e30ec79dfc5b3b1ada069b9ac48b56b102f3e2c6f8281062",
+      "6172dcdd664ef243e55a35e6b45f1c866767c61043f0ddcd908abd14df662065",
+      "624825b9c290e6089cd9955d88da04b085528fe213adf3e4e8be5c0fffef6c65",
+      "627973d4375a42500a66cc2ea912f6223249a6cdfeb56cc340b0d20b5a3475d0",
+      "663128370bbc2ebcc436b8977bc434a7bf29919d92d91fee05ed6fb0fa807646",
+      "673a1e5fdaa6cb0c7a967eb33066b6dd564871b3498a93e11e2972998047d11f",
+      "6bb2f2d2c07358edeaa251cf804b993e9f0d5d93af8a7ea2414d80ff3c105e95",
+      "6cd7f6c33afd89354f74469e315e72754e3040f91f7b685061e225d9e36e3e8e",
+      "7088a75f96d8f6b0d3523ec3a99d1472ce03c3524b2f7b485b80e115ef20055f",
+      "73ff4ceb7e28538455e0a44f53e05a731bbdb9bfe2cab4a1637dd1f0093732e3",
+      "76b7314ca9a253171e3e9524960e9e6411997323cf10aecbbc330faa7a90278d",
+      "775ad82d268923639bc924013fc61561df376c148506b241f0f80718b5bb3a2f",
+      "78cbfd061255fef6de5070a54e0f9c00e8aabad5c99dd2ad884a3a7d1acc09ae",
+      "7b5798b20ffff71ee4620a01f56fe0b50271724b4251db08c90a069446cc4752",
+      "7c7474b291e264c9609358d3875cf539623f7a65339c2b533020992b1a4c095b",
+      "8b4e17632759a45a7d0c4cf31968d8d033eefbe1a3d81d8aaf519558371c3359",
+      "8c077639e99de02a679dca9c6a189f60a76e7d0096977c0ebd070c31de8df57a",
+      "93d306300d25e59f1cbe98cda494bf295be03a20e8b2c5602ee5ddc03ded29f2",
+      "9410bcbcd3afd787a15a276d68f954d1703788c780faa421183a61d39da8b862",
+      "96709d27d406008575ef759405169d538040156704b457d8c0ac035127a46b67",
+      "9685586eb67fa2e59eab8027d48e8275ce90e404b6dc737b508f741853ba6cb7",
+      "97f4d29e99538b11313cbc7a6d9b3c2ce0d69fdc497699ab74953d0d5949ab88",
+      "9f4fe3fd82c8c6e8a9fdc5c71f92f9fe2442d02e7f59fddef25a955e189e3f38",
+      "a5e622a82eb183b4fbe18032755ce0a15fa9a82f2adb9b621620b91247aaedb7",
+      "a8b096e0383a3bcab34f8c97b79e1a52051189d11258bbc2bc1145997a15dd1d",
+      "a9526d69c8fbef03e04d74b33946e23f806399cb49e51550bb21d757fb2ce869",
+      "ab3430ab4d4ac3fb1bc1e4174d137731e51363b6abd5e51a1599690fe9c7d61d",
+      "aff334c7c38b4aea2a899f3138a99c1d58f0686ad7815c74bff506ecf4333296",
+      "b1d0bf16bba86b1071731ced389f184e8de61c1afcafa584244f7f726632f92f",
+      "b82506a4da0977754335c727752411bbba1fe476a8662d96161218f275fba859",
+      "b932834c4d85360f46d1e7fbf3eee1e26ba594e0eb5c3ee1281e89bc1d48d06f",
+      "bb73c22444617bc5a3abf32dd27b3f2085898cfe3b95e6855300e9189898a3bd",
+      "bdbc75d1f54df70b65bcfbc8aa0cac21475f79665bb045960af606dc07b56090",
+      "c01d377c1489cb2230bf6a9ff01c73c42863cc96ee648c49923d4f6d4ea4e2d5",
+      "c1ea900765329a515020e4e66c65a826657cc1f110770cac3f71ec01b43f2d25",
+      "c3712300b18f9d07f788b03594b2f34dfad89d77df96938a640c5007522a6b69",
+      "c56c11eb3173d540e1fb0216f7ab477cbd3a204eca41f5f329059ee8a5d2ad47",
+      "c71dfbeced720326a8917a6edf921c568dc2396228c6432205c6d7e7fe7f3707",
+      "c737c1cb4a10c2d0f6cba9a347522858094f0a737b4558c67a777bcaa4a795cd",
+      "c8f0967bf8d806b250fb1e905a6b8190e7ae83656d5308989243f84e01fa3774",
+      "cb89f554abcebcb2c487024e63be8059083775c5fd351fec0cc2dc3e9f528714",
+      "cbb7d79f8e43b6e0e17616961e425b9f8b32d9933e1db69242baa6e21f44a978",
+      "ccffc0a1974ecc2cc42afa4c15f56d036a4b2bae0abc46e6ba9b3358d9b1c037",
+      "e2802899ba4ef1a062ffe4bb1292c5df32011a54b4c3004c54f46ec975f39554",
+      "e51edd66db6855bee020c951ca5c2e816777bfe77f87742fbbfae9a32d482fec",
+      "e7c0372fa036751109604c70a8c87e59faaacc195d519c8cb9e0e527ee2b5478",
+      "ea969758af743000d822fc3a69dc9de059bbbb8d07d2f13e06ff49ac63cce74f",
+      "ebfbf7307d618d68deef905d3d6655339d4ce187e176023bff8fbd44ec1e20d0",
+      "ef98f632026aa8e6ce05d786977092798efbe78677aa71219f22d31787809c90",
+      "f334dd17ffead361aa9090e40151bd123507ce213a62733121b7145c6711cbde",
+      "f7de15f3871d21d6e761c5a309618b069fee5f225e64e4406956ac0209dc6917",
+      "fbaa5502617dc4f04327c7a2951f0fcdca7aaef93ddf32c15dc8b620208174fa"
+    ],
+    "retrieved_at": "2026-11-28T12:09:54+00:00",
+    "pypi_info": {
+      "license": null,
+      "license_expression": "PSF-2.0",
+      "classifiers_license": [],
+      "classifiers_all": [
+        "Development Status :: 5 - Production/Stable",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Topic :: System :: Archiving :: Compression"
+      ],
+      "requires_python": "<3.14,>=3.10",
+      "project_urls": {
+        "Homepage": "https://github.com/rogdham/backports.zstd",
+        "Source": "https://github.com/rogdham/backports.zstd"
+      },
+      "home_page": null,
+      "summary": "Backport of compression.zstd",
+      "author": "Rogdham <contact@rogdham.net>"
+    },
+    "artifact_hash_matched_lock": true,
+    "artifacts_tried": [
+      "backports_zstd-1.5.0-cp311-cp311-win_amd64.whl"
+    ],
+    "artifact_attempts": [
+      {
+        "filename": "backports_zstd-1.5.0-cp311-cp311-win_amd64.whl",
+        "url": "https://files.pythonhosted.org/packages/1d/1b/df94ad1cb79705d717f7e1063da642c538a6d7ce6443c8e60355fa507ea4/backports_zstd-1.5.0-cp311-cp311-win_amd64.whl",
+        "packagetype": "bdist_wheel",
+        "size": 314829,
+        "sha256_pypi": "e7c0372fa036751109604c70a8c87e59faaacc195d519c8cb9e0e527ee2b5478",
+        "sha256_verified": "e7c0372fa036751109604c70a8c87e59faaacc195d519c8cb9e0e527ee2b5478",
+        "sha256_matches_pypi": true,
+        "sha256_in_lock": true
+      }
+    ],
+    "artifact": {
+      "filename": "backports_zstd-1.5.0-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/1d/1b/df94ad1cb79705d717f7e1063da642c538a6d7ce6443c8e60355fa507ea4/backports_zstd-1.5.0-cp311-cp311-win_amd64.whl",
+      "packagetype": "bdist_wheel",
+      "size": 314829,
+      "sha256_pypi": "e7c0372fa036751109604c70a8c87e59faaacc195d519c8cb9e0e527ee2b5478",
+      "sha256_verified": "e7c0372fa036751109604c70a8c87e59faaacc195d519c8cb9e0e527ee2b5478",
+      "sha256_matches_pypi": true,
+      "sha256_in_lock": true
+    },
+    "license_texts_extracted": {
+      "backports_zstd-1.5.0-cp311-cp311-win_amd64.whl::backports_zstd-1.5.0.dist-info/licenses/LICENSE.txt": {
+        "saved_as": "backports_zstd-1.5.0.dist-info_licenses_LICENSE.txt",
+        "sha256": "b0e25a78cffb43f4d92de8b61ccfa1f1f98ecbc22330b54b5251e7b6ba010231",
+        "bytes": 13804,
+        "from_artifact": "backports_zstd-1.5.0-cp311-cp311-win_amd64.whl",
+        "artifact_sha256": "e7c0372fa036751109604c70a8c87e59faaacc195d519c8cb9e0e527ee2b5478"
+      },
+      "backports_zstd-1.5.0-cp311-cp311-win_amd64.whl::backports_zstd-1.5.0.dist-info/licenses/LICENSE_zstd.txt": {
+        "saved_as": "backports_zstd-1.5.0.dist-info_licenses_LICENSE_zstd.txt",
+        "sha256": "836cbda972f74261a12b706adaa7c73daea536ea9640c9a0dcb77b68105be051",
+        "bytes": 1761,
+        "from_artifact": "backports_zstd-1.5.0-cp311-cp311-win_amd64.whl",
+        "artifact_sha256": "e7c0372fa036751109604c70a8c87e59faaacc195d519c8cb9e0e527ee2b5478"
+      }
+    },
+    "license_texts_expected_but_missing": false
+  }
+}

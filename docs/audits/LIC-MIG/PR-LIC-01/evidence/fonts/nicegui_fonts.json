@@ -1,0 +1,178 @@
+[
+  {
+    "file": "0c19a63c7528cc1a.woff2",
+    "bytes": 128616,
+    "sha256": "4a4dbc62fa335e411b94a532be091c58c0c0c4fa731339f11722577d3cf6443b",
+    "family": "Material Icons",
+    "subfamily": "Regular",
+    "version": "Version 1.017",
+    "copyright": "Copyright 2018 Google, Inc. All Rights Reserved.",
+    "license_url": null,
+    "vendor": "\u0000\u0000\u0000\u0000"
+  },
+  {
+    "file": "11995e935aba4c35.woff2",
+    "bytes": 1580,
+    "sha256": "6f612fa0695439e4667b655620581fcd62568aecac5f5b8d60d183a350ae97ba",
+    "family": "Roboto",
+    "subfamily": "Regular",
+    "version": "Version 3.009; 2024",
+    "copyright": "Copyright 2011 The Roboto Project Authors (https://github.com/googlefonts/roboto-classic)",
+    "license_url": "https://openfontlicense.org",
+    "vendor": "GOOG"
+  },
+  {
+    "file": "1e891d4a2a7f2f96.woff2",
+    "bytes": 135984,
+    "sha256": "d31bfb81d56e790e0d9e2fa00b83df8f7159f9063114cdc014859b1d483956c8",
+    "family": "Material Icons Sharp",
+    "subfamily": "Regular",
+    "version": "2022-08-02T22:01:04.450499",
+    "copyright": "Copyright 2019 Google LLC. All Rights Reserved.",
+    "license_url": null,
+    "vendor": "????"
+  },
+  {
+    "file": "2474057f3040a08c.woff2",
+    "bytes": 16548,
+    "sha256": "4716e88b8af5262c45da9faaaf84520391b762f6e5a676000248c7c76163041a",
+    "family": "Roboto",
+    "subfamily": "Regular",
+    "version": "Version 3.009; 2024",
+    "copyright": "Copyright 2011 The Roboto Project Authors (https://github.com/googlefonts/roboto-classic)",
+    "license_url": "https://openfontlicense.org",
+    "vendor": "GOOG"
+  },
+  {
+    "file": "2af55f54d9fac778.woff2",
+    "bytes": 173620,
+    "sha256": "c948f1263341699b3c1e9c55d8d0f3e446669d0f2b9d55494c6169222c0243a6",
+    "family": "Material Icons Round",
+    "subfamily": "Regular",
+    "version": "2022-08-02T22:00:44.367947",
+    "copyright": "Copyright 2019 Google LLC. All Rights Reserved.",
+    "license_url": null,
+    "vendor": "????"
+  },
+  {
+    "file": "3a20f367986a2130.woff2",
+    "bytes": 9276,
+    "sha256": "a6398242a7e9ace573c6d1ba48ba48b9f72589f6af5b9efb787385e4c75f33bc",
+    "family": "Roboto",
+    "subfamily": "Regular",
+    "version": "Version 3.009; 2024",
+    "copyright": "Copyright 2011 The Roboto Project Authors (https://github.com/googlefonts/roboto-classic)",
+    "license_url": "https://openfontlicense.org",
+    "vendor": "GOOG"
+  },
+  {
+    "file": "5d016cfdc2ac4298.woff2",
+    "bytes": 14052,
+    "sha256": "e6d326ead7478d03d634b4fc2906e5911f09914da9d01985771015a9d03a135e",
+    "family": "Roboto",
+    "subfamily": "Regular",
+    "version": "Version 3.009; 2024",
+    "copyright": "Copyright 2011 The Roboto Project Authors (https://github.com/googlefonts/roboto-classic)",
+    "license_url": "https://openfontlicense.org",
+    "vendor": "GOOG"
+  },
+  {
+    "file": "5f5fa57fb07d7e44.woff2",
+    "bytes": 34668,
+    "sha256": "8139a402ce239285716452e5668bce94bbf240b433fcfa2e154aa7e4d240445b",
+    "family": "Roboto",
+    "subfamily": "Regular",
+    "version": "Version 3.009; 2024",
+    "copyright": "Copyright 2011 The Roboto Project Authors (https://github.com/googlefonts/roboto-classic)",
+    "license_url": "https://openfontlicense.org",
+    "vendor": "GOOG"
+  },
+  {
+    "file": "935e23d0cd87ac6f.woff2",
+    "bytes": 312920,
+    "sha256": "34a340a09fa1c7530f2f2d7e509c62ac8fc3df0ed94b91f13cac7f2c115d460a",
+    "family": "Material Symbols Outlined",
+    "subfamily": "Regular",
+    "version": "Version 2.911",
+    "copyright": "Copyright 2025 Google LLC.  All Rights Reserved.",
+    "license_url": null,
+    "vendor": "GOOG"
+  },
+  {
+    "file": "a35a05f781345176.woff2",
+    "bytes": 155276,
+    "sha256": "35dca8a7145a17c8d1306f25a3ca091578e15396f0b22d61eb8e73262ac75577",
+    "family": "Material Icons Outlined",
+    "subfamily": "Regular",
+    "version": "2022-08-02T22:00:24.736834",
+    "copyright": "Copyright 2019 Google LLC. All Rights Reserved.",
+    "license_url": null,
+    "vendor": "????"
+  },
+  {
+    "file": "b4ccbbab3fd3e3be.woff2",
+    "bytes": 18852,
+    "sha256": "6d67ed802745c658eaf443bfe9d0e28595959defb07f544b2c8f8211c7ff8b35",
+    "family": "Roboto",
+    "subfamily": "Regular",
+    "version": "Version 3.009; 2024",
+    "copyright": "Copyright 2011 The Roboto Project Authors (https://github.com/googlefonts/roboto-classic)",
+    "license_url": "https://openfontlicense.org",
+    "vendor": "GOOG"
+  },
+  {
+    "file": "bb828b03a1f11130.woff2",
+    "bytes": 297684,
+    "sha256": "0f551c738277c9b9b87c5e0ea58c8a4ab2133eb58212ff8affc3d00a27a6f8fc",
+    "family": "Material Symbols Sharp",
+    "subfamily": "Regular",
+    "version": "Version 2.911",
+    "copyright": "Copyright 2025 Google LLC.  All Rights Reserved.",
+    "license_url": null,
+    "vendor": "GOOG"
+  },
+  {
+    "file": "d3527d1a9c475ae3.woff2",
+    "bytes": 35600,
+    "sha256": "29ba06d53c9bab39cf472bf4b33c16961b9537c4393e8cf57f9436a0f7e8d1eb",
+    "family": "Roboto",
+    "subfamily": "Regular",
+    "version": "Version 3.009; 2024",
+    "copyright": "Copyright 2011 The Roboto Project Authors (https://github.com/googlefonts/roboto-classic)",
+    "license_url": "https://openfontlicense.org",
+    "vendor": "GOOG"
+  },
+  {
+    "file": "d4e71f49ac06b20e.woff2",
+    "bytes": 361320,
+    "sha256": "21e31276451306eb99b5f75e5e5e910e4a0e4bb9a4ee9984faa386e44333596a",
+    "family": "Material Symbols Rounded",
+    "subfamily": "Regular",
+    "version": "Version 2.911",
+    "copyright": "Copyright 2025 Google LLC.  All Rights Reserved.",
+    "license_url": null,
+    "vendor": "GOOG"
+  },
+  {
+    "file": "f0862fc752441e3c.woff2",
+    "bytes": 30416,
+    "sha256": "f01ead3afd8bb988e344caf10203ba085ed13cf8ece46295968a3eb17916528a",
+    "family": "Roboto",
+    "subfamily": "Regular",
+    "version": "Version 3.009; 2024",
+    "copyright": "Copyright 2011 The Roboto Project Authors (https://github.com/googlefonts/roboto-classic)",
+    "license_url": "https://openfontlicense.org",
+    "vendor": "GOOG"
+  },
+  {
+    "file": "f3c560102a6d7def.woff2",
+    "bytes": 21440,
+    "sha256": "31f7abb9248fed6be3da749d07f03592f815c5ef07ebc9afe62402cbf753ff1b",
+    "family": "Roboto",
+    "subfamily": "Regular",
+    "version": "Version 3.009; 2024",
+    "copyright": "Copyright 2011 The Roboto Project Authors (https://github.com/googlefonts/roboto-classic)",
+    "license_url": "https://openfontlicense.org",
+    "vendor": "GOOG"
+  }
+]
