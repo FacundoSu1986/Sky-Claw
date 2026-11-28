@@ -1,0 +1,3481 @@
+{
+  "schema_version": 1,
+  "generated_from_baseline": "b896517af316a5807306b956d327c179335d3d1c",
+  "verified_not_redistributed_pypi": [
+    "lxml",
+    "lxml-html-clean",
+    "simple-websocket",
+    "sv-ttk",
+    "texttable"
+  ],
+  "documents": [
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "sha256": "47db9932a2963a9800aa257b83ea77b6a23aebba0ea375ba51535c1bc60c0620",
+      "bytes": 12951,
+      "referenced_by": [
+        "root_notice"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/Apache-2.0_cb5e8e7e5f4a.txt",
+      "sha256": "cb5e8e7e5f4a3988e1063c142c60dc2df75605f4c46515e776e3aca6df976e14",
+      "bytes": 11325,
+      "referenced_by": [
+        "standard:Apache-2.0",
+        "aiofiles==24.1.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/MPL-2.0_f3f53adcecaa.txt",
+      "sha256": "f3f53adcecaa48d73a66e238fa5ba906cb41876783b45d28a1346b3142eebd9a",
+      "bytes": 16784,
+      "referenced_by": [
+        "standard:MPL-2.0",
+        "bidict==0.23.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/aiofiles_licenses__NOTICE_104c58d1d450.txt",
+      "sha256": "104c58d1d450bd6474c09d8b64bc0182733a60ac3d8c253e334cde8294520ff1",
+      "bytes": 55,
+      "referenced_by": [
+        "aiofiles==24.1.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/aiohappyeyeballs_LICENSE_3b2f81fe21d1.txt",
+      "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf",
+      "bytes": 13936,
+      "referenced_by": [
+        "aiohappyeyeballs==2.6.1",
+        "typing-extensions==4.15.0",
+        "native:cpython-runtime@3.11.9"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/aiohttp_licenses__LICENSE_2e4be5fc6c4c.txt",
+      "sha256": "2e4be5fc6c4c72a466fcb665d726e049a6891981fe536c4f04b6366749461d23",
+      "bytes": 11313,
+      "referenced_by": [
+        "aiohttp==3.14.4",
+        "multidict==6.9.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/aiohttp_licenses__vendor__llhttp__LICENSE_628168d68bb5.txt",
+      "sha256": "628168d68bb5a8a17e0bbefb3bd74e326e1edc20583d76f52f457c82c921867d",
+      "bytes": 1069,
+      "referenced_by": [
+        "aiohttp==3.14.4"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/aiosignal_licenses__LICENSE_6fd5243e92dd.txt",
+      "sha256": "6fd5243e92dd7f98ec69c7ac377728e74905709ff527a5bf98d6d0263c04f5b6",
+      "bytes": 11332,
+      "referenced_by": [
+        "aiosignal==1.4.0",
+        "frozenlist==1.8.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/aiosqlite_licenses__LICENSE_ab0c171dc3ef.txt",
+      "sha256": "ab0c171dc3ef8bf325a84bb77d855421f2611335ddf6e08816b2922c4edc0f76",
+      "bytes": 1071,
+      "referenced_by": [
+        "aiosqlite==0.22.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/annotated-doc_licenses__LICENSE_fff170779a6a.txt",
+      "sha256": "fff170779a6acbf65abdb405c087f1cee1786691e4a96a4034517e4a504a0cdf",
+      "bytes": 1086,
+      "referenced_by": [
+        "annotated-doc==0.0.4"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/annotated-types_licenses__LICENSE_fe1049884b1a.txt",
+      "sha256": "fe1049884b1a0d9342901e88e07f32925d24b3121d9972b6a6805fb9824b095d",
+      "bytes": 1083,
+      "referenced_by": [
+        "annotated-types==0.7.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/anyio_licenses__LICENSE_5361ac9dc58f.txt",
+      "sha256": "5361ac9dc58f2ef5fd2e9b09c68297c17f04950909bbc8023bdb82eacf22c2b0",
+      "bytes": 1081,
+      "referenced_by": [
+        "anyio==4.14.2"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/attrs_licenses__LICENSE_882115c95dfc.txt",
+      "sha256": "882115c95dfc2af1eeb6714f8ec6d5cbcabf667caff8729f42420da63f714e9f",
+      "bytes": 1109,
+      "referenced_by": [
+        "attrs==26.1.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/backports-tarfile_LICENSE_86da0f01aeae.txt",
+      "sha256": "86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741",
+      "bytes": 1023,
+      "referenced_by": [
+        "backports-tarfile==1.2.0",
+        "jaraco-classes==3.4.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/backports-zstd_licenses__LICENSE_b0e25a78cffb.txt",
+      "sha256": "b0e25a78cffb43f4d92de8b61ccfa1f1f98ecbc22330b54b5251e7b6ba010231",
+      "bytes": 13804,
+      "referenced_by": [
+        "backports-zstd==1.5.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/backports-zstd_licenses__LICENSE_zstd_f89ef2b03b52.txt",
+      "sha256": "f89ef2b03b52ad7c3342aeb2e1c961737f9de4892d41b1d083b0060c6191e1bf",
+      "bytes": 1724,
+      "referenced_by": [
+        "backports-zstd==1.5.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/brotli_licenses__LICENSE_3d180008e369.txt",
+      "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94",
+      "bytes": 1084,
+      "referenced_by": [
+        "brotli==1.2.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/certifi_licenses__LICENSE_e93716da6b9c.txt",
+      "sha256": "e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7",
+      "bytes": 989,
+      "referenced_by": [
+        "certifi==2026.10.19"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/cffi_licenses__AUTHORS_2a67a60bbfb3.txt",
+      "sha256": "2a67a60bbfb33759d67d645ff131b8e6d6bc4cafc232d751fcac3eda4d314cc8",
+      "bytes": 208,
+      "referenced_by": [
+        "cffi==2.0.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/cffi_licenses__LICENSE_5ba24ddc5706.txt",
+      "sha256": "5ba24ddc57067f9249add644c3afc41a5d6dc37e23433ef759d95df370b0af63",
+      "bytes": 1123,
+      "referenced_by": [
+        "cffi==2.0.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/click_licenses__LICENSE_9a8ad106a394.txt",
+      "sha256": "9a8ad106a394e853bfe21f42f4e72d592819a22805d991b5f3275029292b658d",
+      "bytes": 1475,
+      "referenced_by": [
+        "click==8.3.3"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/colorama_licenses__LICENSE_cac35c02686e.txt",
+      "sha256": "cac35c02686e5d04a5a7140bfb3b36e73aed496656e891102e428886d7930318",
+      "bytes": 1491,
+      "referenced_by": [
+        "colorama==0.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/comtypes_licenses__LICENSE_b3ee7a0e4b0d.txt",
+      "sha256": "b3ee7a0e4b0d5645e96a06c8ff6687c642c5bddeb55943f4a9c84f1d248304a8",
+      "bytes": 1249,
+      "referenced_by": [
+        "comtypes==1.4.16"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/cryptography_licenses__LICENSE_3e0c7c091a94.txt",
+      "sha256": "3e0c7c091a948b82533ba98fd7cbb40432d6f1a9acbf85f5922d2f99a93ae6bb",
+      "bytes": 197,
+      "referenced_by": [
+        "cryptography==50.0.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/cryptography_licenses__LICENSE_602c4c7482de.txt",
+      "sha256": "602c4c7482de6479dd2e9793cda275e5e63d773dacd1eca689232ab7008fb4fb",
+      "bytes": 1532,
+      "referenced_by": [
+        "cryptography==50.0.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/cryptography_licenses__LICENSE_aac73b3148f6.txt",
+      "sha256": "aac73b3148f6d1d7111dbca32099f68d26c644c6813ae1e4f05f6579aa2663fe",
+      "bytes": 11360,
+      "referenced_by": [
+        "cryptography==50.0.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/defusedxml_LICENSE_b80ce9da8c42.txt",
+      "sha256": "b80ce9da8c42a1f91079627fbbe2bf27210ae108a0ffe5f077d5b08e076c24c8",
+      "bytes": 2409,
+      "referenced_by": [
+        "defusedxml==0.7.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/docutils_licenses__COPYING_6ab4f27c76c7.txt",
+      "sha256": "6ab4f27c76c74f96e5e692da5944a6f82968f3bddaac5660a4aa723e70eb5d8f",
+      "bytes": 6075,
+      "referenced_by": [
+        "docutils==0.22.4"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/docutils_licenses__licenses__BSD-0-Clause_42ac50251ab8.txt",
+      "sha256": "42ac50251ab8a6738f77d5707f2a788dbf3446a6ed68edecb6ac17489a78e163",
+      "bytes": 644,
+      "referenced_by": [
+        "docutils==0.22.4"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/docutils_licenses__licenses__BSD-2-Clause_b8f3b31a2f43.txt",
+      "sha256": "b8f3b31a2f4312401fe4122fe932a333ec0d7e47d849c02da0404e8048fe74d0",
+      "bytes": 1318,
+      "referenced_by": [
+        "docutils==0.22.4"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/docutils_licenses__licenses__gpl-3-0_e6037104443f.txt",
+      "sha256": "e6037104443f9a7829b2aa7c5370d0789a7bda3ca65a0b904cdc0c2e285d9195",
+      "bytes": 35150,
+      "referenced_by": [
+        "docutils==0.22.4"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/fastapi_licenses__LICENSE_4ec89ffc8148.txt",
+      "sha256": "4ec89ffc81485b97fec584b2d4a961032eeffe834453894fd9c1274906cc744e",
+      "bytes": 1086,
+      "referenced_by": [
+        "fastapi==0.136.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/font_cinzel_OFL_f2b3029aba64.txt",
+      "sha256": "f2b3029aba64c378bf0963b62945eee15e564fe4330b934c8f2eb058282b5e83",
+      "bytes": 4383,
+      "referenced_by": [
+        "font:cinzel"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/font_ebgaramond_OFL_0985066662eb.txt",
+      "sha256": "0985066662eb755ed3683ae5482a81a9195b49ce3f7e165cc2388b3dbece7dd7",
+      "bytes": 4398,
+      "referenced_by": [
+        "font:ebgaramond"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/font_notosansrunic_OFL_b0fbcb9eaf0f.txt",
+      "sha256": "b0fbcb9eaf0f5f415358bfefa5999ee75e18cde4a275b78285b2140a9e381865",
+      "bytes": 4381,
+      "referenced_by": [
+        "font:notosansrunic"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/font_splinesansmono_OFL_4abb88162e4c.txt",
+      "sha256": "4abb88162e4c0c5f9fc6c2f15d7085f7b7e27fd89f541a13488e1bcb829bde3f",
+      "bytes": 4403,
+      "referenced_by": [
+        "font:splinesansmono"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/googleapis-common-protos_licenses__LICENSE_cfc7749b96f6.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358,
+      "referenced_by": [
+        "googleapis-common-protos==1.75.0",
+        "propcache==0.4.1",
+        "python-multipart==0.0.32",
+        "yarl==1.25.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/grpcio_licenses__LICENSE_58c86a3f2b5c.txt",
+      "sha256": "58c86a3f2b5cca0ebdf9ed3e7f4e6dc38e3b38796d8c3dc92064c62a4e39d0dd",
+      "bytes": 30191,
+      "referenced_by": [
+        "grpcio==1.80.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/h11_licenses__LICENSE_37db5bb85926.txt",
+      "sha256": "37db5bb85926db28a427a25867f10b1232003aea1be69ccb851138adb8e6f361",
+      "bytes": 1124,
+      "referenced_by": [
+        "h11==0.16.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/httpcore_licenses__LICENSE_fdcb59154c74.txt",
+      "sha256": "fdcb59154c74cbaba16a11242f7740bea9f23d6feb5547917d8c5f94a80392a5",
+      "bytes": 1518,
+      "referenced_by": [
+        "httpcore==1.0.9"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/httptools_licenses__LICENSE_f4573e7cb767.txt",
+      "sha256": "f4573e7cb7676745fb5b8d36fa548aa93e391cfb6872ddacd65130c45ea6a92d",
+      "bytes": 1093,
+      "referenced_by": [
+        "httptools==0.7.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/httpx_licenses__LICENSE_4ec59d544f12.txt",
+      "sha256": "4ec59d544f12b5f539a3a716fd321ac58ccd8030b465221f2c880200cdf28d8d",
+      "bytes": 1508,
+      "referenced_by": [
+        "httpx==0.28.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/idna_licenses__LICENSE_1a9a4f0e3d47.txt",
+      "sha256": "1a9a4f0e3d479a27240ddd59a9137a66ab4a0f9dfdc8ca6188cc0bfd85187f04",
+      "bytes": 1541,
+      "referenced_by": [
+        "idna==3.15"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/ifaddr_LICENSE_8700856576ae.txt",
+      "sha256": "8700856576ae2bc80c63bc970250510d9213fb02fed006d5f22742c9ddde24d7",
+      "bytes": 1084,
+      "referenced_by": [
+        "ifaddr==0.2.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/importlib-metadata_licenses__LICENSE_458502e12d97.txt",
+      "sha256": "458502e12d97bbf64438606a20044aa85eb05fb0a8a807bb35dbec253fd1fc04",
+      "bytes": 10278,
+      "referenced_by": [
+        "importlib-metadata==8.7.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt",
+      "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551",
+      "bytes": 26530,
+      "referenced_by": [
+        "inflate64==1.0.4",
+        "multivolumefile==0.2.3",
+        "py7zr==1.1.3",
+        "pybcj==1.0.7",
+        "pyppmd==1.3.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/itsdangerous_LICENSE_63af09891b6b.txt",
+      "sha256": "63af09891b6be8ad1a4252ed43af0f4efba7fc948e228367bed7f3c5ae0b09d7",
+      "bytes": 1475,
+      "referenced_by": [
+        "itsdangerous==2.2.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/jaraco-context_licenses__LICENSE_9755a1851966.txt",
+      "sha256": "9755a18519666e5f0f4cae3daad3d7012bcae48a600b31237d75e9fe134e6683",
+      "bytes": 1076,
+      "referenced_by": [
+        "jaraco-context==6.1.2",
+        "zipp==3.23.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/jaraco-functools_licenses__LICENSE_5a57cb4db85e.txt",
+      "sha256": "5a57cb4db85e2a2dd88c290628908add57e3451449e0a9a71fdfb38776fd759d",
+      "bytes": 1076,
+      "referenced_by": [
+        "jaraco-functools==4.4.0",
+        "keyring==25.7.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/jinja2_licenses__LICENSE_3b49dcee4105.txt",
+      "sha256": "3b49dcee4105eb37bac10faf1be260408fe85d252b8e9df2e0979fc1e094437b",
+      "bytes": 1475,
+      "referenced_by": [
+        "jinja2==3.1.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/markdown2_LICENSE_f8c7c4d55440.txt",
+      "sha256": "f8c7c4d554409cf621b8d653dbfffb719745fd36f5c49b8305258649b403ef9c",
+      "bytes": 2313,
+      "referenced_by": [
+        "markdown2==2.5.5"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/markupsafe_licenses__LICENSE_489a8e110850.txt",
+      "sha256": "489a8e1108509ed98a37bb983e11e0f7e1d31f0bd8f99a79c8448e7ff37d07ea",
+      "bytes": 1475,
+      "referenced_by": [
+        "markupsafe==3.0.3"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/more-itertools_licenses__LICENSE_09f1c8c9e941.txt",
+      "sha256": "09f1c8c9e941af3e584d59641ea9b87d83c0cb0fd007eb5ef391a7e2643c1a46",
+      "bytes": 1053,
+      "referenced_by": [
+        "more-itertools==11.0.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/native_cpython_Doc_license_2b734ec5975b.txt",
+      "sha256": "2b734ec5975b21b29ae8b9756a00fc3dfe701abe51687cec4c98a21c51005bca",
+      "bytes": 53753,
+      "referenced_by": [
+        "native:cpython-runtime@3.11.9"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/native_libffi_LICENSE_67894089811f.txt",
+      "sha256": "67894089811f93fca47a76f85e017da6f8582d4ba0905963c6e0f1ad6df7a195",
+      "bytes": 1132,
+      "referenced_by": [
+        "native:libffi-embedded@3.4.x"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/native_openssl_LICENSE_7d5450cb2d14.txt",
+      "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a",
+      "bytes": 10175,
+      "referenced_by": [
+        "native:openssl-embedded@3.0.x"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/native_sqlite_LICENSE_9c6479123f32.txt",
+      "sha256": "9c6479123f32a1ed50d9a0af203dfe8972e65035b0cdeef436b5f8d0924517fe",
+      "bytes": 263,
+      "referenced_by": [
+        "native:sqlite-embedded@3.x"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/nicegui_LICENSE_41c065c20811.txt",
+      "sha256": "41c065c2081141886f7d3004e3cd4000c1507cc4bf37a063f12be1d53e9db272",
+      "bytes": 1072,
+      "referenced_by": [
+        "nicegui==3.12.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt",
+      "sha256": "432d0d58cee080068bbe05d71799e673f415e85c1cf87f209a847c0661d78338",
+      "bytes": 6890,
+      "referenced_by": [
+        "nicegui-vendored-frontend-assets"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__LICENSE_dc97d59562c7.txt",
+      "sha256": "dc97d59562c75c04557f1e9a68f3eae326699eb119d569cd4ed6a4eafe5f9abb",
+      "bytes": 45801,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__include__numpy__libdivide__LIC_fbc539f47d0c.txt",
+      "sha256": "fbc539f47d0cf83bc61378080fb873d5c14630126cacbfe754035c3926daa5ec",
+      "bytes": 1018,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__src__common__pythoncapi-compat_3f2c1ffa7638.txt",
+      "sha256": "3f2c1ffa76383a55ae0aac01c9737cd70050dff63e1f026694fbe9d662573c98",
+      "bytes": 690,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__src__highway__LICENSE_e340270d4f64.txt",
+      "sha256": "e340270d4f64384569a91d546acb5b094d69ce47f0c015db77abb74dc6f815af",
+      "bytes": 20785,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__src__multiarray__dragon4_LICEN_f7b14309e5f5.txt",
+      "sha256": "f7b14309e5f54e5022b26448eefd419988ada2aec01d3c1162d84a0ea8f21f2c",
+      "bytes": 1414,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__src__npysort__x86-simd-sort__L_211e7d737d61.txt",
+      "sha256": "211e7d737d6179a08f791ebb0a99897ce7cd2457410c542876d125576edfe910",
+      "bytes": 1514,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy___core__src__umath__svml__LICENSE_c17011467b4f.txt",
+      "sha256": "c17011467b4fe6e20fbfbeda4df09e58c2bca5480a063e55735a4000a379aad9",
+      "bytes": 1543,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__fft__pocketfft__LICENSE_a85ca13fdf90.txt",
+      "sha256": "a85ca13fdf90160b64a0698215868c13b74d835ad0a4e2ba44713b8c5058a056",
+      "bytes": 1498,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__linalg__lapack_lite__LICENSE_a14cc25e10d4.txt",
+      "sha256": "a14cc25e10d40a3aa705b7de2fb764a6535d8ee9b2db4e1724900585457dfd55",
+      "bytes": 2266,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__ma__LICENSE_05f3b8835198.txt",
+      "sha256": "05f3b88351988ecfad10abe92c0c50e5875c6452d5009a0084cc291551ffcca6",
+      "bytes": 1593,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__LICENSE_103166b62b80.txt",
+      "sha256": "103166b62b80443afb9eb3488e052ea06be0cff566b908f199e561fde49af19f",
+      "bytes": 3511,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__distributions__LICENSE_469778be8f33.txt",
+      "sha256": "469778be8f33d54e1bcaab28c281cc472916d2d273f835e55bc487d30503face",
+      "bytes": 2745,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__mt19937__LICENSE_0e111337b254.txt",
+      "sha256": "0e111337b25494a773106695f0e799f642b8567aaacca4f116a74a8177179156",
+      "bytes": 2926,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__pcg64__LICENSE_e7d4f4fb2035.txt",
+      "sha256": "e7d4f4fb20358f314210a892ae17351e04993813646f697ec387385ca2a36918",
+      "bytes": 1154,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__philox__LICENSE_6f5828a57223.txt",
+      "sha256": "6f5828a57223d4cc7f8ea505a2623e7b978b242752c1515e355f46ba2cec1800",
+      "bytes": 1509,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__sfc64__LICENSE_9d4098846018.txt",
+      "sha256": "9d4098846018319cd68e228ee6220361787f73bccbf00237a85e4fc9621b998f",
+      "bytes": 1226,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/numpy_licenses__numpy__random__src__splitmix64__LICENSE_268b0ca06759.txt",
+      "sha256": "268b0ca06759d31ea3ca68dd35f20e877916e927b1c2a835e4592a3c4354b1f9",
+      "bytes": 332,
+      "referenced_by": [
+        "numpy==2.4.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "bytes": 11357,
+      "referenced_by": [
+        "opentelemetry-api==1.45.2",
+        "opentelemetry-exporter-otlp-common==0.66b2",
+        "opentelemetry-exporter-otlp-proto-common==1.45.2",
+        "opentelemetry-exporter-otlp-proto-grpc==1.45.2",
+        "opentelemetry-proto==1.45.2",
+        "opentelemetry-sdk==1.45.2",
+        "opentelemetry-semantic-conventions==0.66b2",
+        "prometheus-client==0.25.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/orjson_licenses__LICENSE-APACHE_a60eea817514.txt",
+      "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+      "bytes": 10847,
+      "referenced_by": [
+        "orjson==3.11.9"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/orjson_licenses__LICENSE-MIT_23f18e03dc49.txt",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+      "bytes": 1023,
+      "referenced_by": [
+        "orjson==3.11.9"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/orjson_licenses__LICENSE-MPL-2_66a3107d5ad6.txt",
+      "sha256": "66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172",
+      "bytes": 16727,
+      "referenced_by": [
+        "orjson==3.11.9"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/pefile_LICENSE_b44409c067c6.txt",
+      "sha256": "b44409c067c6da52bfb54bb6624fb11a7b52157c3a13ae1400232f8196e86ad3",
+      "bytes": 1083,
+      "referenced_by": [
+        "pefile==2024.8.26"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/pillow_licenses__LICENSE_6644596ba12c.txt",
+      "sha256": "6644596ba12c005c174b7a03d86c2ffe5f3fa7ecdf37d9aa8f71f3516e57c7a2",
+      "bytes": 76888,
+      "referenced_by": [
+        "pillow==13.0.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/prometheus-client_licenses__NOTICE_4efa1874aeaa.txt",
+      "sha256": "4efa1874aeaa60f365f5797e617f1ff933e15e508eaf751e9848ed4413d7a7ae",
+      "bytes": 236,
+      "referenced_by": [
+        "prometheus-client==0.25.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/propcache_licenses__NOTICE_56d6ac6c8105.txt",
+      "sha256": "56d6ac6c8105c0a51304c21db060e361af9a8ea0af9a75c239c28b5d13693838",
+      "bytes": 609,
+      "referenced_by": [
+        "propcache==0.4.1",
+        "yarl==1.25.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/protobuf_LICENSE_6e5e117324af.txt",
+      "sha256": "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d",
+      "bytes": 1732,
+      "referenced_by": [
+        "protobuf==6.33.6"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/psutil_LICENSE_b89c063b3786.txt",
+      "sha256": "b89c063b3786e28e0c0a38f1931db61fed35e69dd2a2966fbecffee0f46c8d10",
+      "bytes": 1548,
+      "referenced_by": [
+        "psutil==7.2.2"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/pycparser_licenses__LICENSE_0c846399369e.txt",
+      "sha256": "0c846399369ea76ddd7b5c44fe6d16497415fcf015f5cbb508c24bf98b81c5b1",
+      "bytes": 1543,
+      "referenced_by": [
+        "pycparser==3.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/pycryptodomex_AUTHORS_1cb670b6cc5b.txt",
+      "sha256": "1cb670b6cc5bc3a1c38d7e12cdf944442ca790425cf2a628ffbe3012445fe1e4",
+      "bytes": 764,
+      "referenced_by": [
+        "pycryptodomex==3.23.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/pycryptodomex_LICENSE_4e04660d77c1.txt",
+      "sha256": "4e04660d77c1c64e89d79537919fb8240fa21484a7e3db29f358b2c7f84ea073",
+      "bytes": 2926,
+      "referenced_by": [
+        "pycryptodomex==3.23.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/pydantic-core_licenses__LICENSE_2afdd30d54b4.txt",
+      "sha256": "2afdd30d54b4d62b6f488a6bcc1546e84ec5061f13f4209c03d012348783795a",
+      "bytes": 1080,
+      "referenced_by": [
+        "pydantic-core==2.41.5"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/pydantic_licenses__LICENSE_a9e186f3ca16.txt",
+      "sha256": "a9e186f3ca16b5eef84318e7a701721351a00cb7b8ae3a4394b67b49e3529ef3",
+      "bytes": 1129,
+      "referenced_by": [
+        "pydantic==2.12.5"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/pygments_licenses__AUTHORS_0db603a5f449.txt",
+      "sha256": "0db603a5f4499f690c4425477ff664c166da325d3acc3b5a8d4de3db072443d0",
+      "bytes": 10873,
+      "referenced_by": [
+        "pygments==2.20.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/pygments_licenses__LICENSE_a9d66f1d526d.txt",
+      "sha256": "a9d66f1d526df02e29dce73436d34e56e8632f46c275bbdffc70569e882f9f17",
+      "bytes": 1331,
+      "referenced_by": [
+        "pygments==2.20.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/pyinstaller_licenses__COPYING_0598064c7d27.txt",
+      "sha256": "0598064c7d2718e38d7914a7d08343b2fa008e3bea9ebba2aa7a6ffa5900dd64",
+      "bytes": 32604,
+      "referenced_by": [
+        "pyinstaller==6.22.3"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/python-dotenv_licenses__LICENSE_80619b7049f0.txt",
+      "sha256": "80619b7049f08c81683ad0e01f08f257a840652dd71ee83146d36658c7d2c2b9",
+      "bytes": 1556,
+      "referenced_by": [
+        "python-dotenv==1.2.2"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/python-engineio_licenses__LICENSE_c9e97d3dbc1f.txt",
+      "sha256": "c9e97d3dbc1fbbcdb4f7808b282cd646db887aff4f5313fe6bbe8d4c31405a9c",
+      "bytes": 1082,
+      "referenced_by": [
+        "python-engineio==4.13.3",
+        "python-socketio==5.16.3"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/python-json-logger_LICENSE_18ea95179e3a.txt",
+      "sha256": "18ea95179e3a5e0e24eb6ce16c40fbfbe23133c2502933a2f75f8a3e1a055b54",
+      "bytes": 1329,
+      "referenced_by": [
+        "python-json-logger==3.3.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/python-json-logger_NOTICE_b9142715c199.txt",
+      "sha256": "b9142715c1990b0b88051d8020756f84a8bdc352a4888fef032ada95fc42b24e",
+      "bytes": 209,
+      "referenced_by": [
+        "python-json-logger==3.3.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/pywin32-ctypes_LICENSE_cc03ae891a36.txt",
+      "sha256": "cc03ae891a362c85d508a4e47af954314a2e4ccbd445140cb8dca7e2baee19f7",
+      "bytes": 1616,
+      "referenced_by": [
+        "pywin32-ctypes==0.2.3"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/pyyaml_licenses__LICENSE_8d3928f9dc44.txt",
+      "sha256": "8d3928f9dc4490fd635707cb88eb26bd764102a7282954307d3e5167a577e8a4",
+      "bytes": 1101,
+      "referenced_by": [
+        "pyyaml==6.0.3"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/rarfile_LICENSE_351350167805.txt",
+      "sha256": "351350167805c294c7b3e170081ce1265445c46fbeb3e999e13b616c90c64a20",
+      "bytes": 756,
+      "referenced_by": [
+        "rarfile==4.2"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/starlette_licenses__LICENSE_dcb95677a022.txt",
+      "sha256": "dcb95677a02240243187e964f941847d19b17821cf99e5afae684fab328c19bf",
+      "bytes": 1518,
+      "referenced_by": [
+        "starlette==1.3.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/tenacity_licenses__LICENSE_58d1e17ffe51.txt",
+      "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+      "bytes": 11357,
+      "referenced_by": [
+        "tenacity==9.1.4"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/tinycss2_licenses__LICENSE_6b94acee20ec.txt",
+      "sha256": "6b94acee20ec9f2709333134f3ba70322535fb420af0ce8c1455d9cbe297f1d5",
+      "bytes": 1534,
+      "referenced_by": [
+        "tinycss2==1.5.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/tomli-w_LICENSE_b80816b0d530.txt",
+      "sha256": "b80816b0d530b8accb4c2211783790984a6e3b61922c2b5ee92f3372ab2742fe",
+      "bytes": 1072,
+      "referenced_by": [
+        "tomli-w==1.2.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/typing-inspection_licenses__LICENSE_804b59b25f2c.txt",
+      "sha256": "804b59b25f2c31bd278f9202a19ae49a3945aa2664387e2d0a128c7cacc61ec3",
+      "bytes": 1090,
+      "referenced_by": [
+        "typing-inspection==0.4.2"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/uvicorn_licenses__LICENSE_efe1acf3e62f.txt",
+      "sha256": "efe1acf3e62fb99c288b0ec73e5a773b7268ef4320fe757ea994214e4b63c371",
+      "bytes": 1526,
+      "referenced_by": [
+        "uvicorn==0.46.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/vendored_immutable_LICENSE_7909331e4685.txt",
+      "sha256": "7909331e4685b02bf402cf0526e0f3cb381075b7daa7c76b2c3173024615540c",
+      "bytes": 1177,
+      "referenced_by": [
+        "js:immutable"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/vendored_leaflet_1.9.4_LICENSE_bbc959aaef74.txt",
+      "sha256": "bbc959aaef7488b38942e7f05cfd1244351f8bce54261951ea17dd7cf60f894b",
+      "bytes": 1369,
+      "referenced_by": [
+        "js:leaflet@1.9.4"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/vendored_leaflet_draw_1.0.4_LICENSE_320f2c68ac27.txt",
+      "sha256": "320f2c68ac27b7f7f2a78c490470a273d297e753ab37ba026944616bf0a62f47",
+      "bytes": 1078,
+      "referenced_by": [
+        "js:leaflet.draw@1.0.4"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/vendored_quasar_2.18.5_LICENSE_830424149e83.txt",
+      "sha256": "830424149e83c3b9caa4243c36e73ac1b024b501fea99f8a22138b86eedc8d47",
+      "bytes": 1091,
+      "referenced_by": [
+        "js:quasar@2.18.5"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/vendored_socketio_4.8.1_LICENSE_73cb68c437d5.txt",
+      "sha256": "73cb68c437d59e066f9386ef97be57298df4db119fdbd7d7150817c6dbd9f189",
+      "bytes": 1116,
+      "referenced_by": [
+        "js:socket.io-client@4.8.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/vendored_sortablejs_1.15.7_LICENSE_199071e94a4d.txt",
+      "sha256": "199071e94a4d6ba6f634acd6020842efc55161b9fb639a432c50da687781219d",
+      "bytes": 1085,
+      "referenced_by": [
+        "js:sortablejs@1.15.7"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/vendored_threejs_r180_LICENSE_bfe119ea4fd4.txt",
+      "sha256": "bfe119ea4fd413f5f7ca3fcd63adb0c4a073ed39daa2fe7d3e6b769e21272601",
+      "bytes": 1081,
+      "referenced_by": [
+        "js:threejs@r180"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/vendored_vue_3.5.22_LICENSE_49190d1f742d.txt",
+      "sha256": "49190d1f742dd61e47fe816df4963e5186a2a62100d9122f9883a60ea32973ac",
+      "bytes": 1112,
+      "referenced_by": [
+        "js:vue@3.5.22"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/watchfiles_licenses__LICENSE_4fd78355b67c.txt",
+      "sha256": "4fd78355b67ce2677ede9fb6f63a250f377bb7e22088136a5f4699adb4bc069f",
+      "bytes": 1091,
+      "referenced_by": [
+        "watchfiles==1.1.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/webencodings_LICENSE_f23bae6ada76.txt",
+      "sha256": "f23bae6ada76095610a77137fb92aec7342723900211c5826d54b4c57907ca56",
+      "bytes": 1490,
+      "referenced_by": [
+        "webencodings==0.5.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/websockets_licenses__LICENSE_3d6a0c050d8b.txt",
+      "sha256": "3d6a0c050d8bec52fabad502e45fb25bd02bcadbd70dea34d447b6a0ff4e6da8",
+      "bytes": 1514,
+      "referenced_by": [
+        "websockets==16.0"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/wsproto_licenses__LICENSE_c0329a8dbf34.txt",
+      "sha256": "c0329a8dbf3437b095f7f5cf4257d6bb855e07120cae8786586073ff7a699959",
+      "bytes": 1093,
+      "referenced_by": [
+        "wsproto==1.3.2"
+      ]
+    },
+    {
+      "path": "sky_claw/app/gui/assets/fonts/OFL.txt",
+      "sha256": "649fa4e6e1c8a37277c021ad2f37a4b57cb107d9ef330e8fcb8ac66b6ac03b94",
+      "bytes": 4702,
+      "referenced_by": [
+        "gui_fonts_ofl"
+      ]
+    }
+  ],
+  "components": [
+    {
+      "component_id": "pypi:aiofiles@24.1.0",
+      "name": "aiofiles",
+      "version": "24.1.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/Apache-2.0_cb5e8e7e5f4a.txt",
+        "licenses/third_party/texts/aiofiles_licenses__NOTICE_104c58d1d450.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:aiohappyeyeballs@2.6.1",
+      "name": "aiohappyeyeballs",
+      "version": "2.6.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "PSF-2.0",
+      "license_concluded": "PSF-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/aiohappyeyeballs_LICENSE_3b2f81fe21d1.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:aiohttp@3.14.4",
+      "name": "aiohttp",
+      "version": "3.14.4",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0 AND MIT",
+      "license_concluded": "Apache-2.0 AND MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/aiohttp_licenses__LICENSE_2e4be5fc6c4c.txt",
+        "licenses/third_party/texts/aiohttp_licenses__vendor__llhttp__LICENSE_628168d68bb5.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:aiosignal@1.4.0",
+      "name": "aiosignal",
+      "version": "1.4.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache 2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/aiosignal_licenses__LICENSE_6fd5243e92dd.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:aiosqlite@0.22.1",
+      "name": "aiosqlite",
+      "version": "0.22.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "NONE",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/aiosqlite_licenses__LICENSE_ab0c171dc3ef.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:annotated-doc@0.0.4",
+      "name": "annotated-doc",
+      "version": "0.0.4",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/annotated-doc_licenses__LICENSE_fff170779a6a.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:annotated-types@0.7.0",
+      "name": "annotated-types",
+      "version": "0.7.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "NONE",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/annotated-types_licenses__LICENSE_fe1049884b1a.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:anyio@4.14.2",
+      "name": "anyio",
+      "version": "4.14.2",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/anyio_licenses__LICENSE_5361ac9dc58f.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:attrs@26.1.0",
+      "name": "attrs",
+      "version": "26.1.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/attrs_licenses__LICENSE_882115c95dfc.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:backports-tarfile@1.2.0",
+      "name": "backports-tarfile",
+      "version": "1.2.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "NONE",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/backports-tarfile_LICENSE_86da0f01aeae.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:backports-zstd@1.5.0",
+      "name": "backports-zstd",
+      "version": "1.5.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "PSF-2.0",
+      "license_concluded": "PSF-2.0 AND BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/backports-zstd_licenses__LICENSE_b0e25a78cffb.txt",
+        "licenses/third_party/texts/backports-zstd_licenses__LICENSE_zstd_f89ef2b03b52.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:bidict@0.23.1",
+      "name": "bidict",
+      "version": "0.23.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MPL 2.0",
+      "license_concluded": "MPL-2.0",
+      "source_obligation": "YES_MPL_2_0_SEC_3_2",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REMEDIATION_REQUIRED",
+      "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "MPL-2.0 §3.2 source availability mechanism in frozen distribution (PR-LIC-02)",
+      "license_documents": [
+        "licenses/third_party/texts/MPL-2.0_f3f53adcecaa.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:brotli@1.2.1",
+      "name": "brotli",
+      "version": "1.2.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/brotli_licenses__LICENSE_3d180008e369.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:certifi@2026.10.19",
+      "name": "certifi",
+      "version": "2026.10.19",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MPL-2.0",
+      "license_concluded": "MPL-2.0",
+      "source_obligation": "YES_MPL_2_0_SEC_3_2",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REMEDIATION_REQUIRED",
+      "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "MPL-2.0 §3.2 source availability mechanism in frozen distribution (PR-LIC-02)",
+      "license_documents": [
+        "licenses/third_party/texts/certifi_licenses__LICENSE_e93716da6b9c.txt",
+        "licenses/third_party/texts/MPL-2.0_f3f53adcecaa.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:cffi@2.0.0",
+      "name": "cffi",
+      "version": "2.0.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT-0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/cffi_licenses__AUTHORS_2a67a60bbfb3.txt",
+        "licenses/third_party/texts/cffi_licenses__LICENSE_5ba24ddc5706.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:click@8.3.3",
+      "name": "click",
+      "version": "8.3.3",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/click_licenses__LICENSE_9a8ad106a394.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:colorama@0.4.6",
+      "name": "colorama",
+      "version": "0.4.6",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "NONE",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/colorama_licenses__LICENSE_cac35c02686e.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:comtypes@1.4.16",
+      "name": "comtypes",
+      "version": "1.4.16",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/comtypes_licenses__LICENSE_b3ee7a0e4b0d.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:cryptography@50.0.0",
+      "name": "cryptography",
+      "version": "50.0.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0 OR BSD-3-Clause",
+      "license_concluded": "Apache-2.0 OR BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/cryptography_licenses__LICENSE_3e0c7c091a94.txt",
+        "licenses/third_party/texts/cryptography_licenses__LICENSE_aac73b3148f6.txt",
+        "licenses/third_party/texts/cryptography_licenses__LICENSE_602c4c7482de.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:defusedxml@0.7.1",
+      "name": "defusedxml",
+      "version": "0.7.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "PSFL",
+      "license_concluded": "PSF-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/defusedxml_LICENSE_b80ce9da8c42.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:docutils@0.22.4",
+      "name": "docutils",
+      "version": "0.22.4",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "NONE",
+      "license_concluded": "Public-Domain AND BSD-2-Clause AND BSD-0-Clause AND PSF-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/docutils_licenses__COPYING_6ab4f27c76c7.txt",
+        "licenses/third_party/texts/docutils_licenses__licenses__BSD-0-Clause_42ac50251ab8.txt",
+        "licenses/third_party/texts/docutils_licenses__licenses__BSD-2-Clause_b8f3b31a2f43.txt",
+        "licenses/third_party/texts/docutils_licenses__licenses__gpl-3-0_e6037104443f.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:fastapi@0.136.1",
+      "name": "fastapi",
+      "version": "0.136.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/fastapi_licenses__LICENSE_4ec89ffc8148.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:frozenlist@1.8.0",
+      "name": "frozenlist",
+      "version": "1.8.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/aiosignal_licenses__LICENSE_6fd5243e92dd.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:googleapis-common-protos@1.75.0",
+      "name": "googleapis-common-protos",
+      "version": "1.75.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache 2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/googleapis-common-protos_licenses__LICENSE_cfc7749b96f6.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:grpcio@1.80.0",
+      "name": "grpcio",
+      "version": "1.80.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0 AND BSD-3-Clause AND MPL-2.0",
+      "source_obligation": "YES_MPL_2_0_SEC_3_2",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REMEDIATION_REQUIRED",
+      "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "MPL-2.0 §3.2 source availability mechanism in frozen distribution (PR-LIC-02)",
+      "license_documents": [
+        "licenses/third_party/texts/grpcio_licenses__LICENSE_58c86a3f2b5c.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:h11@0.16.0",
+      "name": "h11",
+      "version": "0.16.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/h11_licenses__LICENSE_37db5bb85926.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:httpcore@1.0.9",
+      "name": "httpcore",
+      "version": "1.0.9",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/httpcore_licenses__LICENSE_fdcb59154c74.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:httptools@0.7.1",
+      "name": "httptools",
+      "version": "0.7.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/httptools_licenses__LICENSE_f4573e7cb767.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:httpx@0.28.1",
+      "name": "httpx",
+      "version": "0.28.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/httpx_licenses__LICENSE_4ec59d544f12.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:idna@3.15",
+      "name": "idna",
+      "version": "3.15",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/idna_licenses__LICENSE_1a9a4f0e3d47.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:ifaddr@0.2.0",
+      "name": "ifaddr",
+      "version": "0.2.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/ifaddr_LICENSE_8700856576ae.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:importlib-metadata@8.7.1",
+      "name": "importlib-metadata",
+      "version": "8.7.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/importlib-metadata_licenses__LICENSE_458502e12d97.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:inflate64@1.0.4",
+      "name": "inflate64",
+      "version": "1.0.4",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "LGPL-2.1-or-later",
+      "license_concluded": "LGPL-2.1-or-later",
+      "source_obligation": "YES_LGPL_2_1_SEC_6",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REMEDIATION_REQUIRED",
+      "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "LGPL-2.1 relinking/replacement mechanism in PyInstaller onefile",
+      "license_documents": [
+        "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:itsdangerous@2.2.0",
+      "name": "itsdangerous",
+      "version": "2.2.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "NONE",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/itsdangerous_LICENSE_63af09891b6b.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:jaraco-classes@3.4.0",
+      "name": "jaraco-classes",
+      "version": "3.4.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "NONE",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/backports-tarfile_LICENSE_86da0f01aeae.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:jaraco-context@6.1.2",
+      "name": "jaraco-context",
+      "version": "6.1.2",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/jaraco-context_licenses__LICENSE_9755a1851966.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:jaraco-functools@4.4.0",
+      "name": "jaraco-functools",
+      "version": "4.4.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/jaraco-functools_licenses__LICENSE_5a57cb4db85e.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:jinja2@3.1.6",
+      "name": "jinja2",
+      "version": "3.1.6",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "NONE",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/jinja2_licenses__LICENSE_3b49dcee4105.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:keyring@25.7.0",
+      "name": "keyring",
+      "version": "25.7.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/jaraco-functools_licenses__LICENSE_5a57cb4db85e.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:markdown2@2.5.5",
+      "name": "markdown2",
+      "version": "2.5.5",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/markdown2_LICENSE_f8c7c4d55440.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:markupsafe@3.0.3",
+      "name": "markupsafe",
+      "version": "3.0.3",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/markupsafe_licenses__LICENSE_489a8e110850.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:more-itertools@11.0.1",
+      "name": "more-itertools",
+      "version": "11.0.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/more-itertools_licenses__LICENSE_09f1c8c9e941.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:multidict@6.9.1",
+      "name": "multidict",
+      "version": "6.9.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache License 2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/aiohttp_licenses__LICENSE_2e4be5fc6c4c.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:multivolumefile@0.2.3",
+      "name": "multivolumefile",
+      "version": "0.2.3",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "LGPL-2.1+",
+      "license_concluded": "LGPL-2.1-or-later",
+      "source_obligation": "YES_LGPL_2_1_SEC_6",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REMEDIATION_REQUIRED",
+      "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "LGPL-2.1 relinking/replacement mechanism in PyInstaller onefile",
+      "license_documents": [
+        "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:nicegui@3.12.0",
+      "name": "nicegui",
+      "version": "3.12.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_LICENSE_41c065c20811.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:numpy@2.4.6",
+      "name": "numpy",
+      "version": "2.4.6",
+      "type": "pypi_package",
+      "profiles": [
+        "native-parallax"
+      ],
+      "license_declared": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+      "license_concluded": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 AND Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/numpy_licenses__LICENSE_dc97d59562c7.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy___core__include__numpy__libdivide__LIC_fbc539f47d0c.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy___core__src__common__pythoncapi-compat_3f2c1ffa7638.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy___core__src__highway__LICENSE_e340270d4f64.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy___core__src__multiarray__dragon4_LICEN_f7b14309e5f5.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy___core__src__npysort__x86-simd-sort__L_211e7d737d61.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy___core__src__umath__svml__LICENSE_c17011467b4f.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__fft__pocketfft__LICENSE_a85ca13fdf90.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__linalg__lapack_lite__LICENSE_a14cc25e10d4.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__ma__LICENSE_05f3b8835198.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__random__LICENSE_103166b62b80.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__random__src__distributions__LICENSE_469778be8f33.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__random__src__mt19937__LICENSE_0e111337b254.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__random__src__pcg64__LICENSE_e7d4f4fb2035.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__random__src__philox__LICENSE_6f5828a57223.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__random__src__sfc64__LICENSE_9d4098846018.txt",
+        "licenses/third_party/texts/numpy_licenses__numpy__random__src__splitmix64__LICENSE_268b0ca06759.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:opentelemetry-api@1.45.2",
+      "name": "opentelemetry-api",
+      "version": "1.45.2",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:opentelemetry-exporter-otlp-common@0.66b2",
+      "name": "opentelemetry-exporter-otlp-common",
+      "version": "0.66b2",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:opentelemetry-exporter-otlp-proto-common@1.45.2",
+      "name": "opentelemetry-exporter-otlp-proto-common",
+      "version": "1.45.2",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:opentelemetry-exporter-otlp-proto-grpc@1.45.2",
+      "name": "opentelemetry-exporter-otlp-proto-grpc",
+      "version": "1.45.2",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:opentelemetry-proto@1.45.2",
+      "name": "opentelemetry-proto",
+      "version": "1.45.2",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:opentelemetry-sdk@1.45.2",
+      "name": "opentelemetry-sdk",
+      "version": "1.45.2",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:opentelemetry-semantic-conventions@0.66b2",
+      "name": "opentelemetry-semantic-conventions",
+      "version": "0.66b2",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:orjson@3.11.9",
+      "name": "orjson",
+      "version": "3.11.9",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MPL-2.0 AND (Apache-2.0 OR MIT)",
+      "license_concluded": "MPL-2.0 AND (Apache-2.0 OR MIT)",
+      "source_obligation": "YES_MPL_2_0_SEC_3_2",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REMEDIATION_REQUIRED",
+      "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "MPL-2.0 §3.2 source availability mechanism in frozen distribution (PR-LIC-02)",
+      "license_documents": [
+        "licenses/third_party/texts/orjson_licenses__LICENSE-APACHE_a60eea817514.txt",
+        "licenses/third_party/texts/orjson_licenses__LICENSE-MIT_23f18e03dc49.txt",
+        "licenses/third_party/texts/orjson_licenses__LICENSE-MPL-2_66a3107d5ad6.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:pefile@2024.8.26",
+      "name": "pefile",
+      "version": "2024.8.26",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/pefile_LICENSE_b44409c067c6.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:pillow@13.0.0",
+      "name": "pillow",
+      "version": "13.0.0",
+      "type": "pypi_package",
+      "profiles": [
+        "native-parallax"
+      ],
+      "license_declared": "MIT-CMU",
+      "license_concluded": "MIT-CMU",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/pillow_licenses__LICENSE_6644596ba12c.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:prometheus-client@0.25.0",
+      "name": "prometheus-client",
+      "version": "0.25.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0 AND BSD-2-Clause",
+      "license_concluded": "Apache-2.0 AND BSD-2-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt",
+        "licenses/third_party/texts/prometheus-client_licenses__NOTICE_4efa1874aeaa.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:propcache@0.4.1",
+      "name": "propcache",
+      "version": "0.4.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/googleapis-common-protos_licenses__LICENSE_cfc7749b96f6.txt",
+        "licenses/third_party/texts/propcache_licenses__NOTICE_56d6ac6c8105.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:protobuf@6.33.6",
+      "name": "protobuf",
+      "version": "6.33.6",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "3-Clause BSD License",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/protobuf_LICENSE_6e5e117324af.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:psutil@7.2.2",
+      "name": "psutil",
+      "version": "7.2.2",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/psutil_LICENSE_b89c063b3786.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:py7zr@1.1.3",
+      "name": "py7zr",
+      "version": "1.1.3",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "LGPL-2.1-or-later",
+      "license_concluded": "LGPL-2.1-or-later",
+      "source_obligation": "YES_LGPL_2_1_SEC_6",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REMEDIATION_REQUIRED",
+      "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "LGPL-2.1 relinking/replacement mechanism in PyInstaller onefile",
+      "license_documents": [
+        "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:pybcj@1.0.7",
+      "name": "pybcj",
+      "version": "1.0.7",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "LGPL-2.1-or-later",
+      "license_concluded": "LGPL-2.1-or-later",
+      "source_obligation": "YES_LGPL_2_1_SEC_6",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REMEDIATION_REQUIRED",
+      "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "LGPL-2.1 relinking/replacement mechanism in PyInstaller onefile",
+      "license_documents": [
+        "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:pycparser@3.0",
+      "name": "pycparser",
+      "version": "3.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/pycparser_licenses__LICENSE_0c846399369e.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:pycryptodomex@3.23.0",
+      "name": "pycryptodomex",
+      "version": "3.23.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD, Public Domain",
+      "license_concluded": "Public-Domain AND BSD-2-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/pycryptodomex_AUTHORS_1cb670b6cc5b.txt",
+        "licenses/third_party/texts/pycryptodomex_LICENSE_4e04660d77c1.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:pydantic@2.12.5",
+      "name": "pydantic",
+      "version": "2.12.5",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/pydantic_licenses__LICENSE_a9e186f3ca16.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:pydantic-core@2.41.5",
+      "name": "pydantic-core",
+      "version": "2.41.5",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/pydantic-core_licenses__LICENSE_2afdd30d54b4.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:pygments@2.20.0",
+      "name": "pygments",
+      "version": "2.20.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-2-Clause",
+      "license_concluded": "BSD-2-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/pygments_licenses__AUTHORS_0db603a5f449.txt",
+        "licenses/third_party/texts/pygments_licenses__LICENSE_a9d66f1d526d.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:pyppmd@1.3.1",
+      "name": "pyppmd",
+      "version": "1.3.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "LGPL-2.1-or-later",
+      "license_concluded": "LGPL-2.1-or-later",
+      "source_obligation": "YES_LGPL_2_1_SEC_6",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REMEDIATION_REQUIRED",
+      "remediation_phase": "PR-LIC-02",
+      "unresolved_questions": "LGPL-2.1 relinking/replacement mechanism in PyInstaller onefile",
+      "license_documents": [
+        "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:python-dotenv@1.2.2",
+      "name": "python-dotenv",
+      "version": "1.2.2",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/python-dotenv_licenses__LICENSE_80619b7049f0.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:python-engineio@4.13.3",
+      "name": "python-engineio",
+      "version": "4.13.3",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/python-engineio_licenses__LICENSE_c9e97d3dbc1f.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:python-json-logger@3.3.0",
+      "name": "python-json-logger",
+      "version": "3.3.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-2-Clause License",
+      "license_concluded": "BSD-2-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/python-json-logger_LICENSE_18ea95179e3a.txt",
+        "licenses/third_party/texts/python-json-logger_NOTICE_b9142715c199.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:python-multipart@0.0.32",
+      "name": "python-multipart",
+      "version": "0.0.32",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/googleapis-common-protos_licenses__LICENSE_cfc7749b96f6.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:python-socketio@5.16.3",
+      "name": "python-socketio",
+      "version": "5.16.3",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/python-engineio_licenses__LICENSE_c9e97d3dbc1f.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:pywin32-ctypes@0.2.3",
+      "name": "pywin32-ctypes",
+      "version": "0.2.3",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/pywin32-ctypes_LICENSE_cc03ae891a36.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:pyyaml@6.0.3",
+      "name": "pyyaml",
+      "version": "6.0.3",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/pyyaml_licenses__LICENSE_8d3928f9dc44.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:rarfile@4.2",
+      "name": "rarfile",
+      "version": "4.2",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "ISC",
+      "license_concluded": "ISC",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/rarfile_LICENSE_351350167805.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:starlette@1.3.1",
+      "name": "starlette",
+      "version": "1.3.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/starlette_licenses__LICENSE_dcb95677a022.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:tenacity@9.1.4",
+      "name": "tenacity",
+      "version": "9.1.4",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache 2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/tenacity_licenses__LICENSE_58d1e17ffe51.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:tinycss2@1.5.1",
+      "name": "tinycss2",
+      "version": "1.5.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "NONE",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/tinycss2_licenses__LICENSE_6b94acee20ec.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:tomli-w@1.2.0",
+      "name": "tomli-w",
+      "version": "1.2.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "NONE",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/tomli-w_LICENSE_b80816b0d530.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:typing-extensions@4.15.0",
+      "name": "typing-extensions",
+      "version": "4.15.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "PSF-2.0",
+      "license_concluded": "PSF-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/aiohappyeyeballs_LICENSE_3b2f81fe21d1.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:typing-inspection@0.4.2",
+      "name": "typing-inspection",
+      "version": "0.4.2",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/typing-inspection_licenses__LICENSE_804b59b25f2c.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:uvicorn@0.46.0",
+      "name": "uvicorn",
+      "version": "0.46.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/uvicorn_licenses__LICENSE_efe1acf3e62f.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:watchfiles@1.1.1",
+      "name": "watchfiles",
+      "version": "1.1.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/watchfiles_licenses__LICENSE_4fd78355b67c.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:webencodings@0.5.1",
+      "name": "webencodings",
+      "version": "0.5.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/webencodings_LICENSE_f23bae6ada76.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:websockets@16.0",
+      "name": "websockets",
+      "version": "16.0",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-3-Clause",
+      "license_concluded": "BSD-3-Clause",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/websockets_licenses__LICENSE_3d6a0c050d8b.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:wsproto@1.3.2",
+      "name": "wsproto",
+      "version": "1.3.2",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/wsproto_licenses__LICENSE_c0329a8dbf34.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:yarl@1.25.1",
+      "name": "yarl",
+      "version": "1.25.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/googleapis-common-protos_licenses__LICENSE_cfc7749b96f6.txt",
+        "licenses/third_party/texts/propcache_licenses__NOTICE_56d6ac6c8105.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:zipp@3.23.1",
+      "name": "zipp",
+      "version": "3.23.1",
+      "type": "pypi_package",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/jaraco-context_licenses__LICENSE_9755a1851966.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "pypi:pyinstaller@6.22.3",
+      "name": "pyinstaller",
+      "version": "6.22.3",
+      "type": "pypi_build_tool_with_bootloader",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "GPLv2-or-later with a special exception which allows to use PyInstaller to build and distribute non-free programs (including commercial ones)",
+      "license_concluded": "GPL-2.0-or-later WITH PyInstaller-Bootloader-Exception",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/pyinstaller_licenses__COPYING_0598064c7d27.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "native:cpython-runtime",
+      "name": "cpython-runtime",
+      "version": "3.11.9",
+      "type": "native_component",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "PSF-2.0",
+      "license_concluded": "PSF-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/aiohappyeyeballs_LICENSE_3b2f81fe21d1.txt",
+        "licenses/third_party/texts/native_cpython_Doc_license_2b734ec5975b.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "native:openssl-embedded",
+      "name": "openssl-embedded",
+      "version": "3.0.x",
+      "type": "native_component",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/native_openssl_LICENSE_7d5450cb2d14.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "native:libffi-embedded",
+      "name": "libffi-embedded",
+      "version": "3.4.x",
+      "type": "native_component",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/native_libffi_LICENSE_67894089811f.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "native:sqlite-embedded",
+      "name": "sqlite-embedded",
+      "version": "3.x",
+      "type": "native_component",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Public-Domain",
+      "license_concluded": "Public-Domain",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/native_sqlite_LICENSE_9c6479123f32.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "font:cinzel",
+      "name": "cinzel",
+      "version": "bundled-woff2",
+      "type": "font_ofl",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "OFL-1.1",
+      "license_concluded": "OFL-1.1",
+      "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/font_cinzel_OFL_f2b3029aba64.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "font:ebgaramond",
+      "name": "ebgaramond",
+      "version": "bundled-woff2",
+      "type": "font_ofl",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "OFL-1.1",
+      "license_concluded": "OFL-1.1",
+      "source_obligation": "NO",
+      "evidence_status": "EVIDENCE_CONFLICT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "Bundled WOFF2 is v1.001 while upstream master Regular is v1.002",
+      "license_documents": [
+        "licenses/third_party/texts/font_ebgaramond_OFL_0985066662eb.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "font:notosansrunic",
+      "name": "notosansrunic",
+      "version": "bundled-woff2",
+      "type": "font_ofl",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "OFL-1.1",
+      "license_concluded": "OFL-1.1",
+      "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/font_notosansrunic_OFL_b0fbcb9eaf0f.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "font:splinesansmono",
+      "name": "splinesansmono",
+      "version": "bundled-woff2",
+      "type": "font_ofl",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "OFL-1.1",
+      "license_concluded": "OFL-1.1",
+      "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/font_splinesansmono_OFL_4abb88162e4c.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "js:quasar",
+      "name": "quasar",
+      "version": "2.18.5",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/vendored_quasar_2.18.5_LICENSE_830424149e83.txt",
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "js:vue",
+      "name": "vue",
+      "version": "3.5.22",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/vendored_vue_3.5.22_LICENSE_49190d1f742d.txt",
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "js:socket.io-client",
+      "name": "socket.io-client",
+      "version": "4.8.1",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/vendored_socketio_4.8.1_LICENSE_73cb68c437d5.txt",
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "js:immutable",
+      "name": "immutable",
+      "version": "bundled",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_EXACT_ARTIFACT",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt",
+        "licenses/third_party/texts/vendored_immutable_LICENSE_7909331e4685.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "js:dompurify",
+      "name": "dompurify",
+      "version": "3.4.0",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0 OR MPL-2.0",
+      "license_concluded": "Apache-2.0 OR MPL-2.0",
+      "source_obligation": "NO_IF_APACHE_2_0_ELECTED",
+      "evidence_status": "SUPPORTED_BY_METADATA",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "Sky-Claw elects Apache-2.0; full Apache-2.0 text bundled",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt",
+        "licenses/third_party/texts/Apache-2.0_cb5e8e7e5f4a.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "js:leaflet",
+      "name": "leaflet + leaflet.draw",
+      "version": "1.9.4 / 1.0.4",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "BSD-2-Clause AND MIT",
+      "license_concluded": "BSD-2-Clause AND MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/vendored_leaflet_draw_1.0.4_LICENSE_320f2c68ac27.txt",
+        "licenses/third_party/texts/vendored_leaflet_1.9.4_LICENSE_bbc959aaef74.txt",
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "js:threejs",
+      "name": "three.js",
+      "version": "r180",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/vendored_threejs_r180_LICENSE_bfe119ea4fd4.txt",
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "js:sortablejs",
+      "name": "sortablejs",
+      "version": "1.15.7",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "",
+      "license_documents": [
+        "licenses/third_party/texts/vendored_sortablejs_1.15.7_LICENSE_199071e94a4d.txt",
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    },
+    {
+      "component_id": "js:xterm",
+      "name": "xterm.js",
+      "version": "bundled",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "MIT",
+      "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "Banner in xterm.css declares MIT but exact xterm.js version is unverified; full upstream LICENSE pending PR-LIC-04",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
+    },
+    {
+      "component_id": "js:tailwindcss",
+      "name": "tailwindcss",
+      "version": "4.1.13",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "INFERRED",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner in nicegui/static/tailwindcss.min.js; MIT inferred from upstream",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
+    },
+    {
+      "component_id": "js:sass",
+      "name": "sass (dart-sass)",
+      "version": "unverified",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "NOASSERTION",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "EVIDENCE_MISSING",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner or version in nicegui/static/sass.dart.js (3.1 MB)",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
+    },
+    {
+      "component_id": "js:unocss",
+      "name": "unocss",
+      "version": "unverified",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "INFERRED",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner in nicegui/static/unocss/*.js; MIT inferred from upstream",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
+    },
+    {
+      "component_id": "js:mermaid",
+      "name": "mermaid",
+      "version": "unverified",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "INFERRED",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner in nicegui/elements/mermaid/dist/*; MIT inferred from upstream",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
+    },
+    {
+      "component_id": "js:codemirror",
+      "name": "codemirror",
+      "version": "unverified",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "INFERRED",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner in nicegui/elements/codemirror/dist/*; MIT inferred from upstream",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
+    },
+    {
+      "component_id": "js:echarts",
+      "name": "apache-echarts",
+      "version": "unverified",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "INFERRED",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner in nicegui/elements/echart/dist/*; Apache-2.0 inferred from upstream",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt",
+        "licenses/third_party/texts/Apache-2.0_cb5e8e7e5f4a.txt"
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
+    },
+    {
+      "component_id": "js:plotly",
+      "name": "plotly.js",
+      "version": "unverified",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "INFERRED",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner in nicegui/elements/plotly/dist/*; MIT inferred from upstream",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
+    },
+    {
+      "component_id": "js:ag-grid-community",
+      "name": "ag-grid-community",
+      "version": "unverified",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "MIT",
+      "license_concluded": "NOASSERTION",
+      "source_obligation": "NO",
+      "evidence_status": "INFERRED",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "No embedded license banner in nicegui/elements/aggrid/dist/*; MIT inferred from upstream",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
+    },
+    {
+      "component_id": "font:nicegui-roboto-material",
+      "name": "Roboto & Material Icons/Symbols (via NiceGUI)",
+      "version": "Material Icons 1.017 / Symbols 2.911 / Roboto 3.009",
+      "type": "vendored_frontend_asset",
+      "profiles": [
+        "base",
+        "native-parallax"
+      ],
+      "license_declared": "Apache-2.0",
+      "license_concluded": "Apache-2.0",
+      "source_obligation": "NO",
+      "evidence_status": "SUPPORTED_BY_METADATA",
+      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
+      "remediation_phase": "PR-LIC-01-IMPL",
+      "unresolved_questions": "16 WOFF2 name tables declare Apache-2.0 (Google LLC / Roboto Project Authors); wheel omits Apache-2.0 text so full Apache-2.0 text is bundled here",
+      "license_documents": [
+        "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt",
+        "licenses/third_party/texts/Apache-2.0_cb5e8e7e5f4a.txt"
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
+    }
+  ],
+  "hash_normalization": "canonical_lf_text"
+}

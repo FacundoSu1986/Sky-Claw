@@ -1,0 +1,143 @@
+NICEGUI 3.12.0 VENDORED FRONTEND LIBRARIES & FONTS — EXTRACTED BANNERS & UNCERTAINTIES
+======================================================================================
+Source wheel: nicegui-3.12.0-py3-none-any.whl
+
+--- quasar (js:quasar) ---
+Version: 2.18.5 | Declared: MIT | Concluded: MIT | Evidence: SUPPORTED_BY_METADATA
+Extracted verbatim header from nicegui/static/quasar.umd.js:
+/*!
+ * Quasar Framework v2.18.5
+ * (c) 2015-present Razvan Stoenescu
+ * Released under the MIT License.
+ */
+
+--- vue (js:vue) ---
+Version: 3.5.22 | Declared: MIT | Concluded: MIT | Evidence: SUPPORTED_BY_METADATA
+Extracted verbatim header from nicegui/static/vue.esm-browser.js:
+/**
+* vue v3.5.22
+* (c) 2018-present Yuxi (Evan) You and Vue contributors
+* @license MIT
+**/
+
+--- socket.io-client (js:socket.io-client) ---
+Version: 4.8.1 | Declared: MIT | Concluded: MIT | Evidence: SUPPORTED_BY_METADATA
+Extracted verbatim header from nicegui/static/socket.io.min.js:
+/*!
+ * Socket.IO v4.8.1
+ * (c) 2014-2024 Guillermo Rauch
+ * Released under the MIT License.
+ */
+
+--- immutable (js:immutable) ---
+Version: bundled | Declared: MIT | Concluded: MIT | Evidence: VERIFIED_EXACT_ARTIFACT
+Extracted verbatim header from nicegui/static/immutable.es.js:
+/**
+ * @license
+ * MIT License
+ *
+ * Copyright (c) 2014-present, Lee Byron and other contributors.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+--- dompurify (js:dompurify) ---
+Version: 3.4.0 | Declared: Apache-2.0 OR MPL-2.0 | Concluded: Apache-2.0 OR MPL-2.0 | Evidence: SUPPORTED_BY_METADATA
+Extracted verbatim header from nicegui/static/dompurify.mjs:
+/*! @license DOMPurify 3.4.0 | (c) Cure53 and other contributors | Released under the Apache license 2.0 and Mozilla Public License 2.0 | github.com/cure53/DOMPurify/blob/3.4.0/LICENSE */
+Uncertainty / Note: Sky-Claw elects Apache-2.0; full Apache-2.0 text bundled
+
+--- leaflet + leaflet.draw (js:leaflet) ---
+Version: 1.9.4 / 1.0.4 | Declared: BSD-2-Clause AND MIT | Concluded: BSD-2-Clause AND MIT | Evidence: SUPPORTED_BY_METADATA
+Extracted verbatim header from nicegui/elements/leaflet/dist/index.js:
+/* @preserve
+ * Leaflet 1.9.4, a JS library for interactive maps. https://leafletjs.com
+ * (c) 2010-2023 Vladimir Agafonkin, (c) 2010-2011 CloudMade
+ */
+Uncertainty / Note: Full BSD-2-Clause/MIT texts not bundled inside nicegui wheel; banner preserved
+
+--- three.js (js:threejs) ---
+Version: r180 | Declared: MIT | Concluded: MIT | Evidence: SUPPORTED_BY_METADATA
+Extracted verbatim header from nicegui/elements/scene/dist/index.js:
+/**
+ * @license
+ * Copyright 2010-2025 Three.js Authors
+ * SPDX-License-Identifier: MIT
+ */
+
+--- sortablejs (js:sortablejs) ---
+Version: 1.15.7 | Declared: MIT | Concluded: MIT | Evidence: SUPPORTED_BY_METADATA
+Extracted verbatim header from nicegui/elements/sortable/dist/index.js:
+/**!
+ * Sortable 1.15.7
+ * @author	RubaXa   <trash@rubaxa.org>
+ * @author	owenm    <owen23355@gmail.com>
+ * @license MIT
+ */
+
+--- xterm.js (js:xterm) ---
+Version: bundled | Declared: MIT | Concluded: MIT | Evidence: SUPPORTED_BY_METADATA
+Extracted verbatim header from nicegui/elements/xterm/dist/xterm.css:
+(no block comment banner found)
+
+--- tailwindcss (js:tailwindcss) ---
+Version: 4.1.13 | Declared: MIT | Concluded: NOASSERTION | Evidence: INFERRED
+Copyright/Metadata: Unverified in wheel banner
+Uncertainty / Note: No embedded license banner in nicegui/static/tailwindcss.min.js; MIT inferred from upstream
+
+--- sass (dart-sass) (js:sass) ---
+Version: unverified | Declared: NOASSERTION | Concluded: NOASSERTION | Evidence: EVIDENCE_MISSING
+Copyright/Metadata: Unverified in wheel banner
+Uncertainty / Note: No embedded license banner or version in nicegui/static/sass.dart.js (3.1 MB)
+
+--- unocss (js:unocss) ---
+Version: unverified | Declared: MIT | Concluded: NOASSERTION | Evidence: INFERRED
+Copyright/Metadata: Unverified in wheel banner
+Uncertainty / Note: No embedded license banner in nicegui/static/unocss/*.js; MIT inferred from upstream
+
+--- mermaid (js:mermaid) ---
+Version: unverified | Declared: MIT | Concluded: NOASSERTION | Evidence: INFERRED
+Copyright/Metadata: Unverified in wheel banner
+Uncertainty / Note: No embedded license banner in nicegui/elements/mermaid/dist/*; MIT inferred from upstream
+
+--- codemirror (js:codemirror) ---
+Version: unverified | Declared: MIT | Concluded: NOASSERTION | Evidence: INFERRED
+Copyright/Metadata: Unverified in wheel banner
+Uncertainty / Note: No embedded license banner in nicegui/elements/codemirror/dist/*; MIT inferred from upstream
+
+--- apache-echarts (js:echarts) ---
+Version: unverified | Declared: Apache-2.0 | Concluded: NOASSERTION | Evidence: INFERRED
+Copyright/Metadata: Unverified in wheel banner
+Uncertainty / Note: No embedded license banner in nicegui/elements/echart/dist/*; Apache-2.0 inferred from upstream
+
+--- plotly.js (js:plotly) ---
+Version: unverified | Declared: MIT | Concluded: NOASSERTION | Evidence: INFERRED
+Copyright/Metadata: Unverified in wheel banner
+Uncertainty / Note: No embedded license banner in nicegui/elements/plotly/dist/*; MIT inferred from upstream
+
+--- ag-grid-community (js:ag-grid-community) ---
+Version: unverified | Declared: MIT | Concluded: NOASSERTION | Evidence: INFERRED
+Copyright/Metadata: Unverified in wheel banner
+Uncertainty / Note: No embedded license banner in nicegui/elements/aggrid/dist/*; MIT inferred from upstream
+
+--- Roboto & Material Icons/Symbols (via NiceGUI) (font:nicegui-roboto-material) ---
+Version: Material Icons 1.017 / Symbols 2.911 / Roboto 3.009 | Declared: Apache-2.0 | Concluded: Apache-2.0 | Evidence: SUPPORTED_BY_METADATA
+Copyright/Metadata: Copyright 2011 The Roboto Project Authors; Copyright 2018-2025 Google LLC
+Uncertainty / Note: 16 WOFF2 name tables declare Apache-2.0 (Google LLC / Roboto Project Authors); wheel omits Apache-2.0 text so full Apache-2.0 text is bundled here
+
