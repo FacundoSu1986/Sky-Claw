@@ -1222,8 +1222,15 @@ def neutralizar_flag(
     grass_dir: pathlib.Path,
     raiz_estado: pathlib.Path | None,
     perfil: str = "",
+    archivar: bool = True,
 ) -> NeutralizacionFlag:
     """Archiva el progreso (si lo hay) y borra el flag. Nunca propaga errores.
+
+    ``archivar=False`` (P1, H2/H5): NO se archiva el progreso porque la terminalidad del juego no
+    está demostrada y el caché puede seguir escribiéndose; archivar esa foto como evidencia de
+    reanudación afirmaría una estabilidad que no existe. El **borrado sí ocurre**: dejar el flag
+    mete al juego del usuario en modo precache. No se declara ``progreso_perdido`` —no se perdió
+    nada: se decidió no archivar— y queda una nota en ``errores``.
 
     El borrado es obligatorio: un flag residual haría que el juego del usuario
     arranque en modo precache. Por eso el resultado es explícito —un
@@ -1267,7 +1274,16 @@ def neutralizar_flag(
             )
 
     if presente and progreso is not None:
-        if raiz_estado is None:
+        if not archivar:
+            # H2/H5 + B3 + F4: no se archiva una foto de un caché que puede seguir escribiéndose. La
+            # copia opcional de diagnóstico se retiró (F4: destino predecible sin los controles
+            # físicos de P0); se conserva el reporte EXPLÍCITO de pérdida de reanudación.
+            errores.append(
+                "Archivado del progreso OMITIDO para reanudación: la terminalidad del juego no está "
+                "demostrada y el caché puede seguir escribiéndose. El progreso NO se conserva como "
+                "evidencia reanudable; el flag igual se borra."
+            )
+        elif raiz_estado is None:
             errores.append(
                 f"No hay raíz de estado donde archivar el progreso de {flag_path}: "
                 "reanudar este caché ya no será posible"
@@ -1305,6 +1321,8 @@ def neutralizar_flag(
     if not borrado and not any("No se pudo eliminar" in e for e in errores):
         errores.append(f"{flag_path} sigue presente después del borrado")
 
+    # B3: omitir el archivado también ES una pérdida de reanudación y se declara (antes quedaba en
+    # `progreso_perdido=False`, que afirmaba que no se perdió nada).
     progreso_perdido = bool(borrado and progreso is not None and not archivado)
     if progreso_perdido:
         errores.append("Se borró el flag sin archivar su progreso: la evidencia de reanudación de este caché se perdió")

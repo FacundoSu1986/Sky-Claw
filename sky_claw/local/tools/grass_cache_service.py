@@ -46,7 +46,11 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from sky_claw.app.db.journal import OperationStatus, OperationType, TransactionStatus
-from sky_claw.app.db.journal_contracts import TEARDOWN_INCOMPLETE_KIND, is_flight_report_committed
+from sky_claw.app.db.journal_contracts import (
+    GRASS_VERDICT_KIND,
+    TEARDOWN_INCOMPLETE_KIND,
+    is_flight_report_committed,
+)
 from sky_claw.app.db.locks import (
     LockAcquisitionError,
     LockReleaseError,
@@ -55,6 +59,11 @@ from sky_claw.app.db.locks import (
     liberar_lease_definitiva,
 )
 from sky_claw.config import SystemPaths
+from sky_claw.local.tools.grass_cache_fence import (
+    FenceScope,
+    bloqueo_por_fence_scope,
+    liberar_fence_scope,
+)
 from sky_claw.local.tools.grass_cache_runner import (
     _PRECACHE_FLAG,  # fuente de verdad del nombre del flag (evita duplicar el string mágico)
     GrassCacheConfig,
@@ -67,6 +76,10 @@ from sky_claw.local.tools.grass_cache_safety import (
     APROBACION_REBUILD,
     GrassCacheMode,
     preparar_arranque,
+)
+from sky_claw.local.tools.grass_cache_verdict import (
+    VeredictoCache,
+    invalidar_certificacion,
 )
 from sky_claw.local.tools.loot_service import LOAD_ORDER_RESOURCE_ID
 from sky_claw.local.xedit.grass_analyzer import GrassAnalyzer
@@ -404,6 +417,15 @@ class GrassCacheService:
         except (GrassCacheServiceError, RuntimeError) as exc:
             return self._error(str(exc), inicio)
 
+        # F1: el fence se consulta ANTES de cualquier mutación del ritual. Un marcador ilegible o de
+        # un proceso vivo/indeterminado bloquea; uno de un proceso ya terminado se considera obsoleto.
+        if config.backup_root is not None:
+            scope = FenceScope.desde_config(game_path=config.game_path, overwrite_grass_dir=config.overwrite_grass_dir)
+            bloqueo = await asyncio.to_thread(bloqueo_por_fence_scope, config.backup_root, scope)
+            if bloqueo is not None:
+                logger.warning("Ritual de grass bloqueado por el fence: %s", bloqueo, extra={"pipeline_stage": 8})
+                return self._error(bloqueo, inicio)
+
         await self._publish(
             "pipeline.grass_cache.started",
             {"worldspaces": params.worldspaces, "conflicting_mods": params.conflicting_mods},
@@ -435,6 +457,34 @@ class GrassCacheService:
         teardown_failures: list[str] = []
         try:
             async with tx, lo_tx:
+                # I5: la propiedad del lease se comprueba con la primitiva REAL antes de la primera
+                # mutación, no sólo antes del unlink final. Estar dentro del `async with` no prueba
+                # que el lease siga vigente.
+                try:
+                    from sky_claw.app.db.locks import LockLeaseLostError
+
+                    await tx.assert_owned(verify_db=True)
+                    await lo_tx.assert_owned(verify_db=True)
+                except LockLeaseLostError as exc:
+                    logger.error("Lease perdido antes de mutar: %s", exc, extra={"pipeline_stage": 8})
+                    return self._error(f"Lease del ritual perdido antes de mutar: {exc}", inicio)
+
+                # F1 (contrato): el chequeo previo a los locks es sólo una optimización. La
+                # revalidación DENTRO de grass-cache + load-order es la que manda: entre el primer
+                # chequeo y la adquisición, otro ritual pudo dejar su marcador.
+                if config.backup_root is not None:
+                    scope = FenceScope.desde_config(
+                        game_path=config.game_path, overwrite_grass_dir=config.overwrite_grass_dir
+                    )
+                    bloqueo_bajo_locks = await asyncio.to_thread(bloqueo_por_fence_scope, config.backup_root, scope)
+                    if bloqueo_bajo_locks is not None:
+                        logger.warning(
+                            "Ritual de grass bloqueado por el fence bajo locks: %s",
+                            bloqueo_bajo_locks,
+                            extra={"pipeline_stage": 8},
+                        )
+                        return self._error(bloqueo_bajo_locks, inicio)
+
                 # P0 SAFE CACHE (F-01): el guard de arranque corre ANTES de
                 # clonar el perfil. Es la MISMA función que usa el runner
                 # (``preparar_arranque``), así no hay dos políticas que puedan
@@ -463,15 +513,24 @@ class GrassCacheService:
                     journal_tx = await self._journal.begin_transaction(
                         "Grass precache (NGIO, Stage 8)", agent_id=self.AGENT_ID
                     )
+                runner: GrassCacheRunner | None = None
+                terminalidad_sin_probar: str | None = None
+                # F2: cada ejecución sólo limpia recursos cuya PROPIEDAD estableció. Un fallo de
+                # setup (p. ej. el clon ya existe, creado por otro ritual) no autoriza destruirlo.
+                clone_creado = False
                 try:
                     # -- Fase B: preparación aislada (solo el clon se muta) --
                     await pm.create_clone_profile()
+                    clone_creado = True
                     await pm.build_config_mod(params.worldspaces)
                     if params.conflicting_mods:
                         await pm.disable_conflicting_mods(params.conflicting_mods)
                     # -- Fase C: crash-loop --
                     runner = self._runner_factory(config, mo2, on_progress=self._make_progress_publisher())
                     run_result = await runner.run()
+                    # H2/H5: si no se demostró que el juego terminó, el teardown NO destruye el
+                    # clon/mod: un proceso vivo puede seguir usándolos. Se preserva y se reporta.
+                    terminalidad_sin_probar = self._terminalidad_no_verificada(run_result)
                 finally:
                     # -- Fase D: restaurar el entorno SIEMPRE que ESTA invocación
                     # haya empezado el setup, y DENTRO del lock: con el lock ya
@@ -480,7 +539,74 @@ class GrassCacheService:
                     # overwrite/Grass — jamás se borra (parcial reanuda; completo
                     # es el producto). Los fallos de limpieza se exponen en el
                     # resultado en vez de tragarse (§1.6).
-                    teardown_failures = await self._teardown_best_effort()
+                    sin_verificar = terminalidad_sin_probar
+                    if sin_verificar is None and runner is not None:
+                        # Camino de excepción: el resultado no se construyó, pero el runner sí
+                        # clasificó la terminalidad antes de propagar.
+                        propia = runner.terminalidad
+                        if propia in ("vivo", "indeterminado"):
+                            sin_verificar = str(propia)
+                        elif runner.terminalidad_integral is False:
+                            # P1/C3: la DECISIÓN la toma la evidencia integral, no un string aislado.
+                            # Un `terminado` sin ausencia integral demostrada (camino de excepción
+                            # dura) NO autoriza destruir el clon/mod: se preservan perfil y config.
+                            sin_verificar = "ausencia_integral_no_demostrada"
+                    if sin_verificar is not None:
+                        teardown_failures = [
+                            "teardown del clon/mod OMITIDO: terminalidad del juego NO demostrada "
+                            f"({sin_verificar}); el perfil temporal y su configuración se "
+                            "conservan porque un proceso vivo puede estar usándolos"
+                        ]
+                    elif not clone_creado:
+                        # F2: el clon es de OTRA ejecución (setup falló antes de crearlo, o ya
+                        # existía). No se destruye.
+                        teardown_failures = [
+                            *teardown_failures,
+                            "teardown del clon OMITIDO: esta ejecución no creó el clon (propiedad "
+                            "de otra corrida); no se destruyen recursos ajenos",
+                        ]
+                    else:
+                        teardown_failures = await self._teardown_best_effort()
+
+                    # I5/I8: el fence se libera ÚLTIMO, con los leases todavía en mano y verificados
+                    # de nuevo: si la exclusividad ya no se puede garantizar, se conserva. El runner
+                    # sólo aporta evidencia; la autoridad es del servicio.
+                    # P1/C3: sin resultado del runner NO hay evidencia integral de cierre, así que
+                    # NO se intenta siquiera una liberación `autorizado=False`: el fence se conserva.
+                    evidencia_final = (run_result.evidencia or {}) if run_result is not None else {}
+                    run_id_fence = evidencia_final.get("fence_run_id") if run_result is not None else None
+                    integral = evidencia_final.get("terminalidad_integral") is True
+                    autorizado = False
+                    if isinstance(run_id_fence, str) and integral:
+                        try:
+                            from sky_claw.app.db.locks import LockLeaseLostError
+
+                            await tx.assert_owned(verify_db=True)
+                            await lo_tx.assert_owned(verify_db=True)
+                            autorizado = True
+                        except LockLeaseLostError as exc:
+                            logger.error(
+                                "Fence CONSERVADO: lease perdido antes de liberar (%s).",
+                                exc,
+                                extra={"pipeline_stage": 8},
+                            )
+                            teardown_failures = [*teardown_failures, f"fence conservado: lease perdido ({exc})"]
+                    if isinstance(run_id_fence, str) and config.backup_root is not None:
+                        liberacion = await asyncio.to_thread(
+                            liberar_fence_scope,
+                            config.backup_root,
+                            FenceScope.desde_config(
+                                game_path=config.game_path,
+                                overwrite_grass_dir=config.overwrite_grass_dir,
+                            ),
+                            run_id=run_id_fence,
+                            autorizado=autorizado,
+                        )
+                        if not liberacion.ok:
+                            teardown_failures = [
+                                *teardown_failures,
+                                "fence conservado: " + "; ".join((*liberacion.conservados, *liberacion.fallos)),
+                            ]
         except LockAcquisitionError as exc:
             # Sin lock no somos dueños de NINGÚN estado: ni Fase B ni teardown.
             return self._error(f"No se pudo tomar el lock del ritual de grass: {exc}", inicio)
@@ -531,24 +657,17 @@ class GrassCacheService:
                 *teardown_failures,
                 "flag alternativo residual: " + ("; ".join(run_result.limpieza_errores) or "causa desconocida"),
             ]
-        try:
-            # U-09: la constancia del cleanup a medias va ANTES del cierre, para
-            # que la entrada quede dentro de la TX que se está por commitear. Va
-            # DENTRO del try: una cancelación acá tampoco puede dejar la TX
-            # pendiente (antes escapaba sin ningún intento de cierre).
-            await self._journalizar_teardown_incompleto(journal_tx, teardown_failures)
-            await self._journal_close(journal_tx, exito=exito)
-        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
-            # Auditoría hostil (V-1): este cierre corre DESPUÉS de soltar los
-            # locks, fuera del except de cancelación de arriba — sin este
-            # reintento, una cancelación exacta durante el commit dejaría la
-            # TX sin ningún intento de cierre.
-            await self._journal_rollback_si_sigue_pendiente(journal_tx)
-            raise
+        # H6: la certificación del runner es sobre lo que OBSERVÓ. Si la operación quedó invalidada
+        # (lease perdido, teardown a medias, error posterior), el resultado, el journal y el evento
+        # no pueden publicar una certificación válida. El resultado se compone ANTES del cierre para
+        # que las tres superficies digan lo mismo.
         resultado = self._componer_resultado(run_result, error_msg, inicio)
-        # Una sola fuente de verdad para el éxito: el de la limpieza también
-        # cuenta. Sus razones quedan en ``teardown_failures``.
         resultado["success"] = exito
+        if run_result is not None and run_result.certificado and not exito:
+            self._invalidar_certificacion(
+                resultado,
+                "limpieza_incompleta" if limpieza_incompleta else "operacion_invalidada",
+            )
         if limpieza_incompleta and error_msg is None:
             resultado["message"] = "El ritual terminó, pero la limpieza del flag quedó incompleta: " + "; ".join(
                 teardown_failures
@@ -558,12 +677,33 @@ class GrassCacheService:
             # limpiaron: el operador debe borrarlos a mano o el próximo run
             # fallará con "el clon ya existe" (fail-closed de create_clone_profile).
             resultado["teardown_failures"] = teardown_failures
+        try:
+            # U-09: la constancia del cleanup a medias va ANTES del cierre, para
+            # que la entrada quede dentro de la TX que se está por commitear. Va
+            # DENTRO del try: una cancelación acá tampoco puede dejar la TX
+            # pendiente (antes escapaba sin ningún intento de cierre).
+            await self._journalizar_teardown_incompleto(journal_tx, teardown_failures)
+            # H6: se journaliza el veredicto RECONCILIADO, no el del runner.
+            await self._journalizar_veredicto(journal_tx, resultado)
+            await self._journal_close(journal_tx, exito=exito)
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+            # Auditoría hostil (V-1): este cierre corre DESPUÉS de soltar los
+            # locks, fuera del except de cancelación de arriba — sin este
+            # reintento, una cancelación exacta durante el commit dejaría la
+            # TX sin ningún intento de cierre.
+            await self._journal_rollback_si_sigue_pendiente(journal_tx)
+            raise
         await self._publish(
             "pipeline.grass_cache.completed",
             {
                 "success": resultado["success"],
                 "outcome": resultado.get("outcome"),
                 "duration_seconds": resultado["duration_seconds"],
+                # P1: el evento lleva el veredicto. Un suscriptor que necesite certificación NO
+                # puede inferirla de `success` (D1 del propietario).
+                "verdict": resultado.get("verdict"),
+                "certificado": resultado.get("certificado"),
+                "alcance_certificado": resultado.get("alcance_certificado"),
             },
         )
         return resultado
@@ -626,6 +766,9 @@ class GrassCacheService:
                 # progreso se ata al perfil de ORIGEN para que dos perfiles de la
                 # misma instalación no se presten progreso.
                 progress_profile=pm.source_profile,
+                # P1 (F-12/C1): los worldspaces pedidos son parte de la identidad de la corrida y
+                # requisito de certificación (un worldspace pedido sin artefactos no certifica).
+                worldspaces=tuple(params.worldspaces),
                 **overrides,
             )
         except ValueError as exc:
@@ -730,6 +873,111 @@ class GrassCacheService:
                 exc_info=True,
             )
 
+    @staticmethod
+    def _terminalidad_no_verificada(run_result: GrassCacheRunResult | None) -> str | None:
+        """Terminalidad observada cuando NO permite afirmar que el juego terminó (H2/H5)."""
+        if run_result is None:
+            return None
+        evidencia = run_result.evidencia or {}
+        terminalidad = evidencia.get("terminalidad") if isinstance(evidencia, dict) else None
+        # Sólo los estados explícitamente no verificables bloquean el teardown; cualquier otro
+        # valor (incluido el de un doble de test sin evidencia) no lo bloquea.
+        return str(terminalidad) if terminalidad in ("vivo", "indeterminado") else None
+
+    async def _journalizar_veredicto(self, journal_tx: int | None, resultado: dict[str, Any] | None) -> None:
+        """Registra el VEREDICTO ya reconciliado dentro de la TX (P1 / H6).
+
+        Una TX commiteada puede afirmar «el ritual produjo un caché» y a la vez «ese caché NO se
+        pudo certificar». ``transactions`` no tiene metadata, así que el estado mixto se expresa con
+        una operación —el mismo mecanismo que U-09—: ``complete_operation`` cuando certifica y
+        ``fail_operation`` con las razones cuando no. La metadata **no** lleva ``files_touched``:
+        sembrar evidencia de artefactos falsearía el oráculo de recovery.
+
+        **El veredicto que se registra es el final, no el del runner**: si la operación perdió la
+        exclusividad o el teardown quedó a medias, la certificación ya fue degradada antes de llegar
+        acá y el journal no puede afirmar lo contrario.
+
+        Best-effort, como el resto del cierre: el journal nunca enmascara el resultado del ritual.
+        """
+        if self._journal is None or journal_tx is None or resultado is None:
+            return
+        if "verdict" not in resultado:
+            return
+        evidencia = resultado.get("evidencia") or {}
+        worldspaces = evidencia.get("worldspaces_solicitados") if isinstance(evidencia, dict) else None
+        razones = list(resultado.get("verdict_razones") or ())
+        metadata: dict[str, Any] = {
+            "kind": GRASS_VERDICT_KIND,
+            "verdict": resultado.get("verdict"),
+            "certificado": bool(resultado.get("certificado")),
+            "razones": razones,
+            "alcance_certificado": resultado.get("alcance_certificado"),
+            "mode": resultado.get("mode"),
+            "worldspaces": list(worldspaces) if isinstance(worldspaces, list) else [],
+        }
+        try:
+            entry_id = await self._journal.begin_operation(
+                agent_id=self.AGENT_ID,
+                # No hay un OperationType «verificar»: el veredicto describe la MUTACIÓN del caché
+                # que esta corrida produjo (o no produjo). El discriminador real es `kind`.
+                operation_type=OperationType.FILE_MODIFY,
+                target_path=str(evidencia.get("overwrite_grass_dir") if isinstance(evidencia, dict) else None)
+                or "overwrite/Grass",
+                transaction_id=journal_tx,
+                metadata=metadata,
+            )
+            if metadata["certificado"]:
+                await self._journal.complete_operation(entry_id)
+            else:
+                detalle = "; ".join(razones) or "sin evidencia suficiente"
+                await self._journal.fail_operation(entry_id, error=f"caché no certificado: {detalle}")
+        except Exception:  # noqa: BLE001 — best-effort: perder el veredicto no puede tumbar el run
+            logger.warning(
+                "No se pudo journalizar el veredicto del ritual de grass (tx=%s, verdict=%s)",
+                journal_tx,
+                metadata["verdict"],
+                exc_info=True,
+                extra={"pipeline_stage": 8},
+            )
+
+    @staticmethod
+    def _invalidar_certificacion(resultado: dict[str, Any], razon: str) -> None:
+        """Degrada la certificación del resultado cuando la OPERACIÓN quedó invalidada (H6).
+
+        La evidencia observada no se falsea: se marca la certificación como no válida, se deja la
+        razón y se alinea el ``evidencia`` serializado para que ninguna superficie lea lo anterior.
+        """
+        veredicto = VeredictoCache(
+            verdict=resultado.get("verdict", "unknown"),
+            certificado=bool(resultado.get("certificado")),
+            exito_operacional=bool(resultado.get("success")),
+            razones=tuple(resultado.get("verdict_razones") or ()),
+            alcance_certificado=resultado.get("alcance_certificado", "ninguno"),
+            trabajo_de_la_corrida="demostrado",
+            integridad_observable="no_evaluada",
+        )
+        final = invalidar_certificacion(veredicto, razon=razon)
+        resultado["verdict"] = final.verdict
+        resultado["certificado"] = final.certificado
+        resultado["verdict_razones"] = list(final.razones)
+        resultado["alcance_certificado"] = final.alcance_certificado
+        evidencia = resultado.get("evidencia")
+        if isinstance(evidencia, dict):
+            evidencia["verdict"] = final.verdict
+            evidencia["certificado"] = final.certificado
+            evidencia["verdict_razones"] = list(final.razones)
+            evidencia["alcance_certificado"] = final.alcance_certificado
+            # B5: el eje anidado no puede seguir afirmando éxito operacional cuando el `success`
+            # final es False por invalidación de la operación.
+            evidencia["exito_operacional"] = False
+        logger.warning(
+            "Certificación invalidada por la operación (%s): %s → %s",
+            razon,
+            veredicto.verdict,
+            final.verdict,
+            extra={"pipeline_stage": 8},
+        )
+
     async def _journal_rollback_si_sigue_pendiente(self, journal_tx: int | None) -> None:
         """Reintento de cierre tras una cancelación en la ventana post-lock.
 
@@ -765,11 +1013,18 @@ class GrassCacheService:
         if error_msg is not None:
             # Prioridad al error aunque el runner haya terminado: un fallo
             # posterior (lease perdido, teardown que propagó) invalida el
-            # éxito. Los datos del runner viajan como diagnóstico.
+            # éxito. Los datos del runner viajan como diagnóstico —incluido el
+            # veredicto, que el caller reconcilia después (H6)—.
             resultado = self._error(error_msg, inicio)
             if run_result is not None:
                 resultado["outcome"] = run_result.outcome
                 resultado["cgid_count"] = run_result.cgid_count
+                resultado["mode"] = run_result.mode
+                resultado["verdict"] = run_result.verdict
+                resultado["certificado"] = run_result.certificado
+                resultado["verdict_razones"] = list(run_result.verdict_razones)
+                resultado["alcance_certificado"] = run_result.alcance_certificado
+                resultado["evidencia"] = run_result.evidencia
             return resultado
         if run_result is None:
             return self._error("El ritual de grass no llegó a ejecutar el runner.", inicio)
@@ -788,6 +1043,15 @@ class GrassCacheService:
             "flag_residual": run_result.flag_residual,
             "progreso_perdido": run_result.progreso_perdido,
             "flag_alternativo_residual": run_result.flag_alternativo_residual,
+            "limpieza_errores": list(run_result.limpieza_errores),
+            # P1: el veredicto viaja SIEMPRE. `success` no es certificación (D1 del propietario):
+            # un consumidor que necesite una generación certificada mira `certificado`/`verdict`/
+            # `alcance_certificado`, no `success`.
+            "verdict": run_result.verdict,
+            "certificado": run_result.certificado,
+            "verdict_razones": list(run_result.verdict_razones),
+            "alcance_certificado": run_result.alcance_certificado,
+            "evidencia": run_result.evidencia,
             "duration_seconds": duracion,
         }
 

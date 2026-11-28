@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -192,3 +192,26 @@ def test_describe_for_approval_advierte_cobertura_usvfs_en_new() -> None:
 
     assert "NEW" in texto
     assert "cobertura USVFS" in texto
+
+
+async def test_p1_execute_no_reinterpreta_el_veredicto() -> None:
+    """C5: la strategy es un adaptador delgado. Los veredictos sobreviven intactos (D1)."""
+    veredicto = {
+        "success": True,
+        "message": "",
+        "outcome": "completed",
+        "verdict": "completed_unverified",
+        "certificado": False,
+        "verdict_razones": ["fallos_de_celda_atribuibles"],
+        "alcance_certificado": "ninguno",
+        "evidencia": {"archivos_heredados": 0},
+    }
+    servicio = MagicMock()
+    servicio.generate = AsyncMock(return_value=veredicto)
+    strategy = GenerateGrassCacheStrategy(service=servicio)
+
+    resultado = await strategy.execute({"worldspaces": ["Tamriel"], "ack_usvfs_no_verificado": True})
+
+    assert resultado is veredicto
+    assert resultado["certificado"] is False
+    assert resultado["verdict"] == "completed_unverified"

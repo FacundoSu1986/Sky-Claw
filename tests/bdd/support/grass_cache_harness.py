@@ -94,6 +94,9 @@ def _lock_tx_fake(resource_id: str, entradas: list[str]) -> MagicMock:
 
     tx.__aenter__ = AsyncMock(side_effect=_entrar)
     tx.__aexit__ = AsyncMock(return_value=False)
+    # I5: el servicio verifica ownership con la primitiva REAL antes de mutar. El doble
+    # debe responderla como el lock vigente, no como un atributo cualquiera de MagicMock.
+    tx.assert_owned = AsyncMock(return_value=None)
     tx.rollback_completed = False
     return tx
 
@@ -109,6 +112,9 @@ def construir_servicio_grass(
     profile_manager.teardown.return_value = []
 
     runner = AsyncMock()
+    # P1: el doble modela un run CERTIFICADO (verdict + alcance). El BDD exige
+    # success is True y message == ""; con la política nueva esos dos valores son la
+    # CONSECUENCIA de la evidencia, así que el doble tiene que traerla.
     runner.run.return_value = GrassCacheRunResult(
         success=True,
         message="",
@@ -117,6 +123,10 @@ def construir_servicio_grass(
         cgid_count=120,
         cache_size_mb=45.5,
         elapsed_s=3600.0,
+        verdict="completed_verified",
+        certificado=True,
+        alcance_certificado="corrida_completa",
+        evidencia={"worldspaces_solicitados": [], "cobertura_usvfs": "no_verificada"},
     )
     runner_factory = MagicMock(return_value=runner)
 

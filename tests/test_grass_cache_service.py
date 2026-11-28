@@ -25,10 +25,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from sky_claw.app.db.journal import OperationStatus, TransactionStatus
-from sky_claw.app.db.journal_contracts import is_teardown_incomplete
+from sky_claw.app.db.journal_contracts import GRASS_VERDICT_KIND, is_teardown_incomplete
 from sky_claw.app.db.locks import LockAcquisitionError
 from sky_claw.local.mo2.grass_profile import GrassProfileError
-from sky_claw.local.tools.grass_cache_runner import GrassCacheRunResult
+from sky_claw.local.tools.grass_cache_runner import GrassCacheRunner, GrassCacheRunResult
 from sky_claw.local.tools.grass_cache_service import (
     GenerateGrassCacheParams,
     GrassCacheService,
@@ -87,6 +87,8 @@ def _lock_tx_fake() -> MagicMock:
     tx = MagicMock()
     tx.__aenter__ = AsyncMock(return_value=tx)
     tx.__aexit__ = AsyncMock(return_value=False)
+    # I5: el servicio comprueba ownership con la primitiva real; el doble debe poder responderla.
+    tx.assert_owned = AsyncMock(return_value=None)
     tx.rollback_completed = False
     return tx
 
@@ -635,6 +637,15 @@ def _entradas_de_teardown(journal: AsyncMock) -> list[dict[str, Any]]:
     ]
 
 
+def _entradas_de_veredicto(journal: AsyncMock) -> list[dict[str, Any]]:
+    """Llamadas a ``begin_operation`` que registran el veredicto del precache (P1)."""
+    return [
+        llamada.kwargs
+        for llamada in journal.begin_operation.await_args_list
+        if llamada.kwargs.get("metadata", {}).get("kind") == GRASS_VERDICT_KIND
+    ]
+
+
 async def test_teardown_fallido_commitea_pero_deja_constancia_en_el_journal(tmp_path: pathlib.Path) -> None:
     """U-09: el cache SÍ se generó, así que la TX se commitea — pero el journal
     tiene que registrar que el cleanup quedó a medias.
@@ -663,7 +674,11 @@ async def test_teardown_fallido_commitea_pero_deja_constancia_en_el_journal(tmp_
     assert len(entradas) == 1, "falta la entrada de teardown incompleto en el journal"
     assert entradas[0]["transaction_id"] == 77
     assert entradas[0]["metadata"]["paths"] == [str(trabado)]
-    journal.fail_operation.assert_awaited_once()
+    # P1: la TX ahora registra DOS operaciones fallidas distintas — el teardown incompleto (U-09) y
+    # el veredicto no certificado —, así que el conteo global ya no es 1. Cada una se identifica por
+    # su `kind` (el filtro es el mismo mecanismo que usa el predicado de lectura).
+    assert len(_entradas_de_veredicto(journal)) == 1, "falta la operación del veredicto"
+    assert journal.fail_operation.await_count == 2
 
 
 async def test_teardown_limpio_no_ensucia_el_journal(tmp_path: pathlib.Path) -> None:
@@ -1416,3 +1431,518 @@ async def test_dos_perfiles_de_origen_no_se_prestan_el_progreso(tmp_path: pathli
             perfil=config_b.perfil_de_progreso,
         )
     assert excinfo.value.codigo == "progreso_de_otra_instalacion"
+
+
+# ---------------------------------------------------------------------------
+# P1 · propagación del veredicto (C5): servicio, journal y evento
+# ---------------------------------------------------------------------------
+
+
+async def test_p1_el_resultado_propaga_veredicto_alcance_y_evidencia(tmp_path: pathlib.Path) -> None:
+    """C5: el veredicto llega al dict sin pérdida. `success` NO es certificación (D1)."""
+    evidencia = {
+        "worldspaces_solicitados": ["Tamriel"],
+        "archivos_heredados": 12,
+        "archivos_nuevos": 0,
+        "terminalidad": "terminado",
+        "completitud_de_celdas": "no_verificada",
+    }
+    runner_result = _resultado_runner(
+        success=False,
+        verdict="completed_unverified",
+        certificado=False,
+        verdict_razones=("archivos_heredados_sin_procedencia",),
+        alcance_certificado="ninguno",
+        evidencia=evidencia,
+        limpieza_errores=("unlink falló",),
+    )
+    service, _ = _servicio(tmp_path, journal=_journal_con_loot_completado(), runner_result=runner_result)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["verdict"] == "completed_unverified"
+    assert resultado["certificado"] is False
+    assert resultado["success"] is False
+    assert resultado["verdict_razones"] == ["archivos_heredados_sin_procedencia"]
+    assert resultado["alcance_certificado"] == "ninguno"
+    assert resultado["evidencia"] == evidencia
+    # `limpieza_errores` se perdería en la capa de servicio; P1 la propaga.
+    assert resultado["limpieza_errores"] == ["unlink falló"]
+
+
+async def test_p1_success_true_con_certificado_false_no_se_reinterpreta(tmp_path: pathlib.Path) -> None:
+    """El servicio NO re-deriva: propaga lo que decidió la política (una sola fuente)."""
+    runner_result = _resultado_runner(
+        success=True,
+        verdict="completed_unverified",
+        certificado=False,
+        verdict_razones=("fallos_de_celda_atribuibles",),
+    )
+    service, _ = _servicio(tmp_path, journal=_journal_con_loot_completado(), runner_result=runner_result)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is True
+    assert resultado["certificado"] is False
+    assert resultado["verdict"] == "completed_unverified"
+
+
+async def test_p1_journal_registra_el_veredicto_certificado(tmp_path: pathlib.Path) -> None:
+    journal = _journal_con_loot_completado()
+    runner_result = _resultado_runner(
+        verdict="completed_verified",
+        certificado=True,
+        alcance_certificado="corrida_completa",
+        evidencia={"worldspaces_solicitados": ["Tamriel"], "overwrite_grass_dir": "/x/Grass"},
+    )
+    service, _ = _servicio(tmp_path, journal=journal, runner_result=runner_result)
+
+    await service.generate(_PAYLOAD)
+
+    entradas = _entradas_de_veredicto(journal)
+    assert len(entradas) == 1
+    metadata = entradas[0]["metadata"]
+    assert metadata["kind"] == GRASS_VERDICT_KIND
+    assert metadata["verdict"] == "completed_verified"
+    assert metadata["certificado"] is True
+    assert metadata["worldspaces"] == ["Tamriel"]
+    # La metadata del veredicto NO siembra evidencia de artefactos (oráculo de recovery).
+    assert "files_touched" not in metadata
+    journal.complete_operation.assert_awaited_once_with(5)
+    journal.fail_operation.assert_not_awaited()
+
+
+async def test_p1_journal_registra_el_veredicto_no_certificado(tmp_path: pathlib.Path) -> None:
+    journal = _journal_con_loot_completado()
+    runner_result = _resultado_runner(
+        success=True,
+        verdict="completed_unverified",
+        certificado=False,
+        verdict_razones=("fallos_de_celda_historicos",),
+        alcance_certificado="ninguno",
+        evidencia={"worldspaces_solicitados": ["Tamriel"]},
+    )
+    service, _ = _servicio(tmp_path, journal=journal, runner_result=runner_result)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    entradas = _entradas_de_veredicto(journal)
+    assert len(entradas) == 1
+    assert entradas[0]["metadata"]["certificado"] is False
+    assert entradas[0]["metadata"]["razones"] == ["fallos_de_celda_historicos"]
+    journal.fail_operation.assert_awaited_once()
+    # La TX se commitea igual: el producto existe aunque no se certifique.
+    journal.commit_transaction.assert_awaited_once_with(77)
+    assert resultado["certificado"] is False
+
+
+async def test_p1_el_evento_completed_lleva_el_veredicto(tmp_path: pathlib.Path) -> None:
+    runner_result = _resultado_runner(
+        verdict="completed_unverified",
+        certificado=False,
+        alcance_certificado="trabajo_de_la_corrida",
+    )
+    service, colab = _servicio(tmp_path, journal=_journal_con_loot_completado(), runner_result=runner_result)
+    bus = colab["event_bus"]
+
+    await service.generate(_PAYLOAD)
+
+    payloads = [
+        llamada.args[0].payload
+        for llamada in bus.publish.await_args_list
+        if getattr(llamada.args[0], "topic", None) == "pipeline.grass_cache.completed"
+    ]
+    assert payloads, "no se publicó pipeline.grass_cache.completed"
+    assert payloads[-1]["verdict"] == "completed_unverified"
+    assert payloads[-1]["certificado"] is False
+    assert payloads[-1]["alcance_certificado"] == "trabajo_de_la_corrida"
+
+
+# ---------------------------------------------------------------------------
+# Revisión independiente: H6 — el servicio reconcilia la certificación
+# ---------------------------------------------------------------------------
+
+
+class _LockQuePierdeLaLease:
+    """Async CM que simula perder la exclusividad al salir (después del runner)."""
+
+    def __init__(self) -> None:
+        self.rollback_completed = False
+
+    async def __aenter__(self) -> _LockQuePierdeLaLease:
+        return self
+
+    # I5: el servicio ahora verifica ownership con la primitiva REAL antes de mutar. Este doble
+    # pierde la lease al SALIR, no antes: debe responder `assert_owned` como el lock vigente.
+    async def assert_owned(self, *, verify_db: bool = False) -> None:
+        return None
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        raise RuntimeError("lease perdido al liberar el lock")
+
+
+async def test_h6_perdida_de_lease_invalida_la_certificacion(tmp_path: pathlib.Path) -> None:
+    """H6: si la operación pierde exclusividad DESPUÉS del runner, no se publica certificación."""
+    journal = _journal_con_loot_completado()
+    runner_result = _resultado_runner(
+        success=True,
+        verdict="completed_verified",
+        certificado=True,
+        alcance_certificado="corrida_completa",
+        evidencia={"worldspaces_solicitados": ["Tamriel"]},
+    )
+    service, colab = _servicio(
+        tmp_path,
+        journal=journal,
+        runner_result=runner_result,
+        lock_tx=_LockQuePierdeLaLease(),
+        lock_txs={"load-order": _lock_tx_fake()},
+    )
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is False
+    assert resultado["certificado"] is False
+    assert resultado["verdict"] == "completed_unverified"
+    assert "operacion_invalidada" in resultado["verdict_razones"]
+    assert resultado["alcance_certificado"] == "ninguno"
+    # El journal registra el veredicto RECONCILIADO, no el del runner.
+    entradas = _entradas_de_veredicto(journal)
+    assert len(entradas) == 1
+    assert entradas[0]["metadata"]["certificado"] is False
+    assert "operacion_invalidada" in entradas[0]["metadata"]["razones"]
+    # El evento tampoco publica certificación.
+    payloads = [
+        llamada.args[0].payload
+        for llamada in colab["event_bus"].publish.await_args_list
+        if getattr(llamada.args[0], "topic", None) == "pipeline.grass_cache.completed"
+    ]
+    assert payloads and payloads[-1]["certificado"] is False
+
+
+async def test_h6_limpieza_incompleta_invalida_la_certificacion(tmp_path: pathlib.Path) -> None:
+    """H6: un flag residual invalida la certificación aunque el runner haya certificado."""
+    journal = _journal_con_loot_completado()
+    runner_result = _resultado_runner(
+        success=True,
+        verdict="completed_verified",
+        certificado=True,
+        alcance_certificado="corrida_completa",
+        flag_residual=True,
+        limpieza_errores=("unlink falló",),
+        evidencia={"worldspaces_solicitados": ["Tamriel"]},
+    )
+    service, _ = _servicio(tmp_path, journal=journal, runner_result=runner_result)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is False
+    assert resultado["certificado"] is False
+    assert resultado["verdict"] == "completed_unverified"
+    assert "limpieza_incompleta" in resultado["verdict_razones"]
+    entradas = _entradas_de_veredicto(journal)
+    assert entradas[0]["metadata"]["certificado"] is False
+
+
+async def test_h6_certificacion_valida_se_mantiene(tmp_path: pathlib.Path) -> None:
+    """Contraprueba: sin invalidación, la certificación sobrevive intacta."""
+    journal = _journal_con_loot_completado()
+    runner_result = _resultado_runner(
+        success=True,
+        verdict="completed_verified",
+        certificado=True,
+        alcance_certificado="corrida_completa",
+        evidencia={"worldspaces_solicitados": ["Tamriel"]},
+    )
+    service, _ = _servicio(tmp_path, journal=journal, runner_result=runner_result)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is True
+    assert resultado["certificado"] is True
+    assert resultado["verdict"] == "completed_verified"
+    assert _entradas_de_veredicto(journal)[0]["metadata"]["certificado"] is True
+
+
+async def test_h2_terminalidad_no_verificada_omite_el_teardown(tmp_path: pathlib.Path) -> None:
+    """H2/H5: con el juego posiblemente vivo NO se destruye el clon/mod (se preserva y se reporta)."""
+    journal = _journal_con_loot_completado()
+    runner_result = _resultado_runner(
+        success=False,
+        verdict="unknown",
+        certificado=False,
+        verdict_razones=("terminalidad_no_verificada",),
+        evidencia={"terminalidad": "vivo", "lanzamiento": "atribuido"},
+    )
+    service, colab = _servicio(tmp_path, journal=journal, runner_result=runner_result)
+
+    resultado = await service.generate(_PAYLOAD)
+
+    colab["profile_manager"].teardown.assert_not_awaited()
+    assert any("teardown del clon/mod OMITIDO" in fallo for fallo in resultado["teardown_failures"])
+    assert resultado["certificado"] is False
+    journal.commit_transaction.assert_not_awaited()
+    journal.mark_transaction_rolled_back.assert_awaited_once_with(77)
+
+
+async def test_h2_terminalidad_demostrada_hace_teardown_normal(tmp_path: pathlib.Path) -> None:
+    """Contraprueba: con terminalidad demostrada el teardown sigue ocurriendo."""
+    journal = _journal_con_loot_completado()
+    runner_result = _resultado_runner(
+        success=True,
+        verdict="completed_verified",
+        certificado=True,
+        alcance_certificado="corrida_completa",
+        evidencia={"terminalidad": "terminado", "lanzamiento": "atribuido"},
+    )
+    service, colab = _servicio(tmp_path, journal=journal, runner_result=runner_result)
+
+    await service.generate(_PAYLOAD)
+
+    colab["profile_manager"].teardown.assert_awaited_once_with()
+
+
+async def test_f2_dos_rituales_con_proceso_remanente_no_destruyen_el_clon_ajeno(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F2/F1: el segundo ritual se bloquea por el fence y NO destruye el clon del primero.
+
+    Reproduce el defecto confirmado: un segundo ritual encontraba el clon preservado, fallaba en
+    `create_clone_profile()` y ejecutaba el teardown desde el `finally` aunque nunca lo había creado.
+    """
+    import os
+
+    import psutil
+
+    from sky_claw.local.tools.grass_cache_fence import FenceScope, adquirir_fence
+
+    journal = _journal_con_loot_completado()
+    service, colab = _servicio(tmp_path, journal=journal)
+    # Estado del primer ritual: el clon quedó en disco y un proceso vive (fence persistente).
+    estado = pathlib.Path(tmp_path) / "estado_f1"
+    grass = tmp_path / "mo2" / "overwrite" / "Grass"
+    scope = FenceScope.desde_config(game_path=tmp_path / "game", overwrite_grass_dir=grass)
+    adquirido = adquirir_fence(
+        estado,
+        scope,
+        run_id="primera-corrida",
+        intento=1,
+        lanzamiento="atribuido",
+        pid=os.getpid(),  # proceso REAL y vivo (el propio test)
+        create_time=psutil.Process().create_time(),
+        modo="new",
+        creado="2026-11-25T00:00:00",
+    )
+    assert adquirido.ok, adquirido.bloqueo
+    ruta = adquirido.rutas[0]
+    # El runner escribe el fence bajo SU `backup_root`; el servicio debe consultar el MISMO path.
+    # El servicio deriva la raíz de estado de _raiz_de_estado; se fija a la del primer ritual.
+    monkeypatch.setattr(type(service), "_raiz_de_estado", staticmethod(lambda: estado))
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is False
+    assert "fence" in resultado["message"].lower() or "previo" in resultado["message"].lower()
+    colab["profile_manager"].create_clone_profile.assert_not_awaited()
+    colab["profile_manager"].teardown.assert_not_awaited()
+    assert ruta.exists(), "el marcador del primer ritual se conserva"
+
+
+async def test_f1_revalidacion_bajo_locks_bloquea_al_segundo_ritual(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F1 (contrato): el segundo ritual supera el chequeo previo y el fence aparece bajo los locks.
+
+    Determinista: la primera consulta (antes de los locks) ve el camino libre; la segunda (ya con
+    grass-cache + load-order tomados) encuentra un marcador activo. El servicio NO debe mutar nada.
+    """
+    import sky_claw.local.tools.grass_cache_service as gcs
+
+    journal = _journal_con_loot_completado()
+    service, colab = _servicio(tmp_path, journal=journal)
+    llamadas = {"n": 0}
+
+    def _fence_aparece_entre_chequeos(*args: object, **kwargs: object) -> str | None:
+        llamadas["n"] += 1
+        if llamadas["n"] == 1:
+            return None  # el chequeo previo pasa
+        return "Hay un ritual de grass previo SIN terminalidad demostrada (run_id=otro)"
+
+    monkeypatch.setattr(gcs, "bloqueo_por_fence_scope", lambda *a, **k: _fence_aparece_entre_chequeos())
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert llamadas["n"] >= 2, "el fence se consulta también bajo los locks"
+    assert resultado["success"] is False
+    assert "previo SIN terminalidad" in resultado["message"]
+    colab["profile_manager"].create_clone_profile.assert_not_awaited()
+    colab["profile_manager"].teardown.assert_not_awaited()
+    journal.commit_transaction.assert_not_awaited()
+
+
+async def test_p1_excepcion_dura_con_proceso_relevante_vivo_preserva_perfil_config_y_fence(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P1/C3: muerto el PID atribuido pero con el lanzador MO2 VIVO, no hay cierre integral.
+
+    La excepción dura impide re-escanear: el kill sincrónico mata el juego atribuido, pero el
+    lanzador sigue vivo. Certificar ``terminado`` por ese único PID autorizaría teardown
+    destructivo, archivado estable sobre recursos activos y liberación del fence. El contrato
+    exige ``indeterminado`` + perfil, configuración y fence conservados + sin archivado.
+    """
+    import sky_claw.local.tools.grass_cache_runner as gcr
+    import sky_claw.local.tools.grass_cache_service as gcs
+    from sky_claw.local.tools.grass_cache_fence import FenceScope, leer_fence, ruta_de_recurso
+    from tests.test_grass_cache_runner import _MundoProcesos
+
+    estado = tmp_path / "estado"
+    monkeypatch.setattr(gcs.GrassCacheService, "_raiz_de_estado", staticmethod(lambda: estado))
+
+    mundo = _MundoProcesos()
+    mundo.game_dir = tmp_path / "game"
+    monkeypatch.setattr(gcr, "psutil", mundo)
+
+    # Espía del archivado estable: tiene que correrse con archivar=False (o no correrse).
+    real_neutralizar = gcr.neutralizar_flag
+    archivar_flags: list[bool] = []
+
+    def _espiar_neutralizar(**kwargs: Any) -> Any:
+        archivar_flags.append(bool(kwargs.get("archivar")))
+        return real_neutralizar(**kwargs)
+
+    monkeypatch.setattr(gcr, "neutralizar_flag", _espiar_neutralizar)
+
+    journal = _journal_con_loot_completado()
+    service, colab = _servicio(tmp_path, journal=journal)
+
+    mo2 = AsyncMock()
+
+    async def _launch(profile: str) -> dict[str, Any]:
+        mundo.alta_juego(100, 1100)
+        return {"pid": 100, "status": "launched", "profile": profile}
+
+    mo2.launch_game.side_effect = _launch
+    # El lanzador queda VIVO: close_game NO mata el árbol MO2 en este escenario.
+    mo2.close_game.return_value = {"status": "closed", "killed_processes": []}
+    service._mo2 = mo2
+
+    runners: list[GrassCacheRunner] = []
+
+    def _fabricar(config: Any, controlador: Any, **kwargs: Any) -> GrassCacheRunner:
+        runner = GrassCacheRunner(config, controlador, **kwargs)
+
+        async def _explotar(*_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("bug inesperado despues de atribuir")
+
+        monkeypatch.setattr(runner, "_vigilar", _explotar)
+        runners.append(runner)
+        return runner
+
+    service._runner_factory = _fabricar
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert resultado["success"] is False
+    assert runners, "el servicio tiene que usar el runner REAL"
+    runner = runners[0]
+    assert 1100 not in mundo.vivos, "el PID atribuido murió"
+    assert 100 in mundo.vivos, "el lanzador MO2 sigue vivo: ausencia integral NO demostrada"
+    assert runner.terminalidad == "indeterminado", "la muerte de un PID no certifica el cierre"
+    assert runner.terminalidad_integral is False
+    assert archivar_flags, "la neutralización del flag tiene que haberse ejecutado"
+    assert all(flag is False for flag in archivar_flags), "no se archiva un caché potencialmente activo"
+    colab["profile_manager"].teardown.assert_not_awaited(), "sin cierre integral NO se destruye el clon/mod"
+
+    # El fence se conserva ÍNTEGRO: ningún marcador propio fue liberado.
+    scope = FenceScope.desde_config(
+        game_path=tmp_path / "game",
+        overwrite_grass_dir=tmp_path / "mo2" / "overwrite" / "Grass",
+    )
+    marcadores = [leer_fence(ruta_de_recurso(estado, rid)) for rid, _ in scope.recursos()]
+    assert marcadores and all(m is not None for m in marcadores), "el fence se conserva íntegro"
+    assert all(m.run_id == runner.fence_run_id for m in marcadores if m is not None)
+
+
+async def test_h6_lease_perdida_antes_de_liberar_conserva_el_fence(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C2/I5: perder el lease DESPUÉS de neutralizar y ANTES de liberar conserva el fence.
+
+    El runner dejó evidencia integral de cierre, así que el servicio llega a la liberación. Pero la
+    comprobación REAL de ownership falla JUSTO en ese punto: ``autorizado`` queda False y
+    ``liberar_fence_scope`` conserva TODOS los marcadores. Sustituir esa comprobación por ``True``
+    borraría el fence sin exclusividad demostrada.
+    """
+    import sky_claw.local.tools.grass_cache_service as gcs
+    from sky_claw.app.db.locks import LockLeaseLostError
+    from sky_claw.local.tools.grass_cache_fence import (
+        FenceScope,
+        adquirir_fence,
+        leer_fence,
+        ruta_de_recurso,
+    )
+
+    estado = tmp_path / "estado_fence"
+    scope = FenceScope.desde_config(
+        game_path=tmp_path / "game",
+        overwrite_grass_dir=tmp_path / "mo2" / "overwrite" / "Grass",
+    )
+    runner_result = _resultado_runner(
+        success=True,
+        verdict="completed_verified",
+        certificado=True,
+        alcance_certificado="corrida_completa",
+        evidencia={"fence_run_id": "run-x", "terminalidad_integral": True, "terminalidad": "terminado"},
+    )
+    contador = {"n": 0}
+
+    class _LockEspia:
+        def __init__(self) -> None:
+            self.rollback_completed = False
+
+        async def __aenter__(self) -> _LockEspia:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
+
+        async def assert_owned(self, *, verify_db: bool = False) -> None:
+            contador["n"] += 1
+            if contador["n"] >= 3:
+                raise LockLeaseLostError("lease perdido durante la neutralización, antes de liberar")
+
+    service, colab = _servicio(
+        tmp_path,
+        journal=_journal_con_loot_completado(),
+        runner_result=runner_result,
+        lock_tx=_LockEspia(),
+        lock_txs={"load-order": _LockEspia()},
+    )
+    monkeypatch.setattr(gcs.GrassCacheService, "_raiz_de_estado", staticmethod(lambda: estado))
+    monkeypatch.setattr(gcs, "bloqueo_por_fence_scope", lambda *a, **k: None)
+
+    async def _run(*_args: object, **_kwargs: object) -> GrassCacheRunResult:
+        # El fence queda persistido como si el runner lo hubiera adquirido.
+        adquirir_fence(
+            estado,
+            scope,
+            run_id="run-x",
+            intento=0,
+            lanzamiento="atribuido",
+            pid=None,
+            create_time=None,
+            modo="new",
+            creado="2026-11-27T00:00:00",
+        )
+        return runner_result
+
+    colab["runner"].run.side_effect = _run
+
+    resultado = await service.generate(_PAYLOAD)
+
+    assert contador["n"] >= 3, "se verificó ownership REAL antes de liberar"
+    assert any("fence conservado: lease perdido" in fallo for fallo in resultado.get("teardown_failures", []))
+    marcadores = [leer_fence(ruta_de_recurso(estado, rid)) for rid, _ in scope.recursos()]
+    assert marcadores and all(m is not None and m.run_id == "run-x" for m in marcadores), (
+        "sin autorización NO se borra ningún marcador"
+    )
