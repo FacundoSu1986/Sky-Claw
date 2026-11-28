@@ -6,6 +6,7 @@ import itertools
 import json
 import logging
 import secrets
+import tomllib
 from typing import TYPE_CHECKING, Any
 
 import keyring
@@ -121,6 +122,21 @@ def _desactivar_search_key() -> bool:
         )
         return False
     return _search_key_ausente()
+
+
+def _config_sin_search_key(config_path: Path) -> bool:
+    """Confirma que el TOML no contiene un plaintext de ``search_api_key``.
+
+    La lectura de keyring no ve una escritura ajena al TOML. Antes de publicar
+    ``first_run=False`` hay que comprobar ese archivo: ``Config.save()`` podría
+    migrar el plaintext al backend justo en el guardado que cierra el wizard.
+    """
+    try:
+        datos = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, ValueError) as exc:
+        logger.warning("No se pudo verificar el TOML antes de cerrar el wizard (%s).", type(exc).__name__)
+        return False
+    return not datos.get("search_api_key")
 
 
 # =============================================================================
@@ -462,6 +478,11 @@ class SetupWizardModal:
             ui.notify(error, type="negative")
             return
 
+        # ── Fase A: validar y persistir ──────────────────────────────────
+        # Todo lo que pueda escribir secretos queda dentro de este bloque. Si
+        # falla, el overlay todavía no se tocó: recién acá es verdad que el
+        # wizard sigue abierto. Las credenciales ya escritas no se revierten:
+        # se informa que la aplicación puede haber quedado parcial.
         try:
             # Un campo vacío en búsqueda es una intención explícita de desactivar.
             # Se resuelve ANTES de escribir otros secretos para no mutar de más
@@ -472,6 +493,23 @@ class SetupWizardModal:
                     type="negative",
                 )
                 return
+
+            from sky_claw.config import Config
+
+            cfg = Config(self._config_path)
+
+            if not search_key:
+                # Config puede rehidratar un secreto histórico del TOML. La
+                # intención explícita de borrado se registra en el objeto para
+                # que Config.save() no lo reinserte, y se confirma de nuevo
+                # ANTES de escribir credenciales opcionales.
+                cfg._data["search_api_key"] = ""
+                if not _desactivar_search_key():
+                    ui.notify(
+                        "No se pudo desactivar la clave de búsqueda; el wizard sigue abierto para reintentar.",
+                        type="negative",
+                    )
+                    return
 
             key_map = {
                 f"{provider}_api_key": api_key,
@@ -490,23 +528,6 @@ class SetupWizardModal:
             if not existing_ws:
                 keyring.set_password("sky_claw", "ws_auth_token", secrets.token_hex(32))
 
-            from sky_claw.config import Config
-
-            cfg = Config(self._config_path)
-
-            if not search_key:
-                # Config puede rehidratar un secreto histórico del TOML. La
-                # intención explícita de borrado se registra en el objeto para
-                # que Config.save() no lo reinserte, y se confirma de nuevo
-                # antes de publicar cualquier éxito.
-                cfg._data["search_api_key"] = ""
-                if not _desactivar_search_key():
-                    ui.notify(
-                        "No se pudo desactivar la clave de búsqueda; el wizard sigue abierto para reintentar.",
-                        type="negative",
-                    )
-                    return
-
             cfg._data["llm_provider"] = provider
             if telegram_chatid:
                 cfg._data["telegram_chat_id"] = telegram_chatid.replace("@", "")
@@ -514,9 +535,10 @@ class SetupWizardModal:
             if not search_key:
                 mensaje_fallo = (
                     "No se pudo confirmar la desactivación de la clave de búsqueda; "
-                    "el wizard sigue abierto para reintentar."
+                    "la configuración puede haberse aplicado parcialmente. "
+                    "El wizard sigue abierto para reintentar."
                 )
-                first_run_previo = cfg._data.get("first_run", True)
+                # Primer guardado: registra el borrado sin publicar first_run.
                 cfg.save()
                 # ``Config.save`` puede reportar ``PasswordDeleteError`` como
                 # pendiente incluso cuando el secreto ya no existe. La verdad
@@ -525,52 +547,95 @@ class SetupWizardModal:
                     ui.notify(mensaje_fallo, type="negative")
                     return
 
-                # La verificación intermedia no alcanza al save que publica
-                # first_run. Reafirmar la mutación crea una generación nueva:
-                # Config.save() trata el borrado como explícito y no migra un
-                # secreto que otra superficie haya vuelto a dejar en el TOML.
+                # Reafirmar la mutación crea una generación nueva: el segundo
+                # save trata el borrado como explícito y no migra un secreto
+                # que otra superficie haya vuelto a dejar en el TOML.
                 cfg._data["search_api_key"] = ""
-                cfg._data["first_run"] = False
                 cfg.save()
                 if not _search_key_ausente():
-                    # Si la última persistencia invalida la comprobación, no se
-                    # publica éxito y se restaura el flag ya escrito en disco.
-                    cfg._data["first_run"] = first_run_previo
+                    ui.notify(mensaje_fallo, type="negative")
+                    return
+
+                # El guardado que cierra el wizard no puede migrar un plaintext
+                # que otra superficie haya dejado en el TOML. Se comprueba el
+                # archivo, se limpia con un guardado explícito si apareció y
+                # recién entonces se persiste first_run=False.
+                if not _config_sin_search_key(self._config_path):
                     cfg._data["search_api_key"] = ""
                     cfg.save()
                     ui.notify(mensaje_fallo, type="negative")
                     return
+
+                cfg._data["first_run"] = False
+                cfg.save()
             else:
                 cfg._data["first_run"] = False
                 cfg.save()
 
-            # Clear localStorage drafts
-            await self._clear_drafts()
-
-            logger.info("Setup completado — provider=%s", provider)
-
-            # Publish first_run=False to the reactive store so any subscriber
-            # (gate refresh, dashboard, etc.) reacts in the same session.
-            get_store().set("first_run", False)
-
-            # Eliminar overlay del DOM — pero el temporizador de lore fue creado como
-            # elemento de la página (fuera de overlay_el), así que NO muere con
-            # él y hay que desactivarlo explícitamente acá. La guarda por
-            # is_deleted de _rotate_lore sigue como segunda línea (si algún
-            # manejador deja el modal borrado sin pasar por acá).
-            if self._overlay_el:
-                self._overlay_el.delete()
-            if self._lore_timer is not None:
-                self._lore_timer.deactivate()
-                self._lore_timer = None
-
-            await self._on_complete()
-
         except Exception as e:
             # El mensaje de una excepción del backend puede arrastrar secretos.
             # Se registra sólo la clase y se muestra un texto fijo.
-            logger.error("Error guardando configuración (%s).", type(e).__name__)
-            ui.notify("No se pudo guardar la configuración; el wizard sigue abierto.", type="negative")
+            logger.error("No se pudo completar la configuración (%s).", type(e).__name__)
+            ui.notify(
+                "No se pudo completar la configuración; puede haberse aplicado parcialmente. El wizard sigue abierto.",
+                type="negative",
+            )
+            return
+
+        # ── Fase B: limpieza y finalización ──────────────────────────────
+        # La persistencia ya terminó. Ningún fallo de aquí hacia abajo puede
+        # describirse como "no se pudo guardar" ni revertir credenciales ya
+        # escritas. Cada paso se intenta una sola vez y se informa por separado.
+        fallos_finalizacion: list[str] = []
+
+        try:
+            await self._clear_drafts()
+        except Exception as e:
+            logger.warning("No se pudieron limpiar los borradores (%s).", type(e).__name__)
+            fallos_finalizacion.append("borradores")
+
+        try:
+            get_store().set("first_run", False)
+        except Exception as e:
+            logger.warning("No se pudo publicar first_run en el estado (%s).", type(e).__name__)
+            fallos_finalizacion.append("estado")
+
+        # Eliminar overlay del DOM — pero el temporizador de lore fue creado como
+        # elemento de la página (fuera de overlay_el), así que NO muere con
+        # él y hay que desactivarlo explícitamente acá. La guarda por
+        # is_deleted de _rotate_lore sigue como segunda línea (si algún
+        # manejador deja el modal borrado sin pasar por acá).
+        if self._overlay_el:
+            try:
+                self._overlay_el.delete()
+            except Exception as e:
+                logger.warning("No se pudo cerrar el overlay (%s).", type(e).__name__)
+                fallos_finalizacion.append("overlay")
+
+        if self._lore_timer is not None:
+            try:
+                self._lore_timer.deactivate()
+            except Exception as e:
+                logger.warning("No se pudo desactivar el temporizador de lore (%s).", type(e).__name__)
+                fallos_finalizacion.append("temporizador")
+            finally:
+                self._lore_timer = None
+
+        try:
+            await self._on_complete()
+        except Exception as e:
+            logger.error("Falló la finalización del wizard (%s).", type(e).__name__)
+            fallos_finalizacion.append("finalización")
+
+        if fallos_finalizacion:
+            ui.notify(
+                "Configuración guardada, pero la finalización quedó incompleta: "
+                + ", ".join(fallos_finalizacion)
+                + ".",
+                type="warning",
+            )
+        else:
+            logger.info("Setup completado — provider=%s", provider)
 
     # ── localStorage Draft Autosave ──────────────────────────────────
 
