@@ -20,6 +20,7 @@ Cumple B01–B15:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -30,6 +31,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -47,7 +49,7 @@ EXIT_ERROR = 2
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _PIN_EXACTO_RE = re.compile(r"^([A-Za-z0-9_.\-]+)==([^\s;\\]+)")
 _OPERADORES_FLOTANTES: tuple[str, ...] = (">=", "<=", "~=", "!=", ">", "<")
-_HASH_SHA256_RE = re.compile(r"--hash=sha256:([0-9a-fA-F]+)")
+_HASH_SHA256_RE = re.compile(r"--hash=sha256:(\S+)")
 
 #: Herramientas obligatorias del toolchain de build (B09/B12).
 HERRAMIENTAS_BUILD_OBLIGATORIAS: frozenset[str] = frozenset(
@@ -213,6 +215,16 @@ def verificar_compatibilidad_locks(
     if conflictos:
         raise BuildControladoError("Conflicto de versiones entre lock runtime y build: " + "; ".join(conflictos))
 
+    conflictos_hash = [
+        f"{pkg}: hashes runtime != hashes build"
+        for pkg in comunes
+        if set(lock_runtime[pkg].hashes) != set(lock_build[pkg].hashes)
+    ]
+    if conflictos_hash:
+        raise BuildControladoError(
+            "Conflicto de hashes SHA-256 en paquetes compartidos entre locks: " + "; ".join(conflictos_hash)
+        )
+
 
 def validar_entorno_build(
     instalados: Mapping[str, str],
@@ -274,12 +286,24 @@ def _es_reparse_point_o_symlink(ruta: Path) -> bool:
 
 
 def _verificar_sin_reparse_en_ancestros(ruta: Path, *, etiqueta: str) -> None:
-    """Rechaza symlinks, junctions y reparse points en ``ruta`` o cualquier ancestro existente (B11/B17)."""
-    for candidato in (ruta, *ruta.parents):
-        if candidato.exists() and _es_reparse_point_o_symlink(candidato):
+    """Rechaza symlinks, junctions, reparse points y enlaces rotos en ``ruta`` o ancestros (B11/B17/B22)."""
+    abs_sin_resolver = Path(os.path.abspath(str(ruta)))
+    for candidato in (abs_sin_resolver, *abs_sin_resolver.parents):
+        if _es_reparse_point_o_symlink(candidato):
             raise BuildControladoError(f"Ruta de {etiqueta} peligrosa (symlink/junction/reparse point): {candidato}")
         if candidato == candidato.parent:
             break
+
+
+def resolver_out_dir_exclusivo(dist_dir: Path, *, perfil: str) -> Path:
+    """Genera un subdirectorio exclusivo por ejecución bajo ``dist_dir/build-evidence`` (B20)."""
+    base = dist_dir / "build-evidence"
+    for _ in range(16):
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        candidato = base / f"{perfil}-{stamp}-{uuid.uuid4().hex[:8]}"
+        if not candidato.exists():
+            return candidato
+    raise BuildControladoError(f"No se pudo generar un directorio de evidencia exclusivo bajo {base}")
 
 
 def _validar_ruta_destino_comun(ruta: Path, repo_root: Path, *, etiqueta: str, prohibir_dentro_repo: bool) -> Path:
@@ -508,13 +532,17 @@ def evaluar_veredicto_tecnico(
     legal_blockers: list[str] = []
     technical_blockers: list[str] = [str(b) for b in extra_technical_blockers]
 
+    spdx_declared_counts: list[int | None] = []
     for b in reporte.get("blockers", []):
         b_str = str(b)
         if b_str.startswith(PREFIJOS_BLOQUEOS_JURIDICOS_CONOCIDOS):
             legal_blockers.append(b_str)
         elif b_str.startswith("spdx_validation_errors="):
-            # Se contabiliza de forma explícita bajo spdx_internal_validation_errors (B19).
-            continue
+            raw_val = b_str.split("=", 1)[1].strip()
+            try:
+                spdx_declared_counts.append(int(raw_val))
+            except ValueError:
+                spdx_declared_counts.append(None)
         else:
             technical_blockers.append(b_str)
 
@@ -525,12 +553,18 @@ def evaluar_veredicto_tecnico(
     if build_en_exe:
         technical_blockers.append(f"build_deps_redistributed_in_exe={','.join(build_en_exe)}")
 
-    # B19: separar validación SPDX interna (PR-LIC-03A) vs JSON Schema oficial vs no ejecutada
+    # B19/B23: separar validación SPDX interna vs JSON Schema oficial y rechazar contadores inconsistentes
     internal_errs = (
         [str(e) for e in reporte.get("spdx_validation_errors", [])]
         if spdx_internal_errors is None
         else [str(e) for e in spdx_internal_errors]
     )
+    spdx_internal_inconsistent = False
+    for cnt in spdx_declared_counts:
+        if cnt is None or cnt < 0 or (cnt > 0 and len(internal_errs) != cnt):
+            spdx_internal_inconsistent = True
+    if spdx_internal_inconsistent:
+        technical_blockers.append("spdx_internal_validation_inconsistent=1")
     official_val = _normalizar_validacion_spdx_oficial(spdx_official_validation)
     if internal_errs:
         technical_blockers.append(f"spdx_internal_validation_errors={len(internal_errs)}")
@@ -587,8 +621,9 @@ def evaluar_veredicto_tecnico(
         "build_deps_redistributed_in_exe": build_en_exe,
         "spdx_internal_validation": {
             "executed": True,
-            "passed": len(internal_errs) == 0,
+            "passed": len(internal_errs) == 0 and not spdx_internal_inconsistent,
             "errors": internal_errs,
+            "inconsistent_blocker_count": spdx_internal_inconsistent,
             "scope": str(
                 reporte.get(
                     "spdx_validation_scope",
@@ -814,15 +849,61 @@ def _preparar_venv_controlado(
     return py_build, py_ver_build, mapa_inst, paquetes_env, env_ctrl
 
 
-def _promover_evidencia_staging(staging_dir: Path, out_dir: Path) -> None:
-    """Copia atómicamente los archivos de evidencia generados en staging hacia ``out_dir`` (B17)."""
+def _promover_evidencia_staging(staging_dir: Path, out_dir: Path) -> list[Path]:
+    """Copia atómicamente archivo por archivo desde staging hacia ``out_dir`` y retorna los creados (B17/B21)."""
     out_dir.mkdir(parents=True, exist_ok=True)
+    creados: list[Path] = []
     for src in sorted(staging_dir.iterdir()):
         if not src.is_file():
             continue
+        destino = out_dir / src.name
         tmp_dest = out_dir / f".{src.name}.{os.getpid()}.tmp"
-        shutil.copy2(src, tmp_dest)
-        os.replace(tmp_dest, out_dir / src.name)
+        try:
+            shutil.copy2(src, tmp_dest)
+            os.replace(tmp_dest, destino)
+            creados.append(destino)
+        except Exception:
+            tmp_dest.unlink(missing_ok=True)
+            for previo in creados:
+                previo.unlink(missing_ok=True)
+            raise
+    return creados
+
+
+def promover_evidencia_y_ejecutable(
+    *,
+    staging_ev: Path,
+    out_dir: Path,
+    exe_staging: Path,
+    dist_dir: Path,
+    promover_exe: bool,
+) -> bool:
+    """Promueve TODA la evidencia antes de sustituir ``SkyClawApp.exe``, con rollback ante fallo (B21).
+
+    Nota: la sustitución conjunta de múltiples archivos (evidencias + ejecutable) en NTFS no es
+    una transacción atómica del sistema de archivos; se ejecuta de forma secuencial (evidencia primero,
+    ejecutable después) con rollback best-effort si falla la sustitución final del ejecutable.
+    """
+    out_existia = out_dir.exists()
+    creados = _promover_evidencia_staging(staging_ev, out_dir)
+    if not promover_exe:
+        return False
+
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    exe_final = dist_dir / "SkyClawApp.exe"
+    tmp_dest = dist_dir / f".SkyClawApp.exe.{os.getpid()}.tmp"
+    try:
+        shutil.copy2(exe_staging, tmp_dest)
+        os.replace(tmp_dest, exe_final)
+        return True
+    except Exception:
+        tmp_dest.unlink(missing_ok=True)
+        for p in creados:
+            p.unlink(missing_ok=True)
+        if not out_existia and out_dir.is_dir():
+            with contextlib.suppress(OSError):
+                out_dir.rmdir()
+        raise
 
 
 def ejecutar_build_controlado(
@@ -830,23 +911,25 @@ def ejecutar_build_controlado(
     repo_root: Path,
     perfil: str,
     dist_dir: Path,
-    out_dir: Path,
+    out_dir: Path | None = None,
     build_dir_opcional: Path | None = None,
     python_base: Path | None = None,
     allow_dirty: bool = False,
     spdx_schema_path: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
-    """Ejecuta el pipeline completo de build controlado en Windows aislado (B01–B19)."""
+    """Ejecuta el pipeline completo de build controlado en Windows aislado (B01–B23)."""
+    if perfil not in _PERFIL_A_LOCK:
+        raise BuildControladoError(f"Perfil inválido: {perfil!r}. Opciones: {sorted(_PERFIL_A_LOCK)}")
+
+    out_dir_efectivo = out_dir if out_dir is not None else resolver_out_dir_exclusivo(dist_dir, perfil=perfil)
+
     # B17: validar TODOS los destinos ANTES de crear directorios, escribir o tocar archivos.
     dist_res, out_res, build_res = validar_destinos_build(
         dist_dir=dist_dir,
-        out_dir=out_dir,
+        out_dir=out_dir_efectivo,
         build_dir_opcional=build_dir_opcional,
         repo_root=repo_root,
     )
-
-    if perfil not in _PERFIL_A_LOCK:
-        raise BuildControladoError(f"Perfil inválido: {perfil!r}. Opciones: {sorted(_PERFIL_A_LOCK)}")
 
     lock_runtime_path = repo_root / _PERFIL_A_LOCK[perfil]
     lock_build_path = repo_root / "requirements-build.lock"
@@ -1026,16 +1109,11 @@ def ejecutar_build_controlado(
             allow_dirty=allow_dirty,
         )
 
-        # 10. Promover EXE al destino final SOLO si technical_build_valid o local_dev_build_passed (B11/B18)
+        # 10. Preparar manifiesto completo en staging y promover evidencia ANTES de sustituir el EXE (B21)
         exe_sha, exe_bytes = _sha256_archivo(exe_staging)
-        exe_final = dist_res / "SkyClawApp.exe"
-        promoted = False
-        if veredicto["technical_build_valid"] or veredicto["local_dev_build_passed"]:
-            dist_res.mkdir(parents=True, exist_ok=True)
-            tmp_dest = dist_res / f".SkyClawApp.exe.{os.getpid()}.tmp"
-            shutil.copy2(exe_staging, tmp_dest)
-            os.replace(tmp_dest, exe_final)
-            promoted = True
+        debe_promover = bool(veredicto["technical_build_valid"] or veredicto["local_dev_build_passed"])
+        mapa_inst_norm = {_normalizar_pep503(k): v for k, v in mapa_inst.items()}
+        pre_inputs = source_pre["inputs_sha256"]
 
         manifiesto: dict[str, Any] = {
             "schema_version": 2,
@@ -1062,18 +1140,21 @@ def ejecutar_build_controlado(
                 "python_version": py_ver_build,
                 "platform": platform.platform(),
                 "machine": platform.machine(),
-                "pip_version": mapa_inst.get("pip", "UNKNOWN"),
-                "build_tools": {
-                    k: mapa_inst.get(_normalizar_pep503(k), mapa_inst.get(k, "ABSENT")) for k in sorted(lock_build)
-                },
+                "pip_version": mapa_inst_norm.get("pip", "UNKNOWN"),
+                "build_tools": {k: mapa_inst_norm.get(_normalizar_pep503(k), "ABSENT") for k in sorted(lock_build)},
                 "non_pinned_os_components": ["windows_os_version", "ucrt_system_dlls", "pyinstaller_zip_timestamps"],
             },
             "lockfiles": {
-                "runtime": {"path": lock_runtime_path.name, "sha256": _sha256_archivo(lock_runtime_path)[0]},
-                "build": {"path": lock_build_path.name, "sha256": _sha256_archivo(lock_build_path)[0]},
+                "runtime": {"path": lock_runtime_path.name, "sha256": pre_inputs[lock_runtime_path.name]},
+                "build": {"path": lock_build_path.name, "sha256": pre_inputs[lock_build_path.name]},
             },
             "artifacts": {
-                "exe": {"name": "SkyClawApp.exe", "sha256": exe_sha, "bytes": exe_bytes, "promoted_to_dist": promoted},
+                "exe": {
+                    "name": "SkyClawApp.exe",
+                    "sha256": exe_sha,
+                    "bytes": exe_bytes,
+                    "promoted_to_dist": debe_promover,
+                },
                 "exe_sha256_json": {"path": reg_sha_path.name, "sha256": _sha256_archivo(reg_sha_path)[0]},
                 "analysis_toc_json": {"path": toc_out_path.name, "sha256": _sha256_archivo(toc_out_path)[0]},
                 "build_env_json": {"path": env_json_path.name, "sha256": _sha256_archivo(env_json_path)[0]},
@@ -1087,7 +1168,13 @@ def ejecutar_build_controlado(
             "verdict": veredicto,
         }
         _escribir_json_atomico(manifiesto, staging_ev / "build_manifest.json")
-        _promover_evidencia_staging(staging_ev, out_res)
+        promover_evidencia_y_ejecutable(
+            staging_ev=staging_ev,
+            out_dir=out_res,
+            exe_staging=exe_staging,
+            dist_dir=dist_res,
+            promover_exe=debe_promover,
+        )
         ok_exit = veredicto["technical_build_valid"] or veredicto["local_dev_build_passed"]
         return manifiesto, (EXIT_OK if ok_exit else EXIT_FAIL_CLOSED)
     finally:
@@ -1211,12 +1298,19 @@ def _verificar_reporte_ci(
         repo_root, lock_runtime_path=lock_runtime_path, lock_build_path=lock_build_path
     )
 
-    # B19: separación explícita de validación SPDX interna vs oficial vs no ejecutada
-    spdx_official = (
-        validar_spdx_contra_schema_oficial(sbom_path, spdx_schema_path)
-        if sbom_path is not None
-        else _normalizar_validacion_spdx_oficial(None)
-    )
+    # B19/B23: si se solicitó explícitamente --spdx-schema sin --sbom, fallar cerrado
+    if spdx_schema_path is not None and sbom_path is None:
+        spdx_official = {
+            "status": "failed",
+            "executed": False,
+            "schema_source": spdx_schema_path.name,
+            "errors": ["Se solicitó --spdx-schema sin proporcionar --sbom"],
+            "reason": "sbom_path_missing_for_requested_spdx_schema",
+        }
+    elif sbom_path is not None:
+        spdx_official = validar_spdx_contra_schema_oficial(sbom_path, spdx_schema_path)
+    else:
+        spdx_official = _normalizar_validacion_spdx_oficial(None)
 
     ver = evaluar_veredicto_tecnico(
         reporte,
@@ -1241,7 +1335,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--dist-dir", type=Path, default=Path("dist"), help="Directorio destino para SkyClawApp.exe.")
     parser.add_argument(
-        "--out-dir", type=Path, default=Path("dist/build-evidence"), help="Directorio de evidencias del build."
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Directorio de evidencias del build (default: subdirectorio exclusivo bajo dist/build-evidence/).",
     )
     parser.add_argument(
         "--build-dir", type=Path, default=None, help="Directorio temporal opcional (debe ser nuevo y seguro)."
@@ -1353,20 +1450,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             lock_rt = parsear_lockfile_con_hashes(lock_rt_path)
             lock_b = parsear_lockfile_con_hashes(lock_b_path)
             verificar_compatibilidad_locks(lock_rt, lock_b)
+            # B22: normalizar ruta absoluta antes de cambiar cwd y reservar directorio nuevo y exclusivo
+            venv_abs = Path(os.path.abspath(str(args.prepare_venv)))
+            venv_seguro = validar_directorio_build_seguro(venv_abs, repo_root)
+            venv_seguro.mkdir(parents=True, exist_ok=False)
             # B18: capturar identidad fuente ANTES de preparar el entorno y compilar
             source_pre = capturar_identidad_fuente(
                 repo_root, lock_runtime_path=lock_rt_path, lock_build_path=lock_b_path
             )
-            _, py_ver, mapa, pkgs, _ = _preparar_venv_controlado(
-                build_venv=args.prepare_venv,
-                repo_root=repo_root,
-                perfil=args.profile,
-                lock_runtime_path=lock_rt_path,
-                lock_build_path=lock_b_path,
-                lock_runtime=lock_rt,
-                lock_build=lock_b,
-                py_host=Path(sys.executable),
-            )
+            try:
+                _, py_ver, mapa, pkgs, _ = _preparar_venv_controlado(
+                    build_venv=venv_seguro,
+                    repo_root=repo_root,
+                    perfil=args.profile,
+                    lock_runtime_path=lock_rt_path,
+                    lock_build_path=lock_b_path,
+                    lock_runtime=lock_rt,
+                    lock_build=lock_b,
+                    py_host=Path(sys.executable),
+                )
+            except Exception:
+                shutil.rmtree(venv_seguro, ignore_errors=True)
+                raise
             if args.env_out is not None:
                 _verificar_sin_reparse_en_ancestros(args.env_out, etiqueta="env_out")
                 args.env_out.parent.mkdir(parents=True, exist_ok=True)

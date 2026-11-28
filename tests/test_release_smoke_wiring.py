@@ -139,14 +139,17 @@ def test_ci_build_suspende_publicacion_de_ejecutable_en_todos_los_eventos_b15() 
         "con `if: ${{ false }}` en todos los eventos hasta PR-LIC-04 (B15)"
     )
     assert str(upload_step.get("with", {}).get("path", "")).strip() == "dist/SkyClawApp.exe"
-    # Ningún otro paso de upload-artifact en ci.yml puede subir el ejecutable ni archivos de dist/
+    # Ningún otro paso de upload-artifact en ci.yml puede subir el ejecutable, directorios como `dist` o `.`
+    # ni comodines arbitrarios: se congela por allowlist exacta (B15).
+    rutas_permitidas_otros_jobs = frozenset({"shard-out/", "coverage.xml"})
     for job_name, job in ci.get("jobs", {}).items():
         if job_name == "build":
             continue
         for step in job.get("steps", []):
             if str(step.get("uses", "")).startswith("actions/upload-artifact@"):
-                ruta = str(step.get("with", {}).get("path", ""))
-                assert "SkyClawApp" not in ruta and "dist/" not in ruta, (job_name, ruta)
+                rutas = {linea.strip() for linea in str(step.get("with", {}).get("path", "")).splitlines()}
+                rutas.discard("")
+                assert rutas and rutas <= rutas_permitidas_otros_jobs, (job_name, sorted(rutas))
 
 
 def test_los_productores_sin_publicacion_no_publican_el_ejecutable() -> None:

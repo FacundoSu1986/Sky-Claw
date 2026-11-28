@@ -84,7 +84,7 @@ echo.
 :: never reusing .venv [dev].
 :: ---------------------------------------------------------------------------
 echo [4/4] Building SkyClawApp.exe (controlled isolated build)...
-uv run --no-sync python scripts/build_controlado.py --profile base --dist-dir dist --out-dir dist\build-evidence
+uv run --no-sync python scripts/build_controlado.py --profile base --dist-dir dist
 if errorlevel 1 (
     echo.
     echo  ERROR: Build failed. Check the output above.

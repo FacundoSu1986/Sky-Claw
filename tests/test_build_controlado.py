@@ -442,6 +442,7 @@ def test_b16_verify_report_rechaza_reporte_de_otro_exe_sin_smoke_o_sin_venv(
     monkeypatch.setattr(bc, "validar_entorno_build", lambda *_a, **_k: [])
     monkeypatch.setattr(bc, "capturar_identidad_fuente", lambda *_a, **_k: id_limpia)
 
+    # Act 3 — caso de control válido y mutaciones independientes de un solo factor a la vez (B16 / CodeRabbit)
     base_args = [
         "--verify-report",
         str(rep_ok_path),
@@ -455,8 +456,47 @@ def test_b16_verify_report_rechaza_reporte_de_otro_exe_sin_smoke_o_sin_venv(
         str(pre_ok_path),
     ]
     assert bc.main([*base_args, "--smoke-outcome", "success"]) == bc.EXIT_OK
+    # Fallo aislado 1: solo smoke fallido o ausente
     assert bc.main([*base_args, "--smoke-outcome", "failure"]) == bc.EXIT_FAIL_CLOSED
     assert bc.main(base_args) == bc.EXIT_FAIL_CLOSED
+    # Fallo aislado 2: solo EXE hash mismatch (con venv, source-pre y smoke válidos)
+    assert (
+        bc.main(
+            [
+                "--verify-report",
+                str(rep_otro_path),
+                "--profile",
+                "base",
+                "--exe",
+                str(exe_real),
+                "--validate-venv",
+                str(fake_venv),
+                "--source-pre",
+                str(pre_ok_path),
+                "--smoke-outcome",
+                "success",
+            ]
+        )
+        == bc.EXIT_FAIL_CLOSED
+    )
+    # Fallo aislado 3: solo venv ausente (con EXE, source-pre y smoke válidos)
+    assert (
+        bc.main(
+            [
+                "--verify-report",
+                str(rep_ok_path),
+                "--profile",
+                "base",
+                "--exe",
+                str(exe_real),
+                "--source-pre",
+                str(pre_ok_path),
+                "--smoke-outcome",
+                "success",
+            ]
+        )
+        == bc.EXIT_FAIL_CLOSED
+    )
 
 
 def test_b16_ci_comparte_preparacion_venv_y_propaga_lastexitcode_en_pwsh() -> None:
@@ -729,7 +769,7 @@ def test_b18_capturar_identidad_fuente_detecta_mutacion_de_codigo_y_lock_en_repo
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "--no-gpg-sign", "-q", "-m", "init"], check=True)
 
     # Act 1 — captura previa limpia
     pre = bc.capturar_identidad_fuente(
@@ -927,3 +967,209 @@ def test_b18_ci_verify_report_exige_source_pre_independiente_y_detecta_mutacion_
     # Act & Assert 5 (discriminante MB16) — si el árbol/lock mutó entre pre y post => EXIT_FAIL_CLOSED
     monkeypatch.setattr(bc, "capturar_identidad_fuente", lambda *_a, **_k: id_post_mutada)
     assert bc.main([*base_args, "--source-pre", str(pre_ok_path)]) == bc.EXIT_FAIL_CLOSED
+
+
+# ---------------------------------------------------------------------------
+# 11. R3: B20–B23 y reconciliación CodeRabbit (hashes, token SHA-256, rollback, venv)
+# ---------------------------------------------------------------------------
+
+
+def test_b20_build_bat_no_fija_out_dir_reutilizable_y_destinos_consecutivos_son_exclusivos(tmp_path: Path) -> None:
+    # Arrange
+    contenido_bat = (RAIZ / "build.bat").read_text(encoding="utf-8")
+    dist_sim = tmp_path / "dist"
+    dist_sim.mkdir()
+
+    # Assert 1 — build.bat no fija --out-dir dist\build-evidence (rompería la 2da ejecución consecutiva)
+    assert "--out-dir dist\\build-evidence" not in contenido_bat
+    assert "--out-dir dist/build-evidence" not in contenido_bat
+
+    # Act & Assert 2 — dos resoluciones consecutivas producen directorios distintos y preservan el primero
+    d1 = bc.resolver_out_dir_exclusivo(dist_sim, perfil="base")
+    d1.mkdir(parents=True)
+    (d1 / "build_manifest.json").write_text('{"run": 1}\n', encoding="utf-8")
+    d2 = bc.resolver_out_dir_exclusivo(dist_sim, perfil="base")
+    assert d1 != d2
+    assert not d2.exists()
+    assert (d1 / "build_manifest.json").is_file()
+
+
+def test_b21_promocion_evidencia_antes_de_exe_y_rollback_ante_fallo_de_sustitucion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange — EXE previo válido en dist_dir y staging completo de una corrida nueva
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    exe_previo = dist_dir / "SkyClawApp.exe"
+    exe_previo.write_bytes(b"EXE-PREVIO-VALIDO")
+
+    staging_ev = tmp_path / "staging_ev"
+    staging_ev.mkdir()
+    (staging_ev / "build_manifest.json").write_text('{"new": true}\n', encoding="utf-8")
+    exe_nuevo = tmp_path / "staging_dist" / "SkyClawApp.exe"
+    exe_nuevo.parent.mkdir()
+    exe_nuevo.write_bytes(b"EXE-NUEVO-CANDIDATO")
+
+    # Caso 1 — fallo al escribir/promover evidencia: NO debe sustituir el EXE previo
+    out_fallo_ev = tmp_path / "out_fallo_ev"
+
+    def _fallar_evidencia(*_a: Any, **_k: Any) -> None:
+        raise OSError("disco lleno al promover evidencia")
+
+    monkeypatch.setattr(bc, "_promover_evidencia_staging", _fallar_evidencia)
+    with pytest.raises(OSError, match="disco lleno"):
+        bc.promover_evidencia_y_ejecutable(
+            staging_ev=staging_ev,
+            out_dir=out_fallo_ev,
+            exe_staging=exe_nuevo,
+            dist_dir=dist_dir,
+            promover_exe=True,
+        )
+    assert exe_previo.read_bytes() == b"EXE-PREVIO-VALIDO"
+
+    # Caso 2 — evidencia se promueve bien, pero falla la sustitución final del EXE: rollback limpia out_dir y preserva EXE previo
+    monkeypatch.undo()
+    out_fallo_exe = tmp_path / "out_fallo_exe"
+    orig_replace = bc.os.replace
+
+    def _fallar_en_exe(src: Any, dst: Any) -> None:
+        if Path(dst) == exe_previo:
+            raise OSError("archivo bloqueado al reemplazar EXE")
+        orig_replace(src, dst)
+
+    monkeypatch.setattr(bc.os, "replace", _fallar_en_exe)
+    with pytest.raises(OSError, match="archivo bloqueado"):
+        bc.promover_evidencia_y_ejecutable(
+            staging_ev=staging_ev,
+            out_dir=out_fallo_exe,
+            exe_staging=exe_nuevo,
+            dist_dir=dist_dir,
+            promover_exe=True,
+        )
+    assert exe_previo.read_bytes() == b"EXE-PREVIO-VALIDO"
+    assert not (out_fallo_exe / "build_manifest.json").exists()
+
+
+def test_b22_prepare_venv_rechaza_directorio_preexistente_y_dangling_link_sin_modificar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange — venv preexistente con archivo testigo
+    venv_existente = tmp_path / "venv_existente"
+    venv_existente.mkdir()
+    testigo = venv_existente / "pyvenv.cfg"
+    testigo.write_text("home = original\n", encoding="utf-8")
+
+    # Act 1 — --prepare-venv sobre directorio preexistente debe fallar sin modificarlo
+    rc = bc.main(["--prepare-venv", str(venv_existente), "--profile", "base"])
+    assert rc != bc.EXIT_OK
+    assert testigo.read_text(encoding="utf-8") == "home = original\n"
+
+    # Act 2 — dangling link (exists() == False pero is_symlink/reparse == True) debe rechazarse
+    dangling = tmp_path / "enlace_roto"
+    monkeypatch.setattr(bc, "_es_reparse_point_o_symlink", lambda p: p == dangling)
+    with pytest.raises(bc.BuildControladoError, match="symlink|junction|reparse"):
+        bc._verificar_sin_reparse_en_ancestros(dangling, etiqueta="build_venv")
+
+
+def test_b23_spdx_inconsistente_y_spdx_schema_sin_sbom_fallan_cerrado(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange
+    lock_rt = _lock_valido({"aiohttp": "3.14.4", "pydantic": "2.12.5"})
+    lock_build = _lock_valido(
+        {
+            "pyinstaller": "6.22.3",
+            "pyinstaller-hooks-contrib": "2026.10",
+            "hatchling": "1.33.0",
+            "hatch-vcs": "0.5.0",
+        }
+    )
+
+    # Caso 1 — blockers declara spdx_validation_errors=2 pero lista spdx_validation_errors está vacía
+    rep_inc = _reporte_base_tecnico_valido()
+    rep_inc["blockers"].append("spdx_validation_errors=2")
+    rep_inc["spdx_validation_errors"] = []
+    ver_inc = bc.evaluar_veredicto_tecnico(
+        rep_inc, lock_rt, lock_build, smoke_passed=True, entorno_errores=[], spdx_internal_errors=[]
+    )
+    assert ver_inc["technical_build_valid"] is False
+    assert "spdx_internal_validation_inconsistent=1" in ver_inc["technical_blockers"]
+    assert ver_inc["spdx_internal_validation"]["passed"] is False
+
+    # Caso 2 — --verify-report con --spdx-schema pero SIN --sbom debe fallar cerrado
+    import json
+
+    exe_real = tmp_path / "SkyClawApp.exe"
+    exe_real.write_bytes(b"MZ-b23")
+    sha_real = hashlib.sha256(exe_real.read_bytes()).hexdigest()
+    rep_ok = _reporte_base_tecnico_valido()
+    rep_ok["exe"] = {"name": "SkyClawApp.exe", "sha256": sha_real, "bytes": exe_real.stat().st_size}
+    rep_path = tmp_path / "rep.json"
+    rep_path.write_text(json.dumps(rep_ok), encoding="utf-8")
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text("{}", encoding="utf-8")
+    fake_venv = tmp_path / "fv"
+    fake_py = (
+        fake_venv / ("Scripts" if bc.os.name == "nt" else "bin") / ("python.exe" if bc.os.name == "nt" else "python")
+    )
+    fake_py.parent.mkdir(parents=True)
+    fake_py.write_bytes(b"")
+    id_limpia = {
+        "commit": "a" * 40,
+        "tree": "b" * 40,
+        "source_tree_clean": True,
+        "dirty_entries_count": 0,
+        "inputs_sha256": {"sky_claw.spec": "1" * 64},
+    }
+    pre_path = tmp_path / "pre.json"
+    pre_path.write_text(
+        json.dumps({"schema_version": 1, "profile": "base", "run_id": None, "source_identity": id_limpia}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bc, "_obtener_mapa_instalados", lambda *_a, **_k: ("3.11.9", {}))
+    monkeypatch.setattr(bc, "validar_entorno_build", lambda *_a, **_k: [])
+    monkeypatch.setattr(bc, "capturar_identidad_fuente", lambda *_a, **_k: id_limpia)
+
+    rc_sin_sbom = bc.main(
+        [
+            "--verify-report",
+            str(rep_path),
+            "--profile",
+            "base",
+            "--exe",
+            str(exe_real),
+            "--validate-venv",
+            str(fake_venv),
+            "--source-pre",
+            str(pre_path),
+            "--smoke-outcome",
+            "success",
+            "--spdx-schema",
+            str(schema_path),
+        ]
+    )
+    assert rc_sin_sbom == bc.EXIT_FAIL_CLOSED
+
+
+def test_r3_coderabbit_hashes_compartidos_y_token_sha256_completo(tmp_path: Path) -> None:
+    # Caso 1 — paquete compartido con misma versión pero hashes distintos entre locks debe fallar
+    lock_rt = {
+        "pefile": bc.EntradaLock("pefile", "2024.8.26", ("sha256:" + "a" * 64,)),
+    }
+    lock_build = _lock_valido(
+        {
+            "pyinstaller": "6.22.3",
+            "pyinstaller-hooks-contrib": "2026.10",
+            "hatchling": "1.33.0",
+            "hatch-vcs": "0.5.0",
+        }
+    )
+    lock_build["pefile"] = bc.EntradaLock("pefile", "2024.8.26", ("sha256:" + "b" * 64,))
+    with pytest.raises(bc.BuildControladoError, match="hash|pefile"):
+        bc.verificar_compatibilidad_locks(lock_rt, lock_build)
+
+    # Caso 2 — token SHA-256 con 64 hex válidos seguidos de sufijo inválido NO debe truncarse
+    f_sufijo = tmp_path / "sufijo.lock"
+    f_sufijo.write_text(f"pydantic==2.12.5 \\\n    --hash=sha256:{'a' * 64}XYZ\n", encoding="utf-8")
+    with pytest.raises(bc.BuildControladoError, match="Hash SHA-256 inválido"):
+        bc.parsear_lockfile_con_hashes(f_sufijo)
