@@ -63,6 +63,30 @@ BUSY_TIMEOUT_MAX_MS = 2_147_483_647
 _monotono = time.monotonic
 _dormir = asyncio.sleep
 
+
+class _Desenlace(NamedTuple):
+    """Cómo terminó la fase de conversión, ANTES de restaurar el timeout.
+
+    El discriminante es EXPLÍCITO y no inferido de la cadena de excepciones:
+    el camino que llega a la restauración es "salida anómala", no "salida por
+    cancelación", y confundirlos es justo el defecto R2-01.
+
+    - ``es_cancelacion``: el primario es un ``CancelledError`` (cancelación
+      INTRÍNSECA de la conversión).
+
+    Sólo hay UN campo, y a propósito. Hubo un ``hubo_error_real`` derivado de
+    ``ultimo_error is not None`` —la fase de reintento— para distinguir "fallo
+    real" de "cancelación". Se midió que derivaba mal (un fallo del PRIMER
+    intento, no reintentable, dejaba el flag en ``False``) y, al reordenar la
+    precedencia a "cancelación externa > cancelación del primario > fallo
+    real", quedó sin lectores: un campo sólo-escrito es decoración, así que se
+    eliminó en vez de dejarlo documentando una decisión que ya no gobierna.
+    """
+
+    error: BaseException
+    es_cancelacion: bool
+
+
 # Familia de contención de locks REINTENTABLE, decisión código por código.
 # Corrupción, malformed DB, I/O y permisos NUNCA se reintentan. La lista es
 # EXPLÍCITA: aceptar la familia completa por máscara ``& 0xFF`` trae
@@ -192,13 +216,29 @@ async def convertir_a_wal(
     Contrato de errores (explícito): éxito → se consumió la fila y SQLite
     devolvió ``'wal'`` (cualquier otro modo, o ausencia de fila, falla
     cerrado); contención agotada → se propaga el ÚLTIMO error real de
-    SQLite; error no reintentable o cancelación → se propaga el original;
-    fallo durante la restauración → se registra, NUNCA sustituye al error
-    primario. La restauración al ``busy_timeout`` configurado corre en
-    TODAS las salidas: una conexión publicada con ``busy_timeout=0`` dejaría
-    sin protección al siguiente caller. Si una cancelación adicional
-    interrumpe la restauración, la conexión NO se publica: los llamadores
-    la cierran en su propio camino de error.
+    SQLite; error no reintentable o cancelación → se propaga el original.
+    La restauración al ``busy_timeout`` operativo corre en TODAS las salidas:
+    una conexión publicada con ``busy_timeout=0`` dejaría sin protección al
+    siguiente caller. Que la restauración HAYA TERMINADO es lo único que se
+    promete — que no ocurra nada más durante ella es R2-01:
+
+    - Fallo ordinario de la restauración: se registra en el log y se encadena
+      como ``__context__`` del error primario, que se propaga. El error de
+      cierre nunca sustituye al primario.
+    - Cancelación EXTERNA EFECTIVA durante la restauración (``Task.cancel()``
+      sobre esta tarea): se propaga ``CancelledError`` —la tarea queda
+      ``cancelled()``— y el diagnóstico anterior queda como ``__context__``
+      de ese ``CancelledError``, sin ciclos y sin perder la cadena previa.
+    - Si el primario ya era ``CancelledError``, gana ésa: se propaga y la
+      cancelación/fallo de la restauración queda en la cadena.
+    - Si la tarea NO fue cancelada desde afuera y la restauración levanta
+      ``CancelledError`` (cancelación nacida dentro del cierre de aiosqlite),
+      se trata como error de cierre del primer punto: se registra y se
+      propaga el primario.
+
+    Si el primario es una cancelación, el llamador debe cerrar la conexión en
+    su camino de error; esta función no la cierra (todas las aperturas lo
+    hacen así: rollback o ``close()`` no confirmado ⇒ fail-closed).
 
     ``busy_timeout_ms`` se valida en la puerta (int estricto, no bool,
     0..INT32_MAX) y ``DatabaseLifecycleConfig`` usa el MISMO dominio.
@@ -212,9 +252,10 @@ async def convertir_a_wal(
     el primer intento es obligatorio, los siguientes no. ``busy_timeout_ms=0``
     instala 0 (fail-fast real), nunca 1 ms.
 
-    REV-04: si una cancelación/error externa llega DURANTE la restauración, se
-    encadena como ``__context__`` del error primario y se propaga éste. Así no
-    se pierde la cancelación ni se sustituye el diagnóstico original.
+    R2-01: ver el contrato de errores — la cancelación externa se propaga como
+    ``CancelledError`` (antes se adjuntaba como ``__context__`` del
+    ``OperationalError`` y la tarea seguía sin estar cancelada, así que el
+    llamador no podía distinguir "cancelado" de "falló").
 
     Alcance de la propiedad, enunciado sin overclaim: la carrera
     REPRODUCIDA (dos conversiones DELETE→WAL superpuestas, o un writer en
@@ -231,7 +272,7 @@ async def convertir_a_wal(
     _validar_busy_timeout_ms(operativo)
     deadline = _monotono() + busy_timeout_ms / 1000.0
     ultimo_error: sqlite3.OperationalError | None = None
-    original: BaseException | None = None
+    desenlace: _Desenlace | None = None
     try:
         while True:
             # Deadline ABSOLUTO y monotónico. El primer intento corre siempre;
@@ -269,26 +310,200 @@ async def convertir_a_wal(
     except BaseException as error:
         # Atrapa TAMBIÉN CancelledError: la restauración no puede quedar
         # condicionada a que la salida sea "normal".
-        original = error
+        desenlace = _Desenlace(
+            error=error,
+            es_cancelacion=isinstance(error, asyncio.CancelledError),
+        )
 
     # Restauración en TODAS las salidas al valor OPERATIVO, nunca al presupuesto
-    # de conversión. Se observa el resultado: si falla, se encadena pero NUNCA
-    # sustituye a la excepción primaria.
-    if original is None:
-        await conn.execute(f"PRAGMA busy_timeout={operativo}")
-        return
+    # de conversión. UN SOLO sitio, a propósito: antes había dos (uno en el
+    # camino feliz con ``return`` propio y otro en el de error) y el del camino
+    # feliz no consultaba la política de cancelación, así que una cancelación
+    # entregada justo ahí propagaba ``CancelledError`` dejando ``cancelling()==1``
+    # y contaminaba el ``await`` siguiente del mismo ``Task`` con una
+    # cancelación que el llamador no podía atribuir a su propia llamada
+    # (defecto medido: ``['primera: cancelada', 'segunda: CANCELADA SIN
+    # PETICIÓN']``). Un solo sitio hace imposible que los dos caminos diverjan.
+    cleanup_error: BaseException | None = None
     try:
         await conn.execute(f"PRAGMA busy_timeout={operativo}")
-    except BaseException as cleanup_error:
-        # REV-04: encadenamos la cancelación/error de cleanup COMO CONTEXTO
-        # del error primario sin sustituirlo. Se asigna explícitamente y el
-        # ``raise`` queda fuera del except (B904) para no inventar una causa
-        # nueva: el cleanup es posterior, no causal del fallo original.
-        if cleanup_error is not original:
-            cleanup_error.__context__ = original.__context__
-            original.__context__ = cleanup_error
-        logger.warning("No se pudo restaurar busy_timeout tras un fallo al convertir a WAL", exc_info=True)
+    except BaseException as error_de_limpieza:
+        cleanup_error = error_de_limpieza
+
+    if desenlace is None:
+        # Salida normal: no hay primario que propagar. Lo único que puede
+        # exigir una salida excepcional es un fallo (o cancelación) de la
+        # propia restauración, o una cancelación externa que se haya entregado
+        # durante ella.
+        if cleanup_error is not None:
+            # Se consulta la política: el switch puede haberse entregado en el
+            # ``await`` de arriba y, en ese caso, la petición es del llamador.
+            if _cancelacion_externa_efectiva():
+                logger.warning(
+                    "Restauración de busy_timeout interrumpida por cancelación externa",
+                    exc_info=(type(cleanup_error), cleanup_error, cleanup_error.__traceback__),
+                )
+                raise asyncio.CancelledError(cleanup_error)
+            raise cleanup_error
+        # La restauración resolvió bien: si quedó un switch pendiente es del
+        # llamador y hay que consumirlo para no contaminar su ``await``
+        # siguiente. ``_cancelacion_externa_efectiva`` es la MISMA consulta que
+        # usa el camino de error, no una copia.
+        #
+        # MEDIDO (y se deja anotado porque una llamada que nunca consume nada
+        # es sospechosa por defecto): en este punto un switch pendiente NO es
+        # alcanzable. Con restauración exitosa y sin ``await`` interrumpible,
+        # un ``Task.cancel()`` pedido durante ella ya no deja rastro
+        # (``cancelling()==0`` al retornar); con un ``await`` interrumpible, la
+        # cancelación interrumpe ESE ``await``, así que ``cleanup_error`` deja
+        # de ser ``None`` y manda la rama de arriba. Se conserva la consulta
+        # como guarda barata: si la restauración gana un punto de suspensión
+        # que resuelva sin lanzar, esta línea es la que impide la fuga.
+        _cancelacion_externa_efectiva()
+        return
+
+    original = desenlace.error
+
+    # La consulta de cancelación se hace UNA sola vez, DESPUÉS del cleanup (ahí
+    # es donde el switch puede haberse entregado) y su resultado se usa en
+    # TODAS las ramas. Consultarla dos veces no funciona: la primera llamada
+    # consume el switch con ``uncancel()``, así que la segunda ya no ve
+    # ``cancelling() == 1`` y una salida que debía reportar el fallo real se
+    # reportaba como cancelación.
+    #
+    # NO se condiciona a ``cleanup_error is not None``: medido, con el cleanup
+    # fallando por el MISMO ``CancelledError`` que interrumpió el ``await`` la
+    # guarda era redundante, pero hay un caso en que el cleanup resuelve
+    # **antes** de que la cancelación se entregue y el switch queda pendiente en
+    # el ``Task``. Ahí no hay error de limpieza y sin embargo la petición es del
+    # llamador: si no se consume, el ``await`` siguiente del mismo ``Task`` la
+    # recibe por sorpresa y el llamador ve una cancelación que no puede atribuir
+    # a su propia llamada.
+    externa = _cancelacion_externa_efectiva()
+
+    # PRECEDENCIA, en un solo lugar y en este orden:
+    #   1. cancelación externa efectiva  -> manda (el llamador pidió cancelar)
+    #   2. el primario ya era cancelación -> se propaga tal cual
+    #   3. fallo real                     -> manda el primario, con el error de
+    #                                       la restauración encadenado
+    if externa:
+        # ``cleanup_error`` puede ser ``None`` (la restauración resolvió antes de
+        # que la cancelación se entregara): en ese caso no hay traza de limpieza
+        # que loguear.
+        if cleanup_error is not None:
+            logger.warning(
+                "Restauración de busy_timeout interrumpida por cancelación externa",
+                exc_info=(type(cleanup_error), cleanup_error, cleanup_error.__traceback__),
+            )
+        else:
+            logger.warning("Cancelación externa del llamador consumida tras la restauración de busy_timeout")
+        # Se propaga una cancelación NUEVA (no la del cleanup: esa murió con el
+        # ``await``) y el primario se adjunta como contexto, sin ciclos y sin
+        # ``from`` — que agregaría una causa nueva y desplazaría el diagnóstico
+        # previo.
+        cancelacion = asyncio.CancelledError(original)
+        _adjuntar_contexto_si_falta(cancelacion, original)
+        raise cancelacion
+    if desenlace.es_cancelacion:
+        if cleanup_error is not None:
+            logger.warning(
+                "No se pudo restaurar busy_timeout tras una cancelación de la conversión a WAL",
+                exc_info=(type(cleanup_error), cleanup_error, cleanup_error.__traceback__),
+            )
+        raise original
+    if cleanup_error is not None:
+        _encadenar_contexto(original, cleanup_error)
+        logger.warning(
+            "No se pudo restaurar busy_timeout tras un fallo al convertir a WAL",
+            exc_info=(type(cleanup_error), cleanup_error, cleanup_error.__traceback__),
+        )
     raise original
+
+
+def _cancelacion_externa_efectiva() -> bool:
+    """True si la TAREA ACTUAL fue cancelada desde afuera (``Task.cancel()``).
+
+    Evidencia, no inferencia: el único discriminante es el contador
+    ``Task.cancelling()``.
+
+    ``cancelling() == 1`` — el ``CancelledError`` del ``await`` interrumpido
+    está en vuelo. Se consume con ``uncancel()``: el switch ya se entregó, así
+    que dejarlo pendiente haría que el ``await`` siguiente volviera a cancelar
+    — una cancelación de más que el llamador nunca pidió.
+
+    Lo que NO es evidencia: ``cancelling() >= 2`` (la cancelación todavía no se
+    anidó en ningún ``await``) ni ``cancelling() == 0`` (nadie pidió cancelar, o
+    el switch ya se consumió y la tarea terminó sin otro punto de suspensión).
+
+    HUBO una segunda rama aquí: ``if marca_consumida and cancelling() == 0``,
+    con un ``ContextVar`` por-tarea para recordar que el switch ya se había
+    consumido. Se midió y se eliminó — era inalcanzable, no una ventana:
+
+    - La marca sólo se prendía en la rama de arriba, que YA retorna; dentro de
+      una misma llamada la rama 2 no podía verse.
+    - Entre llamadas no sobrevive: el ``ContextVar`` se escribe en el contexto
+      del ``Task`` y muere con él (medido: prender la marca dentro de un task
+      deja ``False`` en el contexto llamador, y dos llamadas sucesivas en el
+      mismo task ven la marca en ``False``).
+    - Un contador de ramas sobre los escenarios de cancelación (await
+      interrumpido, cleanup cancelado, ``wait_for``) dio ``{rama1: 1, rama2: 0}``
+      en los tres.
+
+    El caso que la rama 2 decía cubrir —petición de cancelación sin ``await``
+    interrumpible— no queda sin honrar: o el switch está en vuelo y lo ve la
+    rama 1, o la función termina antes de que la petición se entregue y entonces
+    el ``Task`` la recibe en su siguiente paso, después de esta función.
+    """
+    tarea = asyncio.current_task()
+    if tarea is None:
+        return False
+    if tarea.cancelling() == 1:
+        tarea.uncancel()
+        return True
+    return False
+
+
+def _encadenar_contexto(primario: BaseException, secundario: BaseException) -> None:
+    """Adjunta ``secundario`` a la cadena de ``primario`` sin ciclos.
+
+    Si la restauración levanta la MISMA instancia que el primario (un doble
+    que reintenta el error ya capturado), encadenarla produciría
+    ``original.__context__ = original``: la cadena pasaría a ser circular y el
+    traceback quedaría inservible. En ese caso no hay información nueva que
+    agregar y no se toca nada.
+
+    No hay un ``if secundario is primario`` aparte: el recorrido arranca en
+    ``primario``, así que ese caso lo corta la primera iteración. Un guard
+    redundante delante habría sido código muerto — se midió con el mutante
+    que lo eliminaba y el resultado era idéntico (equivalente), no un
+    superviviente silencioso.
+    """
+    actual: BaseException | None = primario
+    while actual is not None:
+        if actual is secundario:
+            return
+        actual = actual.__context__
+    secundario.__context__ = primario.__context__
+    primario.__context__ = secundario
+
+
+def _adjuntar_contexto_si_falta(cancelacion: BaseException, diagnostico: BaseException) -> None:
+    """Restaura el diagnóstico que la propagación del ``CancelledError`` descartó.
+
+    Medido en CPython 3.11 en vez de asumido: un ``raise`` pelado dentro de un
+    ``except`` limpia ``__context__``, y el contexto se vuelve a sobrescribir al
+    salir del ``except`` con la excepción en curso. Por eso acá sólo se
+    re-adjunta la instancia —después de esta asignación nunca hay un ``raise``
+    dentro del mismo frame de ``except``— y sin crear ciclos.
+    """
+    if cancelacion is diagnostico:
+        return
+    actual = cancelacion.__context__
+    while actual is not None:
+        if actual is diagnostico:
+            return
+        actual = actual.__context__
+    cancelacion.__context__ = diagnostico
 
 
 class DatabaseLifecycleConfig(BaseModel):

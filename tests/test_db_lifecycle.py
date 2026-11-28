@@ -2163,15 +2163,29 @@ class _CursorDeContrato:
         fila: tuple[str, ...] | None,
         error: BaseException | None = None,
         esperar: asyncio.Event | None = None,
+        marcar: asyncio.Event | None = None,
+        error_al_salir: BaseException | None = None,
     ) -> None:
         self._fila = fila
         self._error = error
         self._esperar = esperar
+        self._marcar = marcar
+        # Se lanza DESPUÉS de resolver la espera, no antes: permite modelar
+        # "el await cedió el control y al reanudar falló".
+        self._error_al_salir = error_al_salir
+
+    async def _bloquear(self) -> None:
+        if self._esperar is None:
+            return
+        if self._marcar is not None:
+            self._marcar.set()
+        await self._esperar.wait()
 
     def __await__(self):
         async def _esperar() -> _CursorDeContrato:
-            if self._esperar is not None:
-                await self._esperar.wait()
+            await self._bloquear()
+            if self._error_al_salir is not None:
+                raise self._error_al_salir
             if self._error is not None:
                 raise self._error
             return self
@@ -2179,8 +2193,9 @@ class _CursorDeContrato:
         return _esperar().__await__()
 
     async def __aenter__(self) -> _CursorDeContrato:
-        if self._esperar is not None:
-            await self._esperar.wait()
+        await self._bloquear()
+        if self._error_al_salir is not None:
+            raise self._error_al_salir
         if self._error is not None:
             raise self._error
         return self
@@ -2204,6 +2219,9 @@ class _ConexionDeContrato:
         falla_timeout_en: int | None = None,
         inicio_restauracion: asyncio.Event | None = None,
         liberar_restauracion: asyncio.Event | None = None,
+        restauracion_en_vuelo: bool = False,
+        restauracion_bloqueante_una_vez: bool = False,
+        restauracion_cancelada_una_vez: bool = False,
     ) -> None:
         self.sql: list[str] = []
         self.intentos_wal = 0
@@ -2214,6 +2232,10 @@ class _ConexionDeContrato:
         self._falla_timeout_en = falla_timeout_en
         self._inicio_restauracion = inicio_restauracion
         self._liberar_restauracion = liberar_restauracion
+        self._restauracion_en_vuelo = restauracion_en_vuelo
+        self._restauracion_bloqueante_una_vez = restauracion_bloqueante_una_vez
+        self._restauracion_cancelada_una_vez = restauracion_cancelada_una_vez
+        self._bloqueo_consumido = False
 
     def execute(self, sql: object, *_args: object, **_kwargs: object) -> _CursorDeContrato:
         sentencia = str(sql)
@@ -2222,6 +2244,27 @@ class _ConexionDeContrato:
             self.timeout_llamadas += 1
             if self.timeout_llamadas == self._falla_timeout_en:
                 return _CursorDeContrato(None, self._error_restauracion)
+            if self._restauracion_bloqueante_una_vez and self.timeout_llamadas == 2 and not self._bloqueo_consumido:
+                # La restauración se suspende UNA vez (el switch de cancelación
+                # se entrega acá) y al reanudar RESUELVE bien: modela el caso
+                # "cleanup exitoso, cancelación pendiente en el task".
+                self._bloqueo_consumido = True
+                return _CursorDeContrato(None, esperar=self._liberar_restauracion, marcar=self._inicio_restauracion)
+            if self._restauracion_cancelada_una_vez and self.timeout_llamadas == 2 and not self._bloqueo_consumido:
+                # La restauración se suspende UNA vez y al reanudar LANZA
+                # CancelledError: modela el cleanup interrumpido por una
+                # cancelación externa real (el switch se entrega en el await).
+                self._bloqueo_consumido = True
+                return _CursorDeContrato(
+                    None,
+                    esperar=self._liberar_restauracion,
+                    marcar=self._inicio_restauracion,
+                    error_al_salir=asyncio.CancelledError("cleanup interrumpido"),
+                )
+            if self._restauracion_en_vuelo and self.timeout_llamadas == 2:
+                # El 2º busy_timeout ES la restauración: cede el control para
+                # que un Task.cancel() real caiga DENTRO de ella.
+                return _CursorDeContrato(None, esperar=self._liberar_restauracion, marcar=self._inicio_restauracion)
             if self.timeout_llamadas == 2 and self._inicio_restauracion is not None:
                 self._inicio_restauracion.set()
                 return _CursorDeContrato(None, esperar=self._liberar_restauracion)
@@ -2266,6 +2309,28 @@ def _error_busy() -> sqlite3.OperationalError:
     error.__dict__["sqlite_errorcode"] = sqlite3.SQLITE_BUSY
     error.__dict__["sqlite_errorname"] = "SQLITE_BUSY"
     return error
+
+
+def _cadena(error: BaseException) -> list[BaseException]:
+    """Recorre ``__context__`` con tope duro: una cadena circular la corta acá."""
+    vistos: list[BaseException] = []
+    actual: BaseException | None = error
+    while actual is not None and len(vistos) <= 16:
+        vistos.append(actual)
+        actual = actual.__context__
+    return vistos
+
+
+def _sin_ciclo(error: BaseException) -> bool:
+    """True si ``__context__`` no vuelve a una instancia ya visitada."""
+    vistos: set[int] = set()
+    actual: BaseException | None = error
+    while actual is not None:
+        if id(actual) in vistos:
+            return False
+        vistos.add(id(actual))
+        actual = actual.__context__
+    return True
 
 
 async def test_convertir_a_wal_restaura_busy_timeout_en_exito(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2403,10 +2468,17 @@ async def test_timeout_cero_instala_cero_sin_ventana_de_un_ms(monkeypatch: pytes
     assert conn.sql == ["PRAGMA busy_timeout=0", "PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=0"]
 
 
-async def test_cancelacion_externa_durante_restauracion_queda_en_la_cadena(
+async def test_cancelacion_externa_durante_restauracion_propaga_cancelacion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """El error primario manda; la cancelación externa NO se descarta en silencio."""
+    """R2-01: una cancelación EXTERNA efectiva durante el cleanup MANDA.
+
+    La versión anterior de este test exigía ``OperationalError`` con el
+    ``CancelledError`` como contexto: la tarea quedaba sin cancelar y el
+    llamador no podía distinguir "me cancelaron" de "falló" (la reproducción
+    del Tech Lead: ``cancelled: False``, ``cancelling: 1``). El diagnóstico
+    anterior se conserva, pero como contexto de la cancelación.
+    """
     inicio = asyncio.Event()
     liberar = asyncio.Event()
     original = sqlite3.OperationalError("disk I/O error")
@@ -2415,6 +2487,7 @@ async def test_cancelacion_externa_durante_restauracion_queda_en_la_cadena(
         error_pragma=original,
         inicio_restauracion=inicio,
         liberar_restauracion=liberar,
+        restauracion_bloqueante_una_vez=True,
     )
 
     async def correr() -> None:
@@ -2424,16 +2497,78 @@ async def test_cancelacion_externa_durante_restauracion_queda_en_la_cadena(
     await asyncio.wait_for(inicio.wait(), timeout=2.0)
     tarea.cancel("cancelacion externa durante cleanup")
     liberar.set()
-    with pytest.raises(sqlite3.OperationalError) as capturado:
+    with pytest.raises(asyncio.CancelledError):
         await tarea
-    assert capturado.value is original
-    assert isinstance(capturado.value.__context__, asyncio.CancelledError)
+    # La restauración SÍ completó (el doble sólo se suspendió una vez): el
+    # único motivo por el que esto es cancelación es la política R2-01, no un
+    # error de cleanup.
+    assert conn.sql[-1] == "PRAGMA busy_timeout=100"
+    assert tarea.cancelled(), "la tarea DEBE quedar cancelada: es lo que decide el llamador"
+    # Contraste con la reproducción del Tech Lead (``cancelled: False``,
+    # ``cancelling: 1``): acá la cancelación consumida se da de baja con
+    # ``uncancel()``, así que no queda ninguna pendiente inflando el contador
+    # del task group que la contenga.
+    assert tarea.cancelling() == 0, "la cancelación ya consumida no debe quedar pendiente"
+
+
+async def test_cancelacion_externa_durante_restauracion_conserva_el_diagnostico(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """La cancelación gana el tipo, pero el error primario no se pierde."""
+    inicio = asyncio.Event()
+    liberar = asyncio.Event()
+    original = sqlite3.OperationalError("disk I/O error")
+    _instalar_reloj(monkeypatch, [0.0, 0.02, 0.02])
+    conn = _ConexionDeContrato(
+        error_pragma=original,
+        inicio_restauracion=inicio,
+        liberar_restauracion=liberar,
+        restauracion_bloqueante_una_vez=True,
+    )
+
+    tarea = asyncio.create_task(convertir_a_wal(conn, busy_timeout_ms=100))
+    await asyncio.wait_for(inicio.wait(), timeout=2.0)
+    tarea.cancel("externa")
+    liberar.set()
+    with pytest.raises(asyncio.CancelledError) as capturado:
+        await tarea
+    assert conn.sql[-1] == "PRAGMA busy_timeout=100", (
+        "la restauración completó: no hay error de cleanup que explique el tipo"
+    )
+    assert any(es is original for es in _cadena(capturado.value)), (
+        f"el error primario no quedó en la cadena: {[type(e).__name__ for e in _cadena(capturado.value)]}"
+    )
+
+
+async def test_cancelacion_con_wait_for_no_deja_la_tarea_pendiente(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``asyncio.wait_for`` (timeout externo) también gana y deja la tarea cancelada."""
+    inicio = asyncio.Event()
+    liberar = asyncio.Event()
+    _instalar_reloj(monkeypatch, [0.0, 0.02, 0.02])
+    conn = _ConexionDeContrato(
+        inicio_restauracion=inicio,
+        liberar_restauracion=liberar,
+        restauracion_bloqueante_una_vez=True,
+    )
+
+    async def correr() -> None:
+        await convertir_a_wal(conn, busy_timeout_ms=100)
+
+    tarea = asyncio.create_task(correr())
+    await asyncio.wait_for(inicio.wait(), timeout=2.0)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(tarea, timeout=0.2)
+    liberar.set()
+    assert tarea.cancelled(), "wait_for debe dejar la conversión cancelada, no viva detrás del timeout"
+    assert conn.sql[-1] == "PRAGMA busy_timeout=100", "la restauración se completó pese al timeout externo"
 
 
 async def test_cancelacion_repetida_conserva_la_primera_y_no_publica(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Dos Task.cancel() reales: gana la primera, la segunda queda en la cadena."""
+    """Dos Task.cancel() reales: la primera manda y la restauración se intenta igual."""
     inicio = asyncio.Event()
     liberar = asyncio.Event()
     _instalar_reloj(monkeypatch, [0.0, 0.02, 0.02])
@@ -2441,6 +2576,7 @@ async def test_cancelacion_repetida_conserva_la_primera_y_no_publica(
         error_pragma=asyncio.CancelledError("primera"),
         inicio_restauracion=inicio,
         liberar_restauracion=liberar,
+        restauracion_en_vuelo=True,
     )
 
     async def correr() -> None:
@@ -2452,64 +2588,390 @@ async def test_cancelacion_repetida_conserva_la_primera_y_no_publica(
     liberar.set()
     with pytest.raises(asyncio.CancelledError) as capturado:
         await tarea
-    assert "primera" in str(capturado.value)
-    assert conn.sql[-1] == "PRAGMA busy_timeout=100"
+    assert tarea.cancelled()
+    assert capturado.value is not None
+    assert conn.sql[-1] == "PRAGMA busy_timeout=100", "la restauración corre aunque la cancelación sea múltiple"
+
+
+async def test_fallo_ordinario_de_restauracion_se_encadena_sin_ciclo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sin cancelación externa, el error de cleanup queda en la cadena (sin ciclos)."""
+    original = sqlite3.OperationalError("disk I/O error")
+    cleanup = sqlite3.OperationalError("restore fail")
+    _instalar_reloj(monkeypatch, [0.0, 0.02])
+    conn = _ConexionDeContrato(error_pragma=original, error_restauracion=cleanup, falla_timeout_en=2)
+    with pytest.raises(sqlite3.OperationalError) as capturado:
+        await convertir_a_wal(conn, busy_timeout_ms=100)
+    assert capturado.value is original, "el primario manda ante un fallo ordinario de cleanup"
+    cadena = _cadena(capturado.value)
+    assert any(es is cleanup for es in cadena), "el error de limpieza no se registró en la cadena"
+    assert len(cadena) == len({id(es) for es in cadena}), f"cadena circular: {[type(e).__name__ for e in cadena]}"
+
+
+async def test_cancelacion_sin_await_en_restauracion_igual_se_propaga(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R2-01: cancelación pedida en una ventana SIN ``await`` interrumpible.
+
+    La restauración ya resolvió y el switch queda pendiente en el task: no hay
+    ``CancelledError`` que capturar, pero la petición es del llamador. Debe
+    salir como cancelación, no como "falló" (rama sin except de cleanup).
+    """
+    inicio = asyncio.Event()
+    liberar = asyncio.Event()
+    original = sqlite3.OperationalError("disk I/O error")
+    _instalar_reloj(monkeypatch, [0.0, 0.02, 0.02])
+    conn = _ConexionDeContrato(
+        error_pragma=original,
+        inicio_restauracion=inicio,
+        liberar_restauracion=liberar,
+    )
+
+    tarea = asyncio.create_task(convertir_a_wal(conn, busy_timeout_ms=100))
+    await asyncio.wait_for(inicio.wait(), timeout=2.0)
+    tarea.cancel("cancelacion sin await")
+    liberar.set()
+    with pytest.raises(asyncio.CancelledError) as capturado:
+        await tarea
+    assert tarea.cancelled(), "la cancelación pedida por el llamador no puede quedar como fallo"
+    assert any(es is original for es in _cadena(capturado.value)), (
+        f"el diagnóstico previo no quedó en la cadena: {[type(e).__name__ for e in _cadena(capturado.value)]}"
+    )
+
+
+async def test_fallo_del_primer_intento_conserva_el_diagnostico_bajo_cancelacion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R2-01: cancelación externa sobre un fallo REAL del primer intento.
+
+    Precedencia: la cancelación que pidió el llamador manda, pero el fallo real
+    no se pierde — queda como diagnóstico en la cadena. El caso importa porque
+    ``hubo_error_real`` se derivaba de ``ultimo_error``, que sólo se asigna en
+    la fase de REINTENTO: con un fallo del PRIMER intento (un
+    ``OperationalError`` no reintentable, p. ej. disk I/O) el flag quedaba en
+    ``False`` y el diagnóstico dependía de un accidente del camino.
+    """
+    inicio = asyncio.Event()
+    liberar = asyncio.Event()
+    original = sqlite3.OperationalError("disk I/O error")
+    _instalar_reloj(monkeypatch, [0.0, 0.02, 0.02])
+    conn = _ConexionDeContrato(
+        error_pragma=original,
+        inicio_restauracion=inicio,
+        liberar_restauracion=liberar,
+        restauracion_cancelada_una_vez=True,
+    )
+
+    tarea = asyncio.create_task(convertir_a_wal(conn, busy_timeout_ms=100))
+    await asyncio.wait_for(inicio.wait(), timeout=2.0)
+    tarea.cancel("cancelación externa que cae en el cleanup")
+    liberar.set()
+
+    with pytest.raises(asyncio.CancelledError) as capturado:
+        await tarea
+    assert tarea.cancelled(), "la cancelación externa manda: la tarea debe quedar cancelada"
+    assert any(es is original for es in _cadena(capturado.value)), (
+        f"el fallo real del primer intento se perdió: {[type(x).__name__ for x in _cadena(capturado.value)]}"
+    )
+    assert _sin_ciclo(capturado.value), "la cadena causal quedó circular"
+
+
+async def test_restauracion_exitosa_no_se_reporta_como_cancelacion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R2-01: una cancelación no contamina una conversión POSTERIOR de la misma tarea.
+
+    El caso que motivó este test era una marca ``ContextVar`` que decía "el
+    switch ya se consumió" y podía quedar prendida. Se midió que esa marca
+    moría con el ``Task`` y que su rama era inalcanzable, así que se eliminó
+    (ver ``_cancelacion_externa_efectiva``). Lo que este test ancla ahora es la
+    propiedad que importa y que sobrevive a esa eliminación: consumir un switch
+    en una llamada no inventa una cancelación en la siguiente.
+
+    La segunda conversión tiene que terminar por FALLO con cleanup fallido
+    (``falla_timeout_en=2``), no por el camino feliz: sólo la rama de fallo
+    consulta la política de cancelación, así que una segunda conversión que
+    sale bien no podría delatar una marca contaminada. Con esa rama, una marca
+    pegada convierte un ``OperationalError`` ordinario en ``CancelledError``.
+    """
+    inicio = asyncio.Event()
+    liberar = asyncio.Event()
+    _instalar_reloj(monkeypatch, [0.0, 0.02, 0.02, 0.02, 0.02, 0.02])
+    vistas: list[str] = []
+
+    async def dos_conversiones() -> None:
+        # 1ª: se cancela durante la restauración => consume un switch.
+        conn1 = _ConexionDeContrato(
+            inicio_restauracion=inicio,
+            liberar_restauracion=liberar,
+            restauracion_bloqueante_una_vez=True,
+        )
+        try:
+            await convertir_a_wal(conn1, busy_timeout_ms=100)
+        except asyncio.CancelledError:
+            vistas.append("primera: cancelada")
+        # 2ª: en la MISMA tarea, sin cancelación pendiente, y con cleanup que
+        # falla: es la única rama que consulta la política de cancelación.
+        conn2 = _ConexionDeContrato(
+            error_pragma=sqlite3.OperationalError("disk I/O error"),
+            error_restauracion=sqlite3.OperationalError("restore fail"),
+            falla_timeout_en=2,
+        )
+        try:
+            await convertir_a_wal(conn2, busy_timeout_ms=100)
+        except asyncio.CancelledError:
+            vistas.append("segunda: CANCELADA SIN PETICIÓN")
+        except sqlite3.OperationalError:
+            vistas.append("segunda: ok")
+        else:
+            vistas.append("segunda: sin error inesperado")
+
+    tarea = asyncio.create_task(dos_conversiones())
+    await asyncio.wait_for(inicio.wait(), timeout=2.0)
+    tarea.cancel("sólo la primera")
+    liberar.set()
+    await asyncio.wait_for(tarea, timeout=5.0)
+
+    assert vistas == ["primera: cancelada", "segunda: ok"], (
+        f"la marca de cancelación contaminó una conversión posterior: {vistas}"
+    )
+
+
+async def test_adjuntar_contexto_no_crea_ciclo_consigo_mismo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R2-01: ``_adjuntar_contexto_si_falta`` no puede dejar la cadena circular.
+
+    Un cleanup que reentrega la MISMA instancia que se va a adjuntar produciría
+    ``cancelacion.__context__ = cancelacion``: el traceback quedaría inservible
+    y cualquier recorrido de la cadena no terminaría.
+    """
+    inicio = asyncio.Event()
+    liberar = asyncio.Event()
+    _instalar_reloj(monkeypatch, [0.0, 0.02, 0.02])
+    conn = _ConexionDeContrato(
+        inicio_restauracion=inicio,
+        liberar_restauracion=liberar,
+        restauracion_cancelada_una_vez=True,
+    )
+
+    tarea = asyncio.create_task(convertir_a_wal(conn, busy_timeout_ms=100))
+    await asyncio.wait_for(inicio.wait(), timeout=2.0)
+    tarea.cancel("externa")
+    liberar.set()
+    with pytest.raises(asyncio.CancelledError) as capturado:
+        await tarea
+    assert _sin_ciclo(capturado.value), (
+        f"la cadena quedó circular: {[type(x).__name__ for x in _cadena(capturado.value)]}"
+    )
+
+
+async def test_cleanup_que_relanza_el_primario_no_crea_ciclo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R2-01: la cadena causal no puede volverse circular.
+
+    Un cleanup que relanza el mismo diagnóstico (caso real: un ``execute`` que
+    reentrega la última excepción del cursor) produciría
+    ``original.__context__ = original``. Se verifica sobre una instancia que YA
+    tiene contexto: así el guard es lo único que evita el ciclo, no la
+    ausencia de contexto.
+    """
+    previo = ValueError("diagnóstico anterior")
+    original = sqlite3.OperationalError("disk I/O error")
+    original.__context__ = previo  # cadena previa que NO se puede perder
+    _instalar_reloj(monkeypatch, [0.0, 0.02])
+    conn = _ConexionDeContrato(error_pragma=original, error_restauracion=original, falla_timeout_en=2)
+    with pytest.raises(sqlite3.OperationalError) as capturado:
+        await convertir_a_wal(conn, busy_timeout_ms=100)
+    assert capturado.value is original
+    assert _sin_ciclo(capturado.value), "la cadena quedó circular"
+    assert original.__context__ is previo, "la cadena causal previa se perdió"
+
+
+async def test_cancelacion_sin_error_primario_cierra_con_cancelacion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Primario = CancelledError y el cleanup falla: si no hubo error de SQLite,
+    una cancelación externa efectiva durante el cleanup sigue mandando."""
+    inicio = asyncio.Event()
+    liberar = asyncio.Event()
+    _instalar_reloj(monkeypatch, [0.0, 0.02])
+    conn = _ConexionDeContrato(
+        error_pragma=asyncio.CancelledError("intrinseca"),
+        inicio_restauracion=inicio,
+        liberar_restauracion=liberar,
+        restauracion_bloqueante_una_vez=True,
+    )
+
+    tarea = asyncio.create_task(convertir_a_wal(conn, busy_timeout_ms=100))
+    await asyncio.wait_for(inicio.wait(), timeout=2.0)
+    tarea.cancel("externa final")
+    liberar.set()
+    with pytest.raises(asyncio.CancelledError):
+        await tarea
+    assert tarea.cancelled()
+    assert conn.sql[-1] == "PRAGMA busy_timeout=100", (
+        "el cleanup fue exitoso: el desenlace lo decide la política de cancelación"
+    )
+
+
+async def test_cancelacion_intrinseca_no_se_adorna_con_el_fallo_de_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R2-01: la cancelación INTRÍNSECA se propaga tal cual, sin encadenar el cleanup.
+
+    Precedencia, regla 2: si el primario ya era ``CancelledError``, el desenlace
+    es ese mismo objeto y el fallo de la restauración NO se le cuelga. No es
+    cosmética: la regla 3 (fallo real) sí encadena el error de limpieza, y si
+    la regla 2 lo hiciera también, un fallo del cleanup aparecería como
+    diagnóstico de una cancelación que no tiene nada que ver.
+
+    Este test distingue las dos reglas por la CADENA, que es lo único que
+    cambia: en ambos casos el tipo propagado y el objeto raíz son idénticos
+    (``CancelledError``), así que asertar sólo el tipo —como hacían los tests
+    de la ronda anterior— dejaba pasar el mutante que borra la regla 2.
+    """
+    primario = asyncio.CancelledError("intrinseca de la conversión")
+    cleanup = sqlite3.OperationalError("restore fail")
+    _instalar_reloj(monkeypatch, [0.0, 0.02])
+    conn = _ConexionDeContrato(error_pragma=primario, error_restauracion=cleanup, falla_timeout_en=2)
+
+    with pytest.raises(asyncio.CancelledError) as capturado:
+        await convertir_a_wal(conn, busy_timeout_ms=100)
+
+    assert capturado.value is primario, "la cancelación intrínseca debe propagarse como el MISMO objeto"
+    cadena = _cadena(capturado.value)
+    assert not any(es is cleanup for es in cadena), (
+        f"la cancelación intrínseca se adomó con el fallo de cleanup: {[type(e).__name__ for e in cadena]}"
+    )
+    assert len(cadena) == 1, (
+        f"la cadena de una cancelación intrínseca debe ser sólo ella: {[type(e).__name__ for e in cadena]}"
+    )
+
+
+async def test_cleanup_exitoso_no_consume_un_switch_de_cancelacion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R2-01: el switch que entrega la cancelación del llamador queda CONSUMIDO.
+
+    Ojo con el nombre histórico: lo que este test gobierna no es "no tocar el
+    contador", sino lo contrario. Se midió que un ``Task.cancel()`` que cae
+    dentro del ``await`` de la restauración interrumpe ESE ``await`` —un
+    ``Event.wait()`` cancelado siempre lanza, no hay forma de que "resuelva
+    bien" con el switch en vuelo— así que ``cleanup_error`` NUNCA es ``None``
+    en este escenario. Esa premisa del nombre viejo era falsa.
+
+    La propiedad correcta, y la que importa para el llamador, es el estado
+    FINAL del ``Task``: si el switch quedara pendiente (``cancelling() == 1``
+    tras retornar), el ``await`` siguiente del MISMO ``Task`` lo recibiría por
+    sorpresa y el llamador vería una cancelación que no puede atribuir a su
+    propia llamada. Medido antes del arreglo:
+    ``['primera: cancelada', 'segunda: CANCELADA SIN PETICIÓN']``.
+
+    Se asertan las tres cosas observables a la vez: la tarea termina
+    ``cancelled()``, el switch quedó en 0 dentro de la conversión, y no hubo
+    ``sqlite`` de por medio (conexión de contrato).
+    """
+    inicio = asyncio.Event()
+    liberar = asyncio.Event()
+    _instalar_reloj(monkeypatch, [0.0, 0.02, 0.02])
+    conn = _ConexionDeContrato(
+        inicio_restauracion=inicio,
+        liberar_restauracion=liberar,
+        restauracion_bloqueante_una_vez=True,
+    )
+    contador_dentro: list[int] = []
+    propagado: list[BaseException] = []
+
+    async def correr() -> None:
+        tarea = asyncio.current_task()
+        assert tarea is not None
+        try:
+            await convertir_a_wal(conn, busy_timeout_ms=100)
+        except BaseException as error:
+            propagado.append(error)
+            raise
+        finally:
+            contador_dentro.append(tarea.cancelling())
+
+    tarea = asyncio.create_task(correr())
+    await asyncio.wait_for(inicio.wait(), timeout=2.0)
+    tarea.cancel("cancelación del llamador")
+    liberar.set()
+    with pytest.raises(asyncio.CancelledError):
+        await tarea
+
+    assert tarea.cancelled(), "la tarea debe terminar cancelada, no sólo levantar"
+    assert propagado, "la conversión debió propagar una excepción"
+    assert isinstance(propagado[0], asyncio.CancelledError), (
+        f"el llamador debe ver una cancelación, no {type(propagado[0]).__name__}"
+    )
+    # La restauración SÍ se ejecutó (el intento quedó registrado) antes de que
+    # la cancelación se entregara: la secuencia de SQL lo prueba.
+    assert conn.sql[-1] == "PRAGMA busy_timeout=100", f"la restauración debió intentarse: {conn.sql}"
+    # El switch quedó consumido: nadie puede atribuirse una cancelación
+    # posterior del mismo Task.
+    assert contador_dentro == [0], (
+        f"el switch de cancelación del llamador quedó pendiente (contaminaría el await "
+        f"siguiente del mismo Task): {contador_dentro}"
+    )
 
 
 async def test_cancelacion_real_no_deja_worker_ni_conexion_huerfana(tmp_path: Path) -> None:
-    """Task.cancel() sobre una conexión aiosqlite REAL: el llamador la cierra."""
+    """R2-05: con trabajo REALMENTE encolado en el worker, la cancelación es efectiva.
+
+    ``asyncio.all_tasks()`` NO enumera hilos: el test anterior afirmaba una
+    propiedad que no medían sus aserciones. Acá se ejerce trabajo encolado de
+    verdad —una tarea propia que hace ``await conn.execute(...)`` sobre una
+    conexión aiosqlite, o sea un ``run_in_executor`` hacia el hilo daemon del
+    worker, más una sentencia larga (``randomblob``) que lo mantiene ocupado— y
+    se comprueba la finalización OBSERVABLE del worker por la vía pública de
+    ``aiosqlite``: al terminar ``close()`` el worker llamó a ``_stop_running()``,
+    que vacía ``_tx`` y apaga ``_running`` (``_connection is None`` es la
+    consecuencia pública de ``aiosqlite.Connection.close()``).
+
+    Limitación declarada, no cubierta: aiosqlite crea el hilo con
+    ``daemon=True`` y no expone join ni joinable; que un worker que murió por
+    excepción NO se reporte como fuga NO se verifica acá (requiere introspección
+    de ``_thread`` + un hook de excepción del hilo). Lo verificado es: según el
+    mecanismo público instalado, la conexión terminó cerrada y su worker sin
+    trabajo pendiente al salir ``close()``.
+    """
     import aiosqlite
 
     db = tmp_path / "cancelacion_real.db"
     conn = await aiosqlite.connect(db)
-    iniciado = asyncio.Event()
-    liberar = asyncio.Event()
-    execute_real = conn.execute
+    hilo_worker = getattr(getattr(conn, "_connection", None), "_thread", None)
+    ocupado = asyncio.Event()
 
-    class _CursorObservado:
-        """Imita el cursor awaitable de aiosqlite y bloquea en el pragma WAL."""
+    async def escritor() -> None:
+        # Trabajo real encolado: la sentencia larga ocupa el ÚNICO worker de
+        # esta conexión, así que lo que venga después espera en su cola.
+        await conn.execute("CREATE TABLE t (x)")
+        await conn.commit()
+        ocupado.set()
+        await conn.execute("SELECT randomblob(100000000)")
 
-        def __init__(self, sql: object, args: tuple[object, ...], kwargs: dict[str, object]) -> None:
-            self._sql = sql
-            self._args = args
-            self._kwargs = kwargs
-            self._cursor = None
+    tarea = asyncio.create_task(escritor())
+    await asyncio.wait_for(ocupado.wait(), timeout=2.0)
+    tarea.cancel("cancelacion real con trabajo encolado")
+    with pytest.raises(asyncio.CancelledError):
+        await tarea
+    assert tarea.cancelled(), "la cancelación no fue efectiva sobre la tarea"
 
-        async def _preparar(self) -> _CursorObservado:
-            iniciado.set()
-            await liberar.wait()
-            self._cursor = execute_real(self._sql, *self._args, **self._kwargs)
-            return self
-
-        def __await__(self):
-            return self._preparar().__await__()
-
-        async def __aenter__(self) -> _CursorObservado:
-            return await self._preparar()
-
-        async def __aexit__(self, *_args: object) -> bool:
-            if self._cursor is not None:
-                await self._cursor.close()
-            return False
-
-        async def fetchone(self):
-            return await self._cursor.fetchone()
-
-    def execute_observado(sql: object, *args: object, **kwargs: object):
-        if isinstance(sql, str) and "PRAGMA journal_mode=WAL" in sql:
-            return _CursorObservado(sql, args, kwargs)
-        return execute_real(sql, *args, **kwargs)
-
-    conn.execute = execute_observado  # type: ignore[method-assign]
-    tarea = asyncio.create_task(convertir_a_wal(conn, busy_timeout_ms=5000))
     try:
-        await asyncio.wait_for(iniciado.wait(), timeout=2.0)
-        tarea.cancel("cancelacion real")
-        liberar.set()
-        with pytest.raises(asyncio.CancelledError):
-            await tarea
+        await asyncio.wait_for(conn.close(), timeout=5.0)
     finally:
-        liberar.set()
-        await conn.close()
-    assert conn._connection is None  # type: ignore[attr-defined]
-    assert not [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()]
+        with contextlib.suppress(Exception):
+            await conn.close()
+
+    # Finalización observable del worker, por su estado público/documented.
+    assert conn._connection is None, "el worker siguió vivo: close() no lo detuvo"
+    cola = getattr(conn, "_tx", None)
+    if cola is not None:
+        assert cola.empty(), "quedó trabajo encolado en el worker tras el cierre"
+    if hilo_worker is not None:
+        hilo_worker.join(5)
+        assert not hilo_worker.is_alive(), "el hilo del worker sigue vivo tras close()"

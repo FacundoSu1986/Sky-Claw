@@ -425,17 +425,54 @@ def test_el_ancla_cubre_scripts_y_local_scripts() -> None:
     assert any(ruta.startswith("local_scripts/") for ruta in rutas)
 
 
+def test_el_inventario_completo_es_exactamente_el_congelado() -> None:
+    """R2-04 (a): igualdad EXACTA del inventario completo, en ambas direcciones.
+
+    Una resta ``Counter - Counter`` descarta en silencio: si
+    ``DatabaseLifecycleManager._enter_wal_mode`` dejaba de delegar, el par
+    desaparecía de ambos lados y el test seguía verde. Acá se compara el
+    inventario entero, y el mensaje distingue faltantes de sobrantes.
+    """
+    inventario = _llamadores_de_convertir_a_wal()
+    faltantes = dict(INVENTARIO_ESPERADO - inventario)
+    sobrantes = dict(inventario - INVENTARIO_ESPERADO)
+    assert not faltantes, f"call sites desaparecidos del censo: {faltantes}"
+    assert not sobrantes, f"call sites no inventariados (ni con receta): {sobrantes}"
+    assert inventario == INVENTARIO_ESPERADO
+
+
+def test_el_lifecycle_delega_y_no_reimplementa() -> None:
+    """R2-04 (b): la delegación del lifecycle, verificada por separado.
+
+    Además del censo de llamadores, el pragma de conversión NO puede aparecer
+    dentro de ``_enter_wal_mode``: reinstalar el pragma pelado ahí es la
+    regresión exacta que el reemplazo de la llamada escondería.
+    """
+    lifecycle = ("sky_claw/app/core/db_lifecycle.py", "DatabaseLifecycleManager._enter_wal_mode")
+    inventario = _llamadores_de_convertir_a_wal()
+    assert inventario[lifecycle] == 1, f"el lifecycle dejó de delegar en convertir_a_wal: {lifecycle}"
+
+    ejecuciones = _ejecuciones_del_pragma_wal()
+    assert ejecuciones[lifecycle] == 0, (
+        f"el lifecycle ejecuta el pragma por su cuenta en vez de delegar: {ejecuciones[lifecycle]} ejecución(es)"
+    )
+    # Y la ÚNICA ejecución del pragma sigue siendo el cuerpo del helper.
+    assert ejecuciones == Counter({("sky_claw/app/core/db_lifecycle.py", "convertir_a_wal"): 1})
+
+
 def test_todo_llamador_del_reintento_tiene_receta() -> None:
-    """Un módulo nuevo que abre SQLite por su cuenta entra a la tabla de comportamiento."""
-    llamadores = _llamadores_de_convertir_a_wal() - Counter(
-        {("sky_claw/app/core/db_lifecycle.py", "DatabaseLifecycleManager._enter_wal_mode"): 1}
-    )
-    assert llamadores == INVENTARIO_ESPERADO - Counter(
-        {("sky_claw/app/core/db_lifecycle.py", "DatabaseLifecycleManager._enter_wal_mode"): 1}
-    )
-    assert {modulo for modulo, _ in llamadores} == set(RECETAS)
+    """R2-04 (c): qué módulos necesitan receta standalone — verificado aparte.
+
+    El lifecycle no la necesita (sus caminos ya los cubre
+    ``test_db_lifecycle.py``); todo el resto sí, y por módulo, no por función.
+    """
+    inventario = _llamadores_de_convertir_a_wal()
+    lifecycle_modulo = "sky_claw/app/core/db_lifecycle.py"
+    assert {modulo for modulo, _ in inventario if modulo != lifecycle_modulo} == set(RECETAS)
     # El hermano recuperado de AsyncModRegistry NO puede desaparecer del censo.
-    assert llamadores[("sky_claw/app/db/async_registry.py", "AsyncModRegistry._abrir")] == 2
+    assert inventario[("sky_claw/app/db/async_registry.py", "AsyncModRegistry._abrir")] == 2
+    # Cada receta declarada existe de verdad en el inventario.
+    assert {modulo for modulo in RECETAS} <= {modulo for modulo, _ in inventario}
 
 
 @pytest.mark.parametrize("modulo", sorted(RECETAS))
