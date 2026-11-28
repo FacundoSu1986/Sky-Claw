@@ -473,6 +473,31 @@ class AbortoCorruptoError(AbortoPendienteError):
 
 
 # ============================================================================
+# Recuperación hacia adelante de PENDING (P7-F Incremento 2B, ADR 0012 §49)
+# ============================================================================
+
+
+class RecuperacionAdelanteError(FrozenRuntimeError):
+    """Base de errores de la recuperación hacia adelante de una transición en ``PENDING`` (C3/C4/C6/C7)."""
+
+
+class RecuperacionAdelanteBloqueadaError(RecuperacionAdelanteError):
+    """Bloqueo fail-closed: aborto incompleto (D4), ID abortado, falta de quiescencia o estado no recuperable."""
+
+
+class RecuperacionAdelantePostError(RecuperacionAdelanteError):
+    """El runtime observado, el Clone o el setup no acreditan POST PASS: prohibido finalizar."""
+
+
+class RecuperacionAdelanteAutoridadError(RecuperacionAdelanteError):
+    """La autoridad durable (aprobación, reserva, historial o registro FINALIZED) es incoherente o ajena."""
+
+
+class RecuperacionAdelanteCasError(RecuperacionAdelanteError, JournalCasError):
+    """CAS desactualizado o mutación concurrente de la autoridad durable durante la observación externa."""
+
+
+# ============================================================================
 # Consentimiento HITL del propietario (P4-S6)
 # ============================================================================
 

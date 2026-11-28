@@ -2119,12 +2119,16 @@ def _finalizar_locked(
     # Si un registro retenido perdió su reserva, la cadena YA no es autoridad y
     # FINALIZE no puede avanzar sobre ella dejando un store que sólo la
     # reconciliación detectaría.
-    auditar_reservas_finalizacion(root, historial)
+    auditoria = auditar_reservas_finalizacion(root, historial)
     registro_existente = next(
         (registro for registro in historial.registros if registro.transition_id == evidencia_post.transition_id),
         None,
     )
     if registro_existente is not None:
+        if auditoria.huerfanas:
+            raise JournalIdentityError(
+                f"existen reserva(s) huérfana(s) {auditoria.huerfanas} junto a un registro FINALIZED: fail-closed"
+            )
         if (
             registro_existente.post_verify_evidence_digest != evidencia_post.payload_digest
             or registro_existente.post_verified_at_ns != evidencia_post.verified_at_ns
@@ -2148,6 +2152,24 @@ def _finalizar_locked(
         return registro_existente
     if snapshot.disposition == JournalDisposition.NONE:
         raise JournalCasError("el testigo apunta a una transición sin registro inmutable")
+    # C6 / integridad de reservas: sólo se admite ninguna reserva huérfana, o exactamente
+    # UNA reserva huérfana que pertenezca a ESTA transición con seq == historial.next_seq.
+    if auditoria.huerfanas:
+        if len(auditoria.huerfanas) > 1:
+            raise JournalIdentityError(
+                f"múltiples reservas huérfanas {auditoria.huerfanas}: autoridad de secuencia ambigua (fail-closed)"
+            )
+        seq_huerfana, tid_huerfana = auditoria.huerfanas[0]
+        if tid_huerfana != journal.transition_id:
+            raise JournalIdentityError(
+                f"reserva huérfana de otra transición (seq={seq_huerfana}, transition_id={tid_huerfana!r}): "
+                "prohibido finalizar o reutilizar reserva ajena"
+            )
+        if seq_huerfana != historial.next_seq:
+            raise JournalIdentityError(
+                f"reserva huérfana de {tid_huerfana!r} tiene seq={seq_huerfana} != next_seq={historial.next_seq}: "
+                "prohibido reservar otra secuencia o renumerar historial"
+            )
     # D4/D5: prohibido producir FINALIZED si existe un aborto incompleto o un registro de aborto para esta
     # transición (evita split-brain durable entre FINALIZED y state/aborted_transitions/).
     _exigir_sin_abortos_bloqueantes_ni_reuso(root, transition_id=evidencia_post.transition_id)
@@ -2190,6 +2212,69 @@ def _finalizar_locked(
     registro = _persistir_registro_locked(handle, root, registro)
     _rotar_journal_locked(handle, root, registro=registro, revision_previa=journal.journal_revision)
     return registro
+
+
+def _completar_rotacion_f2_locked(
+    handle: FrozenRuntimeRootLockHandle,
+    root: pathlib.Path,
+    *,
+    transition_id: str,
+    expected_journal_revision: int | None = None,
+) -> FinalizedTransitionRecord:
+    """C7 — completa ÚNICAMENTE F2 (rotación ``PENDING → NONE``) usando el ``FINALIZED`` inmutable existente.
+
+    ADR 0012 §37.5 / FR-04:
+    - El registro ``FINALIZED`` existente en ``state/transitions/<tid>.json`` es autoridad durable e inmutable.
+    - Jamás recrea ni modifica el registro ``FINALIZED``, jamás reserva una nueva secuencia y jamás
+      sustituye la evidencia POST histórica con una observación POST nueva.
+    - Reejecución segura e idempotente si el journal ya está en ``NONE`` apuntando al mismo registro.
+    """
+    handle.assert_owned()
+    _exigir_dirs_store(root)
+    t_id = _exigir_uuid_v4(transition_id, campo="transition_id", etiqueta="C7 F2")
+    _exigir_sin_abortos_bloqueantes_ni_reuso(root, transition_id=t_id)
+
+    snapshot = cargar_journal_transicion(root)
+    if snapshot.disposition == JournalDisposition.ABSENT or snapshot.journal is None:
+        raise JournalCasError("no hay journal vigente para completar la rotación F2 (C7)")
+    journal = snapshot.journal
+
+    historial = derivar_historial_finalizados(root)
+    auditoria = auditar_reservas_finalizacion(root, historial)
+    if auditoria.huerfanas:
+        raise JournalIdentityError(
+            f"C7 bloqueado por reserva(s) huérfana(s) {auditoria.huerfanas}: autoridad de secuencia incoherente"
+        )
+
+    registro_existente = next((r for r in historial.registros if r.transition_id == t_id), None)
+    if registro_existente is None:
+        raise JournalIdentityError(f"no existe registro FINALIZED inmutable para {t_id!r}: no es frontera C7")
+    if historial.latest is None or historial.latest.transition_id != t_id:
+        raise JournalIdentityError(
+            f"el registro FINALIZED de {t_id!r} no es el tip de la cadena derivada (latest={historial.latest!r})"
+        )
+
+    if snapshot.disposition == JournalDisposition.NONE:
+        if journal.last_finalized_transition_id != t_id:
+            raise JournalCasError(
+                f"el journal en NONE declara last_finalized_transition_id={journal.last_finalized_transition_id!r}, "
+                f"no {t_id!r}"
+            )
+        return registro_existente
+
+    if snapshot.disposition not in (JournalDisposition.PENDING_PROMOTION, JournalDisposition.PENDING_ROLLBACK):
+        raise JournalCasError(f"estado de journal no admitido para C7 F2: {snapshot.disposition.value}")
+    if journal.transition_id != t_id:
+        raise JournalCasError(f"el PENDING vigente pertenece a {journal.transition_id!r}, no a {t_id!r}")
+    if expected_journal_revision is not None and journal.journal_revision != expected_journal_revision:
+        raise JournalCasError(
+            f"CAS desactualizado en C7 F2: esperado revision={expected_journal_revision}, "
+            f"vigente={journal.journal_revision}"
+        )
+
+    _exigir_registro_coherente_con_pending(registro_existente, journal, historial)
+    _rotar_journal_locked(handle, root, registro=registro_existente, revision_previa=journal.journal_revision)
+    return registro_existente
 
 
 # ---------------------------------------------------------------------------
@@ -2506,11 +2591,13 @@ def _huella_estado_durable(
         None if journal is None else journal.transition_id,
         None if journal is None else journal.last_finalized_transition_id,
         None if journal is None else journal.expected_effective_path,
+        None if journal is None else _digest_canonico(_serializar_journal(journal)),
         historial.next_seq,
-        tuple(registro.transition_id for registro in historial.registros),
-        tuple((reserva.finalization_seq, reserva.transition_id) for reserva in auditoria.reservas),
+        tuple((r.finalization_seq, r.transition_id, r.post_verify_evidence_digest) for r in historial.registros),
+        tuple((reserva.finalization_seq, reserva.transition_id, reserva.root_id) for reserva in auditoria.reservas),
         getattr(deseado, "found", None),
         None if estado_deseado is None else estado_deseado.desired_active_generation,
+        None if estado_deseado is None else estado_deseado.desired_clone_id,
         abortos_resumen,
         store_abortos_existe,
     )

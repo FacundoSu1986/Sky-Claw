@@ -68,3 +68,15 @@ def test_fuentes_del_shim_synthesis_en_las_dos_distribuciones() -> None:
 
     assert force_include.get(_FUENTES_SHIM_SYNTHESIS) == _FUENTES_SHIM_SYNTHESIS
     assert f'("{_FUENTES_SHIM_SYNTHESIS}", "{_FUENTES_SHIM_SYNTHESIS}")' in spec
+
+
+def test_pr_lic_03b_hook_analysis_toc_y_lock_de_build_presentes() -> None:
+    """PR-LIC-03B: sky_claw.spec exporta el Analysis TOC real opt-in y requirements-build.lock existe con hashes."""
+    spec = Path("sky_claw.spec").read_text(encoding="utf-8")
+    build_lock = Path("requirements-build.lock")
+
+    assert "SKYCLAW_EXPORT_ANALYSIS_TOC" in spec
+    assert build_lock.is_file()
+    contenido = build_lock.read_text(encoding="utf-8")
+    assert "pyinstaller==" in contenido
+    assert "--hash=sha256:" in contenido
