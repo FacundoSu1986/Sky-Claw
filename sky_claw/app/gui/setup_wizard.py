@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import contextlib
 import itertools
 import json
 import logging
 import secrets
+import tomllib
 from typing import TYPE_CHECKING, Any
 
 import keyring
@@ -73,6 +73,70 @@ def validate_credentials(
     if telegram_chatid and not telegram_chatid.replace("@", "").replace("-", "").isdigit():
         return "Chat ID debe ser numérico"
     return None
+
+
+def _search_key_ausente() -> bool:
+    """Confirma que ``search_api_key`` no está en el backend, sin volcar secretos."""
+    try:
+        return keyring.get_password("sky_claw", "search_api_key") is None
+    except keyring.errors.NoKeyringError:
+        logger.warning("Sin backend de keyring: no se puede confirmar la desactivación de search_api_key.")
+    except (keyring.errors.KeyringError, OSError) as exc:
+        logger.warning(
+            "No se pudo leer search_api_key del keyring (%s); no se confirma la desactivación.",
+            type(exc).__name__,
+        )
+    except Exception as exc:  # noqa: BLE001 — backend nativo: se clasifica por clase, sin mensaje
+        logger.error(
+            "Error inesperado del keyring al leer search_api_key (%s); no se confirma la desactivación.",
+            type(exc).__name__,
+        )
+    return False
+
+
+def _desactivar_search_key() -> bool:
+    """Borra ``search_api_key`` y exige verificar la ausencia.
+
+    ``PasswordDeleteError`` no se trata como prueba de ausencia: algunos
+    backends lo usan para errores reales de borrado. Sólo una lectura posterior
+    que devuelva ``None`` habilita el éxito visible del wizard.
+    """
+    try:
+        keyring.delete_password("sky_claw", "search_api_key")
+    except keyring.errors.PasswordDeleteError:
+        # Puede ser ausencia legítima o un fallo del backend: lo decide la lectura.
+        pass
+    except keyring.errors.NoKeyringError:
+        logger.warning("Sin backend de keyring: no se pudo desactivar search_api_key.")
+        return False
+    except (keyring.errors.KeyringError, OSError) as exc:
+        logger.warning(
+            "No se pudo borrar search_api_key del keyring (%s); no se confirma la desactivación.",
+            type(exc).__name__,
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001 — se registra la clase, nunca el mensaje
+        logger.error(
+            "Error inesperado del keyring al borrar search_api_key (%s); no se confirma la desactivación.",
+            type(exc).__name__,
+        )
+        return False
+    return _search_key_ausente()
+
+
+def _config_sin_search_key(config_path: Path) -> bool:
+    """Confirma que el TOML no contiene un plaintext de ``search_api_key``.
+
+    La lectura de keyring no ve una escritura ajena al TOML. Antes de publicar
+    ``first_run=False`` hay que comprobar ese archivo: ``Config.save()`` podría
+    migrar el plaintext al backend justo en el guardado que cierra el wizard.
+    """
+    try:
+        datos = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, ValueError) as exc:
+        logger.warning("No se pudo verificar el TOML antes de cerrar el wizard (%s).", type(exc).__name__)
+        return False
+    return not datos.get("search_api_key")
 
 
 # =============================================================================
@@ -414,7 +478,39 @@ class SetupWizardModal:
             ui.notify(error, type="negative")
             return
 
+        # ── Fase A: validar y persistir ──────────────────────────────────
+        # Todo lo que pueda escribir secretos queda dentro de este bloque. Si
+        # falla, el overlay todavía no se tocó: recién acá es verdad que el
+        # wizard sigue abierto. Las credenciales ya escritas no se revierten:
+        # se informa que la aplicación puede haber quedado parcial.
         try:
+            # Un campo vacío en búsqueda es una intención explícita de desactivar.
+            # Se resuelve ANTES de escribir otros secretos para no mutar de más
+            # cuando el backend no permite confirmar el borrado.
+            if not search_key and not _desactivar_search_key():
+                ui.notify(
+                    "No se pudo desactivar la clave de búsqueda; el wizard sigue abierto para reintentar.",
+                    type="negative",
+                )
+                return
+
+            from sky_claw.config import Config
+
+            cfg = Config(self._config_path)
+
+            if not search_key:
+                # Config puede rehidratar un secreto histórico del TOML. La
+                # intención explícita de borrado se registra en el objeto para
+                # que Config.save() no lo reinserte, y se confirma de nuevo
+                # ANTES de escribir credenciales opcionales.
+                cfg._data["search_api_key"] = ""
+                if not _desactivar_search_key():
+                    ui.notify(
+                        "No se pudo desactivar la clave de búsqueda; el wizard sigue abierto para reintentar.",
+                        type="negative",
+                    )
+                    return
+
             key_map = {
                 f"{provider}_api_key": api_key,
                 "nexus_api_key": nexus_key,
@@ -428,53 +524,118 @@ class SetupWizardModal:
                 if v:
                     keyring.set_password("sky_claw", k, v)
 
-            # The Brave search key is optional: an explicitly blank field means
-            # "disable/rotate", so clear any previously stored value instead of
-            # silently keeping the old one (Copilot review). Scoped to this key —
-            # the other fields keep the "blank = leave unchanged" convention.
-            if not search_key:
-                # nothing stored, or no keyring backend — both are fine here
-                with contextlib.suppress(keyring.errors.KeyringError):
-                    keyring.delete_password("sky_claw", "search_api_key")
-
             existing_ws = keyring.get_password("sky_claw", "ws_auth_token")
             if not existing_ws:
                 keyring.set_password("sky_claw", "ws_auth_token", secrets.token_hex(32))
 
-            from sky_claw.config import Config
-
-            cfg = Config(self._config_path)
             cfg._data["llm_provider"] = provider
-            cfg._data["first_run"] = False
             if telegram_chatid:
                 cfg._data["telegram_chat_id"] = telegram_chatid.replace("@", "")
-            cfg.save()
 
-            # Clear localStorage drafts
-            await self._clear_drafts()
+            if not search_key:
+                mensaje_fallo = (
+                    "No se pudo confirmar la desactivación de la clave de búsqueda; "
+                    "la configuración puede haberse aplicado parcialmente. "
+                    "El wizard sigue abierto para reintentar."
+                )
+                # Primer guardado: registra el borrado sin publicar first_run.
+                cfg.save()
+                # ``Config.save`` puede reportar ``PasswordDeleteError`` como
+                # pendiente incluso cuando el secreto ya no existe. La verdad
+                # la da la lectura: sólo ausencia verificada habilita el éxito.
+                if not _search_key_ausente():
+                    ui.notify(mensaje_fallo, type="negative")
+                    return
 
-            logger.info("Setup completado — provider=%s", provider)
+                # Reafirmar la mutación crea una generación nueva: el segundo
+                # save trata el borrado como explícito y no migra un secreto
+                # que otra superficie haya vuelto a dejar en el TOML.
+                cfg._data["search_api_key"] = ""
+                cfg.save()
+                if not _search_key_ausente():
+                    ui.notify(mensaje_fallo, type="negative")
+                    return
 
-            # Publish first_run=False to the reactive store so any subscriber
-            # (gate refresh, dashboard, etc.) reacts in the same session.
-            get_store().set("first_run", False)
+                # El guardado que cierra el wizard no puede migrar un plaintext
+                # que otra superficie haya dejado en el TOML. Se comprueba el
+                # archivo, se limpia con un guardado explícito si apareció y
+                # recién entonces se persiste first_run=False.
+                if not _config_sin_search_key(self._config_path):
+                    cfg._data["search_api_key"] = ""
+                    cfg.save()
+                    ui.notify(mensaje_fallo, type="negative")
+                    return
 
-            # Eliminar overlay del DOM — pero el temporizador de lore fue creado como
-            # elemento de la página (fuera de overlay_el), así que NO muere con
-            # él y hay que desactivarlo explícitamente acá. La guarda por
-            # is_deleted de _rotate_lore sigue como segunda línea (si algún
-            # manejador deja el modal borrado sin pasar por acá).
-            if self._overlay_el:
-                self._overlay_el.delete()
-            if self._lore_timer is not None:
-                self._lore_timer.deactivate()
-                self._lore_timer = None
-
-            await self._on_complete()
+                cfg._data["first_run"] = False
+                cfg.save()
+            else:
+                cfg._data["first_run"] = False
+                cfg.save()
 
         except Exception as e:
-            logger.exception("Error guardando configuración:")
-            ui.notify(f"Error guardando configuración: {e}", type="negative")
+            # El mensaje de una excepción del backend puede arrastrar secretos.
+            # Se registra sólo la clase y se muestra un texto fijo.
+            logger.error("No se pudo completar la configuración (%s).", type(e).__name__)
+            ui.notify(
+                "No se pudo completar la configuración; puede haberse aplicado parcialmente. El wizard sigue abierto.",
+                type="negative",
+            )
+            return
+
+        # ── Fase B: limpieza y finalización ──────────────────────────────
+        # La persistencia ya terminó. Ningún fallo de aquí hacia abajo puede
+        # describirse como "no se pudo guardar" ni revertir credenciales ya
+        # escritas. Cada paso se intenta una sola vez y se informa por separado.
+        fallos_finalizacion: list[str] = []
+
+        try:
+            await self._clear_drafts()
+        except Exception as e:
+            logger.warning("No se pudieron limpiar los borradores (%s).", type(e).__name__)
+            fallos_finalizacion.append("borradores")
+
+        try:
+            get_store().set("first_run", False)
+        except Exception as e:
+            logger.warning("No se pudo publicar first_run en el estado (%s).", type(e).__name__)
+            fallos_finalizacion.append("estado")
+
+        # Eliminar overlay del DOM — pero el temporizador de lore fue creado como
+        # elemento de la página (fuera de overlay_el), así que NO muere con
+        # él y hay que desactivarlo explícitamente acá. La guarda por
+        # is_deleted de _rotate_lore sigue como segunda línea (si algún
+        # manejador deja el modal borrado sin pasar por acá).
+        if self._overlay_el:
+            try:
+                self._overlay_el.delete()
+            except Exception as e:
+                logger.warning("No se pudo cerrar el overlay (%s).", type(e).__name__)
+                fallos_finalizacion.append("overlay")
+
+        if self._lore_timer is not None:
+            try:
+                self._lore_timer.deactivate()
+            except Exception as e:
+                logger.warning("No se pudo desactivar el temporizador de lore (%s).", type(e).__name__)
+                fallos_finalizacion.append("temporizador")
+            finally:
+                self._lore_timer = None
+
+        try:
+            await self._on_complete()
+        except Exception as e:
+            logger.error("Falló la finalización del wizard (%s).", type(e).__name__)
+            fallos_finalizacion.append("finalización")
+
+        if fallos_finalizacion:
+            ui.notify(
+                "Configuración guardada, pero la finalización quedó incompleta: "
+                + ", ".join(fallos_finalizacion)
+                + ".",
+                type="warning",
+            )
+        else:
+            logger.info("Setup completado — provider=%s", provider)
 
     # ── localStorage Draft Autosave ──────────────────────────────────
 

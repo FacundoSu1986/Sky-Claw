@@ -322,6 +322,13 @@ jobs:
           .\.lock-venv-np\Scripts\python -m pip install --require-hashes -r requirements-native-parallax.lock
       - name: Pip-audit native-parallax extra (SCA — strict)
         run: pip-audit --strict --skip-editable -r requirements-native-parallax.lock
+      # PR-LIC-03B (B09): el toolchain de build se fija con hashes y se audita en CI igual que runtime.
+      - name: Verify build toolchain lockfile install (hash enforced)
+        run: |
+          python -m venv .lock-venv-build
+          .\.lock-venv-build\Scripts\python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements-build.lock
+      - name: Pip-audit build toolchain (SCA — strict)
+        run: pip-audit --strict --skip-editable -r requirements-build.lock
       # P0.5 — Node gateway supply-chain audit
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -393,19 +400,62 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - name: Install build dependencies
+      - name: Install build dependencies (isolated, hash-enforced)
+        shell: pwsh
         run: |
-          pip install pyinstaller
-          pip install -e .
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $venvDir = Join-Path $env:RUNNER_TEMP 'skyclaw-build-venv'
+          python scripts/build_controlado.py --prepare-venv $venvDir --profile base --env-out dist/build-evidence/build_env.json --source-pre-out dist/build-evidence/source_identity_pre.json --run-id "${{ github.run_id }}-${{ github.run_attempt }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build executable
         id: build_executable
-        run: pyinstaller sky_claw.spec --clean
+        shell: pwsh
+        env:
+          SKYCLAW_EXPORT_ANALYSIS_TOC: dist/build-evidence/analysis_toc.json
+          PYTHONNOUSERSITE: "1"
+          PIP_CONFIG_FILE: NUL
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          Get-ChildItem Env:PIP_* | Remove-Item -ErrorAction SilentlyContinue
+          Remove-Item Env:PYTHONPATH, Env:PYTHONHOME, Env:PYTHONSTARTUP -ErrorAction SilentlyContinue
+          $venvDir = Join-Path $env:RUNNER_TEMP 'skyclaw-build-venv'
+          $env:PATH = "$venvDir\Scripts;$env:PATH"
+          pyinstaller sky_claw.spec --clean
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Record SHA-256 of frozen executable
-        run: python scripts/registrar_sha256_ejecutable.py registrar dist/SkyClawApp.exe
+        run: python scripts/registrar_sha256_ejecutable.py registrar dist/SkyClawApp.exe --json dist/build-evidence/exe_sha256.json
       - name: Smoke-test frozen executable
         id: smoke_frozen_executable
         run: python scripts/smoke_frozen_executable.py dist/SkyClawApp.exe
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Inventory and reconcile frozen executable (PR-LIC-03A/B)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $venvDir = Join-Path $env:RUNNER_TEMP 'skyclaw-build-venv'
+          $venvPy = Join-Path $venvDir 'Scripts\python.exe'
+          $pyVer = & $venvPy -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/build_controlado.py --sanitize-toc dist/build-evidence/analysis_toc.json --validate-venv $venvDir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $venvPy scripts/inventario_ejecutable.py dist/SkyClawApp.exe --out dist/build-evidence/inventory.json --registro-sha256 dist/build-evidence/exe_sha256.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $venvPy scripts/reconciliar_sbom.py --inventory dist/build-evidence/inventory.json --env-json dist/build-evidence/build_env.json --analysis-toc-json dist/build-evidence/analysis_toc.json --build-python-version $pyVer --lockfile requirements.lock --check-spec-datas --sbom-out dist/build-evidence/sbom.spdx.json --report-out dist/build-evidence/reconciliation_report.json
+          $recExit = $LASTEXITCODE
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($recExit -ne 0 -and $recExit -ne 1) { exit $recExit }
+          python scripts/build_controlado.py --verify-report dist/build-evidence/reconciliation_report.json --profile base --exe dist/SkyClawApp.exe --exe-sha256-json dist/build-evidence/exe_sha256.json --validate-venv $venvDir --analysis-toc dist/build-evidence/analysis_toc.json --sbom dist/build-evidence/sbom.spdx.json --source-pre dist/build-evidence/source_identity_pre.json --run-id "${{ github.run_id }}-${{ github.run_attempt }}" --smoke-outcome "${{ steps.smoke_frozen_executable.outcome }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # PR-LIC-03B (B15 — Opción B ampliada): publicación de SkyClawApp.exe vía Actions suspendida
+      # temporalmente en TODOS los eventos (pull_request, push, schedule, workflow_dispatch) mientras
+      # permanezcan abiertos los bloqueos jurídicos de distribución. Su reactivación corresponde a
+      # PR-LIC-04 y requiere aprobación explícita del propietario. Ancla: tests/test_release_smoke_wiring.py.
+      - name: Upload frozen executable (suspended until PR-LIC-04)
+        if: ${{ false }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: SkyClawApp-exe
           path: dist/SkyClawApp.exe

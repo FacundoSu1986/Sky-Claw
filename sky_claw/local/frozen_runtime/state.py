@@ -33,6 +33,7 @@ import json
 import os
 import pathlib
 import tempfile
+from collections.abc import Callable
 
 from sky_claw.app.security.links import link_kind_or_raise
 from sky_claw.local.frozen_runtime.errors import (
@@ -264,12 +265,18 @@ def reservar_ruta_json_exclusiva(path: pathlib.Path) -> None:
         pass
 
 
-def write_json_atomic(path: pathlib.Path, payload: dict[str, object]) -> None:
+def write_json_atomic(path: pathlib.Path, payload: dict[str, object]) -> str:
     """Escritura atómica genérica (temporal en el mismo directorio + ``os.replace``).
 
     Reutilizada por la metadata de generations (``state/generations/``) y por
     la inicialización del estado. Re-admite el namespace antes de escribir
     (falla cerrado si un ancestro fue redirigido por un enlace).
+
+    Devuelve el sha256 (hex) de los bytes EXACTOS publicados, leídos del
+    temporal propio antes del ``os.replace``. Es la única prueba de autoría que
+    no depende de un readback del destino: entre el reemplazo y una relectura,
+    un proceso que no participa del root lock puede escribir. Los llamadores que
+    no la necesitan la ignoran.
     """
     ruta = pathlib.Path(path)
     exigir_namespace_escribible(ruta.parent)
@@ -282,11 +289,13 @@ def write_json_atomic(path: pathlib.Path, payload: dict[str, object]) -> None:
             json.dump(payload, fh, indent=2, ensure_ascii=False, sort_keys=True)
             fh.flush()
             os.fsync(fh.fileno())
+        huella_publicada = hashlib.sha256(pathlib.Path(tmp_name).read_bytes()).hexdigest()
         os.replace(tmp_name, ruta)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp_name)
         raise
+    return huella_publicada
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +348,7 @@ def escribir_estado_activo_cas(
     payload: dict[str, object],
     *,
     esperado: EstadoPrevioObservado,
+    al_publicar: Callable[[str], None] | None = None,
 ) -> EstadoPrevioObservado:
     """Escribe ``active.json`` sólo si el estado previo sigue siendo el observado.
 
@@ -357,7 +367,14 @@ def escribir_estado_activo_cas(
     MO2 — no se afirma tenerla. Lo que sí se elimina es el pisado SISTEMÁTICO de
     un cambio ya visible, que era el defecto real.
 
-    Orden: validar forma → comparar contra el esperado → escribir → releer.
+    Orden: validar forma → comparar contra el esperado → escribir → avisar la
+    huella publicada (``al_publicar``) → releer.
+
+    ``al_publicar`` recibe la huella de los bytes que ESTE CAS publicó, en el
+    instante posterior al ``os.replace`` y ANTES del readback: si el readback
+    falla o un tercero escribe entre el reemplazo y la relectura, quien la pidió
+    (el binder, para su rollback) igual sabe qué bytes son suyos. El valor
+    devuelto, en cambio, es lo RELEÍDO: no prueba autoría.
 
     Raises:
         StateCasError: el estado cambió desde que se observó (no se escribe).
@@ -369,7 +386,7 @@ def escribir_estado_activo_cas(
 
     with participant_lock(root, timeout=0.0) as handle:
         handle.assert_owned()
-        return _escribir_estado_activo_cas_locked(ruta, payload, esperado=esperado)
+        return _escribir_estado_activo_cas_locked(ruta, payload, esperado=esperado, al_publicar=al_publicar)
 
 
 def _escribir_estado_activo_cas_locked(
@@ -377,8 +394,9 @@ def _escribir_estado_activo_cas_locked(
     payload: dict[str, object],
     *,
     esperado: EstadoPrevioObservado,
+    al_publicar: Callable[[str], None] | None = None,
 ) -> EstadoPrevioObservado:
-    """Cuerpo del CAS, ya bajo el root lock (no re-adquiere)."""
+    """Cuerpo del CAS, ya bajo el root lock (no re-adquiere). Ver ``escribir_estado_activo_cas``."""
     ruta = pathlib.Path(path)
     # La forma se valida ANTES de tocar el disco: un payload inválido no puede
     # dejar el estado a medio camino ni consumir el CAS.
@@ -400,7 +418,9 @@ def _escribir_estado_activo_cas_locked(
             f"(generation={esperado.generation_id!r}, clone={esperado.clone_id!r}) y hay "
             f"(generation={actual.generation_id!r}, clone={actual.clone_id!r})"
         )
-    write_json_atomic(ruta, payload)
+    huella_publicada = write_json_atomic(ruta, payload)
+    if al_publicar is not None:
+        al_publicar(huella_publicada)
     despues = observar_estado_previo(ruta)
     generacion_nueva = payload.get("desired_generation_id", payload.get("desired_active_generation"))
     clone_nuevo = payload.get("desired_clone_id")

@@ -77,9 +77,11 @@ if TYPE_CHECKING:
     from sky_claw.app.security.path_validator import PathValidator
     from sky_claw.local.ai.patch_advisor_llm import LLMCallable
     from sky_claw.local.assets import AssetConflictReport
+    from sky_claw.local.mo2.brokered_synthesis import VfsBrokerProtocol
     from sky_claw.local.tools.dyndolod_workspace import Stage9Coordination, WorkspaceResuelto
     from sky_claw.local.tools.grass_cache_service import GrassRuntimeDeps
     from sky_claw.local.tools.loot_service import LootRunnerProtocol
+    from sky_claw.local.tools.synthesis_fase1 import PreparadorFase1Protocol
 
 #: Directorio de staging de backups (compartido con supervisor.py).
 # Nota: duplicado intencional para evitar que orchestration_composition
@@ -166,6 +168,14 @@ def build_orchestration_composition(
     # PR-B: egress del daemon para el masterlist de LOOT (updateMasterlist=false).
     # ``None`` = sin red: el sort sólo corre con una copia previa vigente.
     gateway: NetworkGateway | None = None,
+    # PR-2b3 (ADR 0019): backend de Synthesis elegido EXPLÍCITAMENTE por el llamador (nunca por la
+    # presencia del broker). Llega igual al servicio base, a la factory por corrida y a la strategy.
+    # ``brokered`` sigue bloqueado en código por ``_CONTENCION_SYNTHESIS_VERIFICADA``; quien lo
+    # alimenta desde la config (``AppContext``) es PR-4.
+    synthesis_backend: str = "standalone",
+    synthesis_vfs_broker: VfsBrokerProtocol | None = None,
+    synthesis_instance_id: str | None = None,
+    synthesis_preparador_fase1: PreparadorFase1Protocol | None = None,
 ) -> OrchestrationComposition:
     """Construye el grafo completo de servicios, providers, middleware y dispatcher.
 
@@ -210,6 +220,10 @@ def build_orchestration_composition(
         path_resolver=path_resolver,
         event_bus=event_bus,
         pipeline_config_path=synthesis_pipeline_config_path,
+        synthesis_backend=synthesis_backend,
+        vfs_broker=synthesis_vfs_broker,
+        instance_id=synthesis_instance_id,
+        preparador_fase1=synthesis_preparador_fase1,
     )
 
     # T5-v2.1: capacidad del protocolo de readiness (gate UIA read-only sobre el
@@ -344,6 +358,10 @@ def build_orchestration_composition(
         path_resolver=path_resolver,
         event_bus=event_bus,
         pipeline_config_path=synthesis_pipeline_config_path,
+        synthesis_backend=synthesis_backend,
+        vfs_broker=synthesis_vfs_broker,
+        instance_id=synthesis_instance_id,
+        preparador_fase1=synthesis_preparador_fase1,
     )
     preview_chain_service_provider = build_preview_chain_service_provider(
         path_resolver=path_resolver,
@@ -391,6 +409,7 @@ def build_orchestration_composition(
         # confirmación al operador por SU canal (modal de la GUI, categoría propia, nunca auto-aprobada). El agente
         # remoto tiene el suyo en AppContext, sobre el mismo guard.
         aprobar_sin_etapas_previas=AprobadorDesatendidoHITL(hitl_guard=hitl_guard).aprobar_sin_etapas_previas_asistido,
+        synthesis_backend=synthesis_backend,
     )
 
     # ------------------------------------------------------------------

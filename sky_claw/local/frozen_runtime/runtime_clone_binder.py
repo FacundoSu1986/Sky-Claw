@@ -135,6 +135,10 @@ from sky_claw.local.frozen_runtime.mo2_ini_exclusion import (
     Mo2IniExclusionError,
     adquirir_exclusion_ini,
 )
+from sky_claw.local.frozen_runtime.pending_abort_store import (
+    abortos_incompletos,
+    registro_de_aborto,
+)
 from sky_claw.local.frozen_runtime.root_lock import (
     LockDisposition,
     inspect_frozen_runtime_root_lock,
@@ -1128,6 +1132,35 @@ def ejecutar_transicion_binder(
                 "no se reanuda. Hay que presentar una transición NUEVA"
             )
 
+        # 5.0b — Aborto autorizado (D4/D5/D8), BAJO el lock (hermano de 5.0; cubre también aprobacion_consumida).
+        from sky_claw.local.frozen_runtime.pending_abort_store import exigir_store_abortos_coherente
+
+        try:
+            snap_j_50b = journal_module.cargar_journal_transicion(storage_path)
+            doc_j_50b = snap_j_50b.journal
+            exigir_store_abortos_coherente(
+                storage_path,
+                journal_disposition_value=snap_j_50b.disposition.value,
+                last_finalized_transition_id=None if doc_j_50b is None else doc_j_50b.last_finalized_transition_id,
+            )
+            incompletos_aborto = abortos_incompletos(storage_path)
+            aborto_propio = registro_de_aborto(storage_path, t_id)
+        except (FrozenRuntimeError, OSError) as exc:
+            raise BinderApprovalError(
+                f"no se pudo verificar el store de abortos para {t_id!r} ({exc}): fail-closed"
+            ) from exc
+        if incompletos_aborto:
+            ids_inc = sorted(r.transition_id for r in incompletos_aborto)
+            raise BinderApprovalError(
+                f"existe(n) aborto(s) incompleto(s) en curso ({ids_inc}): no se ejecuta ninguna transición "
+                "hasta completar la reconciliación pendiente (D4)"
+            )
+        if aborto_propio is not None:
+            raise BinderTransicionAbandonadaError(
+                f"la transición {t_id!r} fue abortada por su dueño (aprobación {aborto_propio.approval_seq} CONSUMED): "
+                "no se reanuda ni reutiliza. Hay que presentar una transición NUEVA"
+            )
+
         # 5.1 — Revalidación bajo la sección crítica (FIX 6)
         _preflight_lock, bytes_ini_revalidado = _revalidar_bajo_lock(
             storage_path=storage_path,
@@ -1217,6 +1250,17 @@ def ejecutar_transicion_binder(
         # así que lo leído es exactamente lo que dejó la transición. Una vez
         # cerrada, cualquiera puede escribir y un prefijo deja de ser evidencia.
         ini_bytes_tras_escritura: bytes | None = None
+        # Huella de lo que PUBLICÓ el escritor de config y de active.json (sha256
+        # del temporal propio antes del ``os.replace``). Es la prueba de autoría
+        # de esas dos superficies en el rollback: un readback del destino no
+        # sirve, porque entre el reemplazo y la relectura un proceso que no
+        # participa de ningún lock de Sky-Claw puede escribir. Si un escritor no
+        # informa huella, la superficie queda sin autoría y el rollback la
+        # preserva (P7-F Incremento 1).
+        huellas_posteriores: dict[str, str] = {}
+
+        def _registrar_huella_active(huella: str) -> None:
+            huellas_posteriores[recovery.SUPERFICIE_ACTIVE] = huella
 
         def _marcar_escritura_iniciada() -> None:
             """Se invoca justo antes de mutar el INI, y sólo si se va a mutar."""
@@ -1313,7 +1357,9 @@ def ejecutar_transicion_binder(
                     handle, storage_path, transition_id=t_id, fase=recovery.FaseRecuperacion.CONFIG_ESCRITA
                 )
                 mutadas.add(recovery.SUPERFICIE_CONFIG)
-                persistir_campo(config_path, "skyrim_path", str(target_clone_root))
+                huella_config = persistir_campo(config_path, "skyrim_path", str(target_clone_root))
+                if isinstance(huella_config, str):
+                    huellas_posteriores[recovery.SUPERFICIE_CONFIG] = huella_config
 
             if environ is not None:
                 recovery.marcar_fase_locked(
@@ -1382,6 +1428,9 @@ def ejecutar_transicion_binder(
                     active_state_path(storage_path),
                     active_payload,
                     esperado=estado_previo,
+                    # Avisa la huella publicada ANTES del readback: si el readback
+                    # falla, el rollback igual sabe qué bytes son de esta transición.
+                    al_publicar=_registrar_huella_active,
                 )
             except StateCasError as exc:
                 # El CAS falló ⇒ NO escribimos active.json. Sacarlo del conjunto
@@ -1538,7 +1587,7 @@ def ejecutar_transicion_binder(
                 t_id,
                 exc,
             )
-            _rollback(
+            no_restauradas = _rollback(
                 handle,
                 storage_path,
                 registro,
@@ -1547,7 +1596,19 @@ def ejecutar_transicion_binder(
                 t_id,
                 ini_escritura_intentada=ini_escritura_intentada,
                 ini_bytes_tras_escritura=ini_bytes_tras_escritura,
+                huellas_posteriores=huellas_posteriores,
             )
+            if no_restauradas:
+                # El rollback NO dejó las superficies en su estado previo (algo
+                # no era atribuible, o cambió a mitad de camino). No es un fallo
+                # del rollback —no se pisó nada—, pero quien recibe la excepción
+                # tiene que saberlo: sin esta nota, el error original se leía
+                # como «falló y se revirtió», que no es lo que pasó.
+                exc.add_note(
+                    f"rollback INCOMPLETO de la transición {t_id}: {list(no_restauradas)} quedaron sin restaurar "
+                    "(autoría no acreditada o restauración detenida). Evidencia en "
+                    f"{storage_path / 'recovery_evidence' / t_id}; la decisión es del propietario"
+                )
             raise
 
         # FUERA de la transacción, a propósito. El journal ya finalizó y el
@@ -1656,19 +1717,32 @@ def _rollback(
     *,
     ini_escritura_intentada: bool | None = False,
     ini_bytes_tras_escritura: bytes | None = None,
-) -> None:
+    huellas_posteriores: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
     """Restaura las superficies REALMENTE mutadas y verifica cada una.
 
     ``mutadas`` es la verdad de proceso: el binder sabe qué llamadas
     completaron. La fase del registro es la verdad de reinicio: se marca ANTES
-    de cada mutación, así que sobre-restaura (idempotente) en vez de dejar una
-    mutación suelta. Las dos alimentan la MISMA rutina de restauración.
+    de cada mutación. Las dos alimentan la MISMA rutina de restauración.
 
     ``ini_bytes_tras_escritura`` es la huella leída BAJO la exclusión. El
     rollback corre después de ``cerrar()``, así que un prefijo que aparezca en
     el archivo ya no prueba autoría: sólo se atribuye si el contenido sigue
-    siendo exactamente el que la transición dejó.
+    siendo exactamente el que la transición dejó. Por eso, si se intentó
+    escribir y NO hay huella, la autoría se degrada a desconocida acá, para
+    TODOS los caminos que llegan al rollback (H10: el camino de excepción del
+    escritor saltaba la degradación del camino feliz y la recuperación
+    atribuía por la forma del contenido, con la exclusión ya liberada).
+
+    ``huellas_posteriores`` trae lo que publicaron los escritores de config y
+    active.json: sin huella, esas superficies no son atribuibles.
+
+    Devuelve las superficies mutadas que NO volvieron a su estado previo
+    (preservadas por autoría no acreditada o por la decisión de conjunto). No es
+    un fallo del rollback —no se pisó nada— y el llamador lo declara.
     """
+    if ini_escritura_intentada and ini_bytes_tras_escritura is None:
+        ini_escritura_intentada = None
     try:
         verificaciones = recovery.restaurar_registro_locked(
             handle,
@@ -1681,6 +1755,7 @@ def _rollback(
             # "parece" un prefijo nuestro es de un tercero y no se toca.
             escritura_intentada=ini_escritura_intentada,
             bytes_tras_escritura_ini=ini_bytes_tras_escritura,
+            huellas_posteriores=huellas_posteriores,
         )
         recovery.exigir_restauracion_completa(verificaciones)
     except Exception as rollback_exc:
@@ -1690,3 +1765,12 @@ def _rollback(
             f"El registro durable queda en {recovery_state_dir(storage_path) / (transition_id + '.json')} "
             "para recuperación manual con binder_recovery.recuperar_transicion_interrumpida"
         ) from rollback_exc
+    no_restauradas = tuple(v.kind for v in verificaciones if v.requiere_dueno)
+    if no_restauradas:
+        logger.warning(
+            "rollback INCOMPLETO de la transición %s: %s quedaron sin restaurar (%s)",
+            transition_id,
+            list(no_restauradas),
+            "; ".join(f"{v.kind}: {v.detail}" for v in verificaciones if v.requiere_dueno),
+        )
+    return no_restauradas

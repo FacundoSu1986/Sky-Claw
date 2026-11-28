@@ -120,6 +120,38 @@ def test_release_conserva_el_job_pausado_y_no_cambia_la_receta_de_firma() -> Non
     )
 
 
+def test_ci_build_suspende_publicacion_de_ejecutable_en_todos_los_eventos_b15() -> None:
+    """PR-LIC-03B (B15): mientras persistan los bloqueos jurídicos, ci.yml construye, hashea y
+    smokea SkyClawApp.exe, pero suspende explícitamente su publicación como artefacto de Actions
+    en TODOS los eventos (pull_request, push, schedule, workflow_dispatch). Reactivar corresponde
+    a PR-LIC-04 con aprobación explícita del propietario.
+    """
+    ci = _cargar_workflows()["ci.yml"]
+    build_steps = ci["jobs"]["build"]["steps"]
+    upload_idx = _indice_unico(
+        build_steps,
+        lambda step: step.get("uses", "").startswith("actions/upload-artifact@"),
+        "de publicación suspendida del ejecutable en ci.yml",
+    )
+    upload_step = build_steps[upload_idx]
+    assert upload_step.get("if") == "${{ false }}", (
+        "El paso de upload-artifact de SkyClawApp.exe en ci.yml debe permanecer suspendido "
+        "con `if: ${{ false }}` en todos los eventos hasta PR-LIC-04 (B15)"
+    )
+    assert str(upload_step.get("with", {}).get("path", "")).strip() == "dist/SkyClawApp.exe"
+    # Ningún otro paso de upload-artifact en ci.yml puede subir el ejecutable, directorios como `dist` o `.`
+    # ni comodines arbitrarios: se congela por allowlist exacta (B15).
+    rutas_permitidas_otros_jobs = frozenset({"shard-out/", "coverage.xml"})
+    for job_name, job in ci.get("jobs", {}).items():
+        if job_name == "build":
+            continue
+        for step in job.get("steps", []):
+            if str(step.get("uses", "")).startswith("actions/upload-artifact@"):
+                rutas = {linea.strip() for linea in str(step.get("with", {}).get("path", "")).splitlines()}
+                rutas.discard("")
+                assert rutas and rutas <= rutas_permitidas_otros_jobs, (job_name, sorted(rutas))
+
+
 def test_los_productores_sin_publicacion_no_publican_el_ejecutable() -> None:
     """Un productor fuera de ``PRODUCTORES_ESPERADOS`` solo es admisible si NO puede publicar."""
     workflows = _cargar_workflows()

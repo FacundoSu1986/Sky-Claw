@@ -402,6 +402,15 @@ _PRIMITIVAS_BAJO_LOCK: frozenset[tuple[str, str]] = frozenset(
         ("journal.py", "_start_next_locked"),
         ("journal.py", "_actualizar_locked"),
         ("journal.py", "_finalizar_locked"),
+        ("journal.py", "_completar_rotacion_f2_locked"),
+        ("journal.py", "_abortar_pendiente_locked"),
+        # P7-F Incremento 2 PR 1: creación del subdirectorio de abortos, primitivas
+        # locked del store de abortos y revalidación con preservación forense bajo participant_lock.
+        ("storage.py", "asegurar_directorio_abortos"),
+        ("pending_abort_store.py", "crear_intencion_aborto_locked"),
+        ("pending_abort_store.py", "avanzar_estado_aborto_locked"),
+        ("pending_reconciliation.py", "_verificar_superficies_contra_snapshot"),
+        ("pending_reconciliation.py", "_retirar_recovery_best_effort"),
         # P4-S4 (`approval.py`): la autoridad de aprobación escribe por DOS
         # caminos, y ninguno adquiere el lock por su cuenta — reciben el
         # `FrozenRuntimeRootLockHandle` ya adquirido y lo verifican con
@@ -437,6 +446,11 @@ _PRIMITIVAS_BAJO_LOCK: frozenset[tuple[str, str]] = frozenset(
         # `recovery_evidence/`, dentro del root. Declararla la somete al ancla de
         # call site: si alguien la invocara fuera de la sección crítica, falla.
         ("binder_recovery.py", "_preservar_evidencia"),
+        # P7-F Incremento 1: el veredicto de «escritura ajena» llama a
+        # `_preservar_evidencia`. Lo invocan la decisión de conjunto de
+        # `restaurar_registro_locked` y la re-verificación de
+        # `_restaurar_persistida`, las dos bajo el handle del llamador.
+        ("binder_recovery.py", "_veredicto_ajena"),
         # P5-C1 (`mo2_ini_escritura.py`): la escritura del INI es la mutación más
         # sensible del slice. Corre SIEMPRE bajo el participant lock del binder.
         ("mo2_ini_escritura.py", "actualizar_game_path_en_ini"),

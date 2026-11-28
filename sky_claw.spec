@@ -233,11 +233,45 @@ a = Analysis(
         "_pytest",
         "hypothesis",
         "test",
+        # PR-LIC-03B (B08): impedir que herramientas exclusivas de build en el venv
+        # se filtren accidentalmente al ejecutable congelado.
+        "setuptools",
+        "pkg_resources",
+        "packaging",
+        "trove_classifiers",
+        "hatchling",
+        "hatch_vcs",
+        "editables",
+        "pathspec",
+        "pluggy",
+        "setuptools_scm",
+        "tomlkit",
+        "vcs_versioning",
+        "altgraph",
     ],
     noarchive=False,
     optimize=0,
     cipher=block_cipher,
 )
+
+# PR-LIC-03B (B04/B13): exportación opt-in del Analysis TOC real entregado a PYZ y EXE.
+_toc_export_path = os.environ.get("SKYCLAW_EXPORT_ANALYSIS_TOC", "").strip()
+if _toc_export_path:
+    import json as _json
+    import pathlib as _pathlib
+
+    _toc_dest = _pathlib.Path(_toc_export_path)
+    _toc_dest.parent.mkdir(parents=True, exist_ok=True)
+    _toc_payload = {
+        "schema_version": 1,
+        "pure": [[str(d), str(s), str(t)] for d, s, t in a.pure],
+        "binaries": [[str(d), str(s), str(t)] for d, s, t in a.binaries],
+        "datas": [[str(d), str(s), str(t)] for d, s, t in a.datas],
+        "scripts": [[str(d), str(s), str(t)] for d, s, t in a.scripts],
+    }
+    _toc_tmp = _toc_dest.with_suffix(_toc_dest.suffix + ".tmp")
+    _toc_tmp.write_text(_json.dumps(_toc_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(_toc_tmp, _toc_dest)
 
 pyz = PYZ(a.pure, cipher=block_cipher)
 

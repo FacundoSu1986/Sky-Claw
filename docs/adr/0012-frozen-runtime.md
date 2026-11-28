@@ -10314,3 +10314,191 @@ Es la misma lección del §47.8, un nivel más abajo: primero un test que no med
 concurrencia, después un assert que tampoco la medía. **Un assert que no puede
 fallar no es una verificación; es una anotación.** Lo encontró el revisor
 externo, no la suite.
+
+---
+
+## 48. P7-F Incremento 2 (PR 1) — salida productiva de `PENDING` por aborto autorizado y protección del consumo (2026-11-26)
+
+### 48.1 Defecto cerrado (H5 y RQ-7)
+
+1. **H5 (`PENDING` terminal):** `_rotar_journal_locked` era el único escritor de
+   `JournalState.NONE` y sólo lo llamaba `_finalizar_locked`, que exige evidencia
+   POST en `PASS`. Tras una transición interrumpida (rollback en proceso o crash
+   en frío), Golden Master quedaba bloqueado indefinidamente.
+2. **Consumo prematuro (RQ-7):** `consumir_aprobacion` escribía el tombstone
+   `CONSUMED` bajo `participant_lock` sin inspeccionar `state/transition.json`,
+   quemando aprobaciones nuevas cuando ya existía un `PENDING` incompatible.
+
+### 48.2 Ampliación del ciclo de vida del journal y autoridad de `_abortar_pendiente_locked` (D5)
+
+Se admite una segunda transición `PENDING_* → NONE` mediante
+`_abortar_pendiente_locked`, sujeta a las siguientes invariantes no negociables:
+
+- `FINALIZED_WITHOUT_POST = PROHIBIDO`: el aborto **nunca** crea un
+  `FinalizedTransitionRecord`, no altera `finalization_seq`, no modifica
+  reservas (`state/finalization-seqs/`), no altera tombstones ni
+  `previous_activation_target`.
+- **Autoridad durable obligatoria (D5):** `_abortar_pendiente_locked` no confía
+  en parámetros sueltos `(transition_id, journal_revision)`. Relee y verifica
+  desde disco el registro durable en `state/aborted_transitions/<tid>.json`
+  (esquema cerrado v1 + `record_digest` recalculado), exigiendo:
+  - mismo `root_id`, `transition_id`, `journal_revision`, `approval_id`,
+    `approval_seq` y `scope_digest` que el `PENDING` vigente;
+  - estado `SUPERFICIES_VERIFICADAS` con `superficies_verificadas_digest` válido;
+  - ausencia de `FinalizedTransitionRecord` (C7) y de reservas huérfanas (C6).
+- **Testigo derivado del historial (RQ-6):** `last_finalized_transition_id` se
+  fija a `None` si el historial está vacío (habilitando `CREATE`) o a
+  `historial.latest.transition_id` si existe historial (habilitando `START_NEXT`).
+- **Veto permanente de `transition_id` abortado:** `_crear_pendiente_locked` y
+  `_start_next_locked` rechazan cualquier `transition_id` presente en
+  `state/aborted_transitions/` y bloquean mientras exista cualquier aborto
+  incompleto (`estado != COMPLETO`, D4).
+
+### 48.3 Intención durable, revalidación en cada reintento y fronteras inter-marcador (D2, D3, D4)
+
+El aborto autorizado (`abortar_transicion_pendiente`) persiste un registro de
+esquema cerrado en `state/aborted_transitions/<transition_id>.json` creado
+single-winner (`reservar_ruta_json_exclusiva`, `O_EXCL`) antes de mutar
+superficies, avanzando monótonamente por:
+
+```text
+INTENCION → SUPERFICIES_VERIFICADAS → JOURNAL_NONE → COMPLETO
+```
+
+- **Autorización del dueño ≠ autoría:** el dueño confirma cada superficie
+  divergente mediante una unión etiquetada (`PRESENTE` + `sha256` exacto de 64
+  hex, o `AUSENTE`). Esa autorización declara aceptación de descarte y **nunca**
+  se etiqueta como prueba de autoría de Sky-Claw.
+- **Revalidación obligatoria desde `SUPERFICIES_VERIFICADAS` (D2):** un
+  `SUPERFICIES_VERIFICADAS` histórico no es eternamente vigente. En cada
+  reintento se revalidan identidad, quiescencia, ausencia de C6/C7 y el estado
+  actual de las superficies contra el snapshot (o evidencia IP-0) antes de rotar
+  el journal. Si apareció contenido externo nuevo, se preserva y se detiene.
+- **Fronteras entre operación y marcador (D3):**
+  - placeholder vacío (0 bytes) en creación de `INTENCION` → reintento con
+    identidad y confirmaciones explícitas del dueño; un archivo no vacío corrupto
+    jamás se sobrescribe (`AbortoCorruptoError`);
+  - crash tras restaurar una superficie y antes de `SUPERFICIES_VERIFICADAS` →
+    reclasificación por superficie con las confirmaciones persistidas;
+  - crash tras rotar el journal a `NONE` y antes de persistir `JOURNAL_NONE` →
+    reconocido por `journal.state == NONE ∧ journal_revision == rev + 1 ∧ testigo
+    coherente` y revalidación de superficies;
+  - crash tras retirar `state/recovery/<tid>.json` y antes de `COMPLETO` →
+    retiro idempotente y avance a `COMPLETO`.
+- **Bloqueo durante aborto incompleto (D4):** mientras exista cualquier registro
+  en `state/aborted_transitions/` con `estado != COMPLETO`, quedan bloqueados
+  `CREATE`, `START_NEXT`, `consumir_aprobacion`, `ejecutar_transicion_binder`,
+  `preparar`, `reanudar` y `abandonar_transicion_consumida`.
+
+### 48.4 Frontera IP-0 sin registro de recuperación (D6)
+
+La ausencia de `state/recovery/<tid>.json` no prueba ausencia de mutaciones. El
+aborto sin escritura de superficies sólo se autoriza cuando concurren:
+
+1. `contexto_ip0` válido y recomputación de `approval_provenance` (`mo2auth` +
+   `bind`) idéntica a `witness.scope_payload["approval_provenance"]`. Esto
+   acredita **igualdad byte a byte de `modorganizer.ini`** (`mo2_ini_sha256`),
+   instancia/identidad de MO2, política, runtime saliente, y el **valor parseado
+   `config.skyrim_path`** (NO igualdad byte a byte de todo `config.toml`).
+2. `active.json` coherente con `journal.source_activation` (identidad semántica:
+   bootstrap vacío sin historial o mismo `(generation_id, clone_id)`).
+3. Oráculo Effective Runtime observando el origen (no el destino ni
+   indeterminado).
+4. Sin reserva C6 ni registro `FINALIZED` C7.
+
+Ante evidencia insuficiente (aprobación legacy sin `mo2auth`/`bind`, divergencia
+en cualquier campo u oráculo indeterminado): **HOLD fail-closed sin mutaciones**
+(`AbortoIp0EvidenciaInsuficienteError`).
+
+### 48.5 Fronteras C6 y C7 (alcance PR 1 vs PR 2)
+
+En PR 1, `abortar_transicion_pendiente` y `_abortar_pendiente_locked` rechazan
+fail-closed cualquier transición con reserva en `state/finalization-seqs/` (C6)
+o con `FinalizedTransitionRecord` en `state/transitions/` (C7). La operación
+separada `completar_transicion_pendiente` (C3/C4/C6/C7) corresponde al PR 2;
+`P7F_PASS` no se declara hasta integrar y certificar ambos PRs.
+
+### 48.6 Protección de `consumir_aprobacion` y ventana residual burn-first (D1)
+
+Dentro de `participant_lock`, antes de crear el tombstone `CONSUMED`,
+`consumir_aprobacion` verifica `state/transition.json` y `state/aborted_transitions/`:
+
+- Journal corrupto/ilegible o aborto incompleto → `ApprovalJournalBlockedError`.
+- Journal `PENDING_*`: sólo se admite continuación/idempotencia cuando coinciden
+  `transition_id`, `consumed_approval_id`, `consumed_approval_seq`,
+  `consumed_scope_digest` **y** existe evidencia terminal `CONSUMED` coherente.
+  Una coincidencia aislada de `transition_id` no basta.
+- **Ventana residual declarada:** en el protocolo burn-first, `consumir_aprobacion`
+  libera `participant_lock` antes de que la Fase 5 del binder lo readquiera para
+  publicar `PENDING`. Dos procesos concurrentes que consuman aprobaciones
+  distintas pueden dejar una segunda aprobación `CONSUMED` sin `PENDING`; esa
+  ventana es inherente a burn-first y se resuelve de forma segura mediante
+  `abandonar_transicion_consumida` (`/gm_abandonar`), sin pérdida irrecuperable.
+
+### 48.7 Exclusión Windows y compatibilidad de roots históricos (D7, D8)
+
+- **Exclusión Windows (D7):** la restauración autorizada de `modorganizer.ini`
+  exige quiescencia de MO2/Skyrim/SKSE, verifica la huella confirmada bajo
+  `FILE_SHARE_NONE` (`adquirir_exclusion_ini`), cierra el handle y ejecuta
+  `os.replace` atómico (`_escribir_bytes_atomico`) para evitar archivos rasgados
+  ante caída de proceso. `FILE_SHARE_NONE` y `os.replace` **no** forman una
+  exclusión OS continua: subsiste una ventana de microsegundos frente a procesos
+  externos no participantes. `POWER_LOSS_GUARANTEE = NOT_CLAIMED`.
+- **Store en roots históricos (D8):** `initialize_frozen_runtime_storage` crea
+  `state/aborted_transitions/`. En roots históricos donde aún no existe, su
+  admisión sigue siendo fail-closed (`admitir_directorio_storage` rechaza
+  reparse/archivos/padres ilegibles) y un store ausente con `journal == NONE` y
+  `last_finalized_transition_id is None` (estado inalcanzable sin aborto) falla
+  cerrado en lugar de interpretarse como «sin abortos».
+
+## 49. P7-F Incremento 2B — recuperación hacia adelante de `PENDING` (C3/C4/C6/C7) (2026-11-27)
+
+### 49.1 Salida productiva hacia adelante (`completar_transicion_pendiente`)
+
+Complementa §48 (aborto autorizado) sin alterar el esquema durable ni introducir
+una segunda autoridad de finalización. Proporciona la salida productiva para
+transiciones interrumpidas en fronteras donde el destino ya fue alcanzado o la
+finalización ya comenzó:
+
+- **C3 (`C3_DESIRED_PENDIENTE`):** journal `PENDING_*`, `active.json` aún en
+  `source_activation` (bootstrap o par previo), Effective apuntando al destino.
+  Verifica quiescencia, integridad física del Clone (`verificar_runtime_clone ==
+  VALID`), `verificar_runtime_setup == target_runtime_setup_id` y `assess_effective_runtime`
+  (`authorizes_activation == True`) **fuera** de `participant_lock`; al recuperar
+  el lock revalida huella durable, quiescencia y superficies externas (MO2 INI +
+  `config.toml`), persiste `active.json` vía `_escribir_estado_activo_cas_locked`
+  y finaliza con `_finalizar_locked` (F1a→F1b→F2).
+- **C4 (`C4_POST_PENDIENTE`):** `active.json` ya alineado con destino, sin
+  reserva F1a ni `FINALIZED`. Ejecuta POST idempotente sin reescribir `active.json`
+  y finaliza vía `_finalizar_locked`.
+- **C6 (`C6_RESERVA_PROPIA`):** existe exactamente una reserva huérfana en
+  `state/finalization-seqs/<seq>.json` perteneciente al mismo `transition_id` con
+  `seq == historial.next_seq` y `active.json` alineado con el destino. Tras POST
+  PASS fresco, `_finalizar_locked` reutiliza la reserva idempotente sin duplicar
+  ni renumerar la secuencia. Cualquier reserva ajena, corrupta, múltiple o fuera
+  de secuencia falla cerrado tanto en `completar_transicion_pendiente` como en
+  `_finalizar_locked`.
+- **C7 (`C7_ROTACION_F2`):** existe `FinalizedTransitionRecord` inmutable en
+  `state/transitions/<tid>.json` junto a journal `PENDING_*`. Completa
+  **únicamente F2** mediante `_completar_rotacion_f2_locked` (rotación a `NONE`),
+  verificando coherencia completa contra `PENDING` (`_exigir_registro_coherente_con_pending`),
+  reserva original, aprobación consumida, ausencia de reservas huérfanas y
+  revisión CAS. Jamás recrea `FINALIZED` ni fabrica un POST nuevo; es idempotente
+  ante reintentos múltiples.
+
+### 49.2 Invariantes preservadas y compatibilidad con Incremento 2A
+
+- **Misma autoridad:** reutiliza `transition_id`, `approval_id`/`approval_seq`/
+  `approval_scope_digest` del tombstone `CONSUMED` y del `IssuanceWitness`; jamás
+  emite ni consume una nueva aprobación.
+- **Diagnóstico read-only:** `reconciliar_journal` conserva su carácter estrictamente
+  read-only.
+- **Compatibilidad D4 / veto permanente:** un aborto incompleto (D4), un
+  `transition_id` abortado o un store `state/aborted_transitions/` corrupto
+  bloquean fail-closed la recuperación hacia adelante. C6 y C7 siguen rechazados
+  por `abortar_transicion_pendiente`.
+- **Superficies cableadas:** `pending_reconciliation.completar_transicion_pendiente`,
+  `SesionTransicionGoldenMaster.completar_pendiente` y comando Telegram HITL
+  `/gm_completar_pendiente <transition_id>`.
+- **Alcance:** `POWER_LOSS_GUARANTEE = NOT_CLAIMED`. `P7F_PASS` queda pendiente
+  de la certificación integral P7-F posterior a la integración de este PR.

@@ -261,6 +261,9 @@ def build_orchestration_dispatcher(
             flow_provider=dependencies.synthesis_flow_provider,
             service_factory=dependencies.synthesis_service_factory,
             real_journal_provider=dependencies.real_journal_provider,
+            synthesis_backend=dependencies.synthesis_backend,
+            raices_mo2_provider=dependencies.raices_mo2_provider,
+            profile_getter=dependencies.default_profile_getter,
         ),
         middleware=[
             ErrorWrappingMiddleware("SynthesisPipelineExecutionFailed"),

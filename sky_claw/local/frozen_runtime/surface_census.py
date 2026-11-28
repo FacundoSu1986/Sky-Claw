@@ -406,6 +406,7 @@ ESCRITORES_DECLARADOS: dict[str, frozenset[str]] = {
     ),
     "active_json": frozenset(
         {
+            "local/frozen_runtime/pending_reconciliation.py::completar_transicion_pendiente",
             "local/frozen_runtime/runtime_clone_binder.py::ejecutar_transicion_binder",
             "local/frozen_runtime/binder_recovery.py::_restaurar_persistida",
             "local/frozen_runtime/state.py::_save_frozen_runtime_state_locked",
