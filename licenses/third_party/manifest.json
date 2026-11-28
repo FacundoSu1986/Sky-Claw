@@ -11,8 +11,8 @@
   "documents": [
     {
       "path": "THIRD_PARTY_NOTICES.md",
-      "sha256": "7b7687f415d918ed6f374ba9c4cf91acab17d9ec135fa33c60ccf5878a56e2b1",
-      "bytes": 12804,
+      "sha256": "47db9932a2963a9800aa257b83ea77b6a23aebba0ea375ba51535c1bc60c0620",
+      "bytes": 12951,
       "referenced_by": [
         "root_notice"
       ]
@@ -899,6 +899,62 @@
       ]
     },
     {
+      "path": "licenses/third_party/texts/vendored_leaflet_1.9.4_LICENSE_bbc959aaef74.txt",
+      "sha256": "bbc959aaef7488b38942e7f05cfd1244351f8bce54261951ea17dd7cf60f894b",
+      "bytes": 1369,
+      "referenced_by": [
+        "js:leaflet@1.9.4"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/vendored_leaflet_draw_1.0.4_LICENSE_320f2c68ac27.txt",
+      "sha256": "320f2c68ac27b7f7f2a78c490470a273d297e753ab37ba026944616bf0a62f47",
+      "bytes": 1078,
+      "referenced_by": [
+        "js:leaflet.draw@1.0.4"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/vendored_quasar_2.18.5_LICENSE_830424149e83.txt",
+      "sha256": "830424149e83c3b9caa4243c36e73ac1b024b501fea99f8a22138b86eedc8d47",
+      "bytes": 1091,
+      "referenced_by": [
+        "js:quasar@2.18.5"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/vendored_socketio_4.8.1_LICENSE_73cb68c437d5.txt",
+      "sha256": "73cb68c437d59e066f9386ef97be57298df4db119fdbd7d7150817c6dbd9f189",
+      "bytes": 1116,
+      "referenced_by": [
+        "js:socket.io-client@4.8.1"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/vendored_sortablejs_1.15.7_LICENSE_199071e94a4d.txt",
+      "sha256": "199071e94a4d6ba6f634acd6020842efc55161b9fb639a432c50da687781219d",
+      "bytes": 1085,
+      "referenced_by": [
+        "js:sortablejs@1.15.7"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/vendored_threejs_r180_LICENSE_bfe119ea4fd4.txt",
+      "sha256": "bfe119ea4fd413f5f7ca3fcd63adb0c4a073ed39daa2fe7d3e6b769e21272601",
+      "bytes": 1081,
+      "referenced_by": [
+        "js:threejs@r180"
+      ]
+    },
+    {
+      "path": "licenses/third_party/texts/vendored_vue_3.5.22_LICENSE_49190d1f742d.txt",
+      "sha256": "49190d1f742dd61e47fe816df4963e5186a2a62100d9122f9883a60ea32973ac",
+      "bytes": 1112,
+      "referenced_by": [
+        "js:vue@3.5.22"
+      ]
+    },
+    {
       "path": "licenses/third_party/texts/watchfiles_licenses__LICENSE_4fd78355b67c.txt",
       "sha256": "4fd78355b67ce2677ede9fb6f63a250f377bb7e22088136a5f4699adb4bc069f",
       "bytes": 1091,
@@ -959,7 +1015,8 @@
       "license_documents": [
         "licenses/third_party/texts/Apache-2.0_cb5e8e7e5f4a.txt",
         "licenses/third_party/texts/aiofiles_licenses__NOTICE_104c58d1d450.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:aiohappyeyeballs@2.6.1",
@@ -979,7 +1036,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/aiohappyeyeballs_LICENSE_3b2f81fe21d1.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:aiohttp@3.14.4",
@@ -1000,7 +1058,8 @@
       "license_documents": [
         "licenses/third_party/texts/aiohttp_licenses__LICENSE_2e4be5fc6c4c.txt",
         "licenses/third_party/texts/aiohttp_licenses__vendor__llhttp__LICENSE_628168d68bb5.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:aiosignal@1.4.0",
@@ -1020,7 +1079,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/aiosignal_licenses__LICENSE_6fd5243e92dd.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:aiosqlite@0.22.1",
@@ -1040,7 +1100,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/aiosqlite_licenses__LICENSE_ab0c171dc3ef.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:annotated-doc@0.0.4",
@@ -1060,7 +1121,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/annotated-doc_licenses__LICENSE_fff170779a6a.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:annotated-types@0.7.0",
@@ -1080,7 +1142,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/annotated-types_licenses__LICENSE_fe1049884b1a.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:anyio@4.14.2",
@@ -1100,7 +1163,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/anyio_licenses__LICENSE_5361ac9dc58f.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:attrs@26.1.0",
@@ -1120,7 +1184,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/attrs_licenses__LICENSE_882115c95dfc.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:backports-tarfile@1.2.0",
@@ -1140,7 +1205,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/backports-tarfile_LICENSE_86da0f01aeae.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:backports-zstd@1.5.0",
@@ -1161,7 +1227,8 @@
       "license_documents": [
         "licenses/third_party/texts/backports-zstd_licenses__LICENSE_b0e25a78cffb.txt",
         "licenses/third_party/texts/backports-zstd_licenses__LICENSE_zstd_f89ef2b03b52.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:bidict@0.23.1",
@@ -1181,7 +1248,8 @@
       "unresolved_questions": "MPL-2.0 §3.2 source availability mechanism in frozen distribution (PR-LIC-02)",
       "license_documents": [
         "licenses/third_party/texts/MPL-2.0_f3f53adcecaa.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:brotli@1.2.1",
@@ -1201,7 +1269,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/brotli_licenses__LICENSE_3d180008e369.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:certifi@2026.10.19",
@@ -1222,7 +1291,8 @@
       "license_documents": [
         "licenses/third_party/texts/certifi_licenses__LICENSE_e93716da6b9c.txt",
         "licenses/third_party/texts/MPL-2.0_f3f53adcecaa.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:cffi@2.0.0",
@@ -1243,7 +1313,8 @@
       "license_documents": [
         "licenses/third_party/texts/cffi_licenses__AUTHORS_2a67a60bbfb3.txt",
         "licenses/third_party/texts/cffi_licenses__LICENSE_5ba24ddc5706.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:click@8.3.3",
@@ -1263,7 +1334,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/click_licenses__LICENSE_9a8ad106a394.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:colorama@0.4.6",
@@ -1283,7 +1355,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/colorama_licenses__LICENSE_cac35c02686e.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:comtypes@1.4.16",
@@ -1303,7 +1376,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/comtypes_licenses__LICENSE_b3ee7a0e4b0d.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:cryptography@50.0.0",
@@ -1325,7 +1399,8 @@
         "licenses/third_party/texts/cryptography_licenses__LICENSE_3e0c7c091a94.txt",
         "licenses/third_party/texts/cryptography_licenses__LICENSE_aac73b3148f6.txt",
         "licenses/third_party/texts/cryptography_licenses__LICENSE_602c4c7482de.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:defusedxml@0.7.1",
@@ -1345,7 +1420,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/defusedxml_LICENSE_b80ce9da8c42.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:docutils@0.22.4",
@@ -1368,7 +1444,8 @@
         "licenses/third_party/texts/docutils_licenses__licenses__BSD-0-Clause_42ac50251ab8.txt",
         "licenses/third_party/texts/docutils_licenses__licenses__BSD-2-Clause_b8f3b31a2f43.txt",
         "licenses/third_party/texts/docutils_licenses__licenses__gpl-3-0_e6037104443f.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:fastapi@0.136.1",
@@ -1388,7 +1465,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/fastapi_licenses__LICENSE_4ec89ffc8148.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:frozenlist@1.8.0",
@@ -1408,7 +1486,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/aiosignal_licenses__LICENSE_6fd5243e92dd.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:googleapis-common-protos@1.75.0",
@@ -1428,7 +1507,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/googleapis-common-protos_licenses__LICENSE_cfc7749b96f6.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:grpcio@1.80.0",
@@ -1448,7 +1528,8 @@
       "unresolved_questions": "MPL-2.0 §3.2 source availability mechanism in frozen distribution (PR-LIC-02)",
       "license_documents": [
         "licenses/third_party/texts/grpcio_licenses__LICENSE_58c86a3f2b5c.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:h11@0.16.0",
@@ -1468,7 +1549,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/h11_licenses__LICENSE_37db5bb85926.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:httpcore@1.0.9",
@@ -1488,7 +1570,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/httpcore_licenses__LICENSE_fdcb59154c74.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:httptools@0.7.1",
@@ -1508,7 +1591,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/httptools_licenses__LICENSE_f4573e7cb767.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:httpx@0.28.1",
@@ -1528,7 +1612,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/httpx_licenses__LICENSE_4ec59d544f12.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:idna@3.15",
@@ -1548,7 +1633,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/idna_licenses__LICENSE_1a9a4f0e3d47.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:ifaddr@0.2.0",
@@ -1568,7 +1654,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/ifaddr_LICENSE_8700856576ae.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:importlib-metadata@8.7.1",
@@ -1588,7 +1675,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/importlib-metadata_licenses__LICENSE_458502e12d97.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:inflate64@1.0.4",
@@ -1608,7 +1696,8 @@
       "unresolved_questions": "LGPL-2.1 relinking/replacement mechanism in PyInstaller onefile",
       "license_documents": [
         "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:itsdangerous@2.2.0",
@@ -1628,7 +1717,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/itsdangerous_LICENSE_63af09891b6b.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:jaraco-classes@3.4.0",
@@ -1648,7 +1738,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/backports-tarfile_LICENSE_86da0f01aeae.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:jaraco-context@6.1.2",
@@ -1668,7 +1759,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/jaraco-context_licenses__LICENSE_9755a1851966.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:jaraco-functools@4.4.0",
@@ -1688,7 +1780,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/jaraco-functools_licenses__LICENSE_5a57cb4db85e.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:jinja2@3.1.6",
@@ -1708,7 +1801,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/jinja2_licenses__LICENSE_3b49dcee4105.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:keyring@25.7.0",
@@ -1728,7 +1822,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/jaraco-functools_licenses__LICENSE_5a57cb4db85e.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:markdown2@2.5.5",
@@ -1748,7 +1843,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/markdown2_LICENSE_f8c7c4d55440.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:markupsafe@3.0.3",
@@ -1768,7 +1864,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/markupsafe_licenses__LICENSE_489a8e110850.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:more-itertools@11.0.1",
@@ -1788,7 +1885,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/more-itertools_licenses__LICENSE_09f1c8c9e941.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:multidict@6.9.1",
@@ -1808,7 +1906,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/aiohttp_licenses__LICENSE_2e4be5fc6c4c.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:multivolumefile@0.2.3",
@@ -1828,7 +1927,8 @@
       "unresolved_questions": "LGPL-2.1 relinking/replacement mechanism in PyInstaller onefile",
       "license_documents": [
         "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:nicegui@3.12.0",
@@ -1848,7 +1948,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/nicegui_LICENSE_41c065c20811.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:numpy@2.4.6",
@@ -1883,7 +1984,8 @@
         "licenses/third_party/texts/numpy_licenses__numpy__random__src__philox__LICENSE_6f5828a57223.txt",
         "licenses/third_party/texts/numpy_licenses__numpy__random__src__sfc64__LICENSE_9d4098846018.txt",
         "licenses/third_party/texts/numpy_licenses__numpy__random__src__splitmix64__LICENSE_268b0ca06759.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:opentelemetry-api@1.45.2",
@@ -1903,7 +2005,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:opentelemetry-exporter-otlp-common@0.66b2",
@@ -1923,7 +2026,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:opentelemetry-exporter-otlp-proto-common@1.45.2",
@@ -1943,7 +2047,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:opentelemetry-exporter-otlp-proto-grpc@1.45.2",
@@ -1963,7 +2068,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:opentelemetry-proto@1.45.2",
@@ -1983,7 +2089,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:opentelemetry-sdk@1.45.2",
@@ -2003,7 +2110,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:opentelemetry-semantic-conventions@0.66b2",
@@ -2023,7 +2131,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:orjson@3.11.9",
@@ -2045,7 +2154,8 @@
         "licenses/third_party/texts/orjson_licenses__LICENSE-APACHE_a60eea817514.txt",
         "licenses/third_party/texts/orjson_licenses__LICENSE-MIT_23f18e03dc49.txt",
         "licenses/third_party/texts/orjson_licenses__LICENSE-MPL-2_66a3107d5ad6.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:pefile@2024.8.26",
@@ -2065,7 +2175,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/pefile_LICENSE_b44409c067c6.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:pillow@13.0.0",
@@ -2084,7 +2195,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/pillow_licenses__LICENSE_6644596ba12c.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:prometheus-client@0.25.0",
@@ -2105,7 +2217,8 @@
       "license_documents": [
         "licenses/third_party/texts/opentelemetry-api_licenses__LICENSE_c71d239df917.txt",
         "licenses/third_party/texts/prometheus-client_licenses__NOTICE_4efa1874aeaa.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:propcache@0.4.1",
@@ -2126,7 +2239,8 @@
       "license_documents": [
         "licenses/third_party/texts/googleapis-common-protos_licenses__LICENSE_cfc7749b96f6.txt",
         "licenses/third_party/texts/propcache_licenses__NOTICE_56d6ac6c8105.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:protobuf@6.33.6",
@@ -2146,7 +2260,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/protobuf_LICENSE_6e5e117324af.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:psutil@7.2.2",
@@ -2166,7 +2281,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/psutil_LICENSE_b89c063b3786.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:py7zr@1.1.3",
@@ -2186,7 +2302,8 @@
       "unresolved_questions": "LGPL-2.1 relinking/replacement mechanism in PyInstaller onefile",
       "license_documents": [
         "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:pybcj@1.0.7",
@@ -2206,7 +2323,8 @@
       "unresolved_questions": "LGPL-2.1 relinking/replacement mechanism in PyInstaller onefile",
       "license_documents": [
         "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:pycparser@3.0",
@@ -2226,7 +2344,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/pycparser_licenses__LICENSE_0c846399369e.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:pycryptodomex@3.23.0",
@@ -2247,7 +2366,8 @@
       "license_documents": [
         "licenses/third_party/texts/pycryptodomex_AUTHORS_1cb670b6cc5b.txt",
         "licenses/third_party/texts/pycryptodomex_LICENSE_4e04660d77c1.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:pydantic@2.12.5",
@@ -2267,7 +2387,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/pydantic_licenses__LICENSE_a9e186f3ca16.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:pydantic-core@2.41.5",
@@ -2287,7 +2408,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/pydantic-core_licenses__LICENSE_2afdd30d54b4.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:pygments@2.20.0",
@@ -2308,7 +2430,8 @@
       "license_documents": [
         "licenses/third_party/texts/pygments_licenses__AUTHORS_0db603a5f449.txt",
         "licenses/third_party/texts/pygments_licenses__LICENSE_a9d66f1d526d.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:pyppmd@1.3.1",
@@ -2328,7 +2451,8 @@
       "unresolved_questions": "LGPL-2.1 relinking/replacement mechanism in PyInstaller onefile",
       "license_documents": [
         "licenses/third_party/texts/inflate64_licenses__COPYING_dc626520dcd5.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:python-dotenv@1.2.2",
@@ -2348,7 +2472,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/python-dotenv_licenses__LICENSE_80619b7049f0.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:python-engineio@4.13.3",
@@ -2368,7 +2493,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/python-engineio_licenses__LICENSE_c9e97d3dbc1f.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:python-json-logger@3.3.0",
@@ -2389,7 +2515,8 @@
       "license_documents": [
         "licenses/third_party/texts/python-json-logger_LICENSE_18ea95179e3a.txt",
         "licenses/third_party/texts/python-json-logger_NOTICE_b9142715c199.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:python-multipart@0.0.32",
@@ -2409,7 +2536,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/googleapis-common-protos_licenses__LICENSE_cfc7749b96f6.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:python-socketio@5.16.3",
@@ -2429,7 +2557,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/python-engineio_licenses__LICENSE_c9e97d3dbc1f.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:pywin32-ctypes@0.2.3",
@@ -2449,7 +2578,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/pywin32-ctypes_LICENSE_cc03ae891a36.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:pyyaml@6.0.3",
@@ -2469,7 +2599,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/pyyaml_licenses__LICENSE_8d3928f9dc44.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:rarfile@4.2",
@@ -2489,7 +2620,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/rarfile_LICENSE_351350167805.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:starlette@1.3.1",
@@ -2509,7 +2641,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/starlette_licenses__LICENSE_dcb95677a022.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:tenacity@9.1.4",
@@ -2529,7 +2662,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/tenacity_licenses__LICENSE_58d1e17ffe51.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:tinycss2@1.5.1",
@@ -2549,7 +2683,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/tinycss2_licenses__LICENSE_6b94acee20ec.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:tomli-w@1.2.0",
@@ -2569,7 +2704,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/tomli-w_LICENSE_b80816b0d530.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:typing-extensions@4.15.0",
@@ -2589,7 +2725,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/aiohappyeyeballs_LICENSE_3b2f81fe21d1.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:typing-inspection@0.4.2",
@@ -2609,7 +2746,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/typing-inspection_licenses__LICENSE_804b59b25f2c.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:uvicorn@0.46.0",
@@ -2629,7 +2767,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/uvicorn_licenses__LICENSE_efe1acf3e62f.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:watchfiles@1.1.1",
@@ -2649,7 +2788,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/watchfiles_licenses__LICENSE_4fd78355b67c.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:webencodings@0.5.1",
@@ -2669,7 +2809,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/webencodings_LICENSE_f23bae6ada76.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:websockets@16.0",
@@ -2689,7 +2830,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/websockets_licenses__LICENSE_3d6a0c050d8b.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:wsproto@1.3.2",
@@ -2709,7 +2851,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/wsproto_licenses__LICENSE_c0329a8dbf34.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:yarl@1.25.1",
@@ -2730,7 +2873,8 @@
       "license_documents": [
         "licenses/third_party/texts/googleapis-common-protos_licenses__LICENSE_cfc7749b96f6.txt",
         "licenses/third_party/texts/propcache_licenses__NOTICE_56d6ac6c8105.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:zipp@3.23.1",
@@ -2750,7 +2894,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/jaraco-context_licenses__LICENSE_9755a1851966.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "pypi:pyinstaller@6.22.3",
@@ -2770,7 +2915,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/pyinstaller_licenses__COPYING_0598064c7d27.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "native:cpython-runtime",
@@ -2791,7 +2937,8 @@
       "license_documents": [
         "licenses/third_party/texts/aiohappyeyeballs_LICENSE_3b2f81fe21d1.txt",
         "licenses/third_party/texts/native_cpython_Doc_license_2b734ec5975b.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "native:openssl-embedded",
@@ -2811,7 +2958,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/native_openssl_LICENSE_7d5450cb2d14.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "native:libffi-embedded",
@@ -2831,7 +2979,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/native_libffi_LICENSE_67894089811f.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "native:sqlite-embedded",
@@ -2851,7 +3000,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/native_sqlite_LICENSE_9c6479123f32.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "font:cinzel",
@@ -2871,7 +3021,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/font_cinzel_OFL_f2b3029aba64.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "font:ebgaramond",
@@ -2891,7 +3042,8 @@
       "unresolved_questions": "Bundled WOFF2 is v1.001 while upstream master Regular is v1.002",
       "license_documents": [
         "licenses/third_party/texts/font_ebgaramond_OFL_0985066662eb.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "font:notosansrunic",
@@ -2911,7 +3063,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/font_notosansrunic_OFL_b0fbcb9eaf0f.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "font:splinesansmono",
@@ -2931,7 +3084,8 @@
       "unresolved_questions": "",
       "license_documents": [
         "licenses/third_party/texts/font_splinesansmono_OFL_4abb88162e4c.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "js:quasar",
@@ -2945,13 +3099,15 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
-      "evidence_status": "SUPPORTED_BY_METADATA",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
       "unresolved_questions": "",
       "license_documents": [
+        "licenses/third_party/texts/vendored_quasar_2.18.5_LICENSE_830424149e83.txt",
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "js:vue",
@@ -2965,13 +3121,15 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
-      "evidence_status": "SUPPORTED_BY_METADATA",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
       "unresolved_questions": "",
       "license_documents": [
+        "licenses/third_party/texts/vendored_vue_3.5.22_LICENSE_49190d1f742d.txt",
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "js:socket.io-client",
@@ -2985,13 +3143,15 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
-      "evidence_status": "SUPPORTED_BY_METADATA",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
       "unresolved_questions": "",
       "license_documents": [
+        "licenses/third_party/texts/vendored_socketio_4.8.1_LICENSE_73cb68c437d5.txt",
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "js:immutable",
@@ -3012,7 +3172,8 @@
       "license_documents": [
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt",
         "licenses/third_party/texts/vendored_immutable_LICENSE_7909331e4685.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "js:dompurify",
@@ -3033,7 +3194,8 @@
       "license_documents": [
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt",
         "licenses/third_party/texts/Apache-2.0_cb5e8e7e5f4a.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "js:leaflet",
@@ -3047,13 +3209,16 @@
       "license_declared": "BSD-2-Clause AND MIT",
       "license_concluded": "BSD-2-Clause AND MIT",
       "source_obligation": "NO",
-      "evidence_status": "SUPPORTED_BY_METADATA",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
-      "unresolved_questions": "Full BSD-2-Clause/MIT texts not bundled inside nicegui wheel; banner preserved",
+      "unresolved_questions": "",
       "license_documents": [
+        "licenses/third_party/texts/vendored_leaflet_draw_1.0.4_LICENSE_320f2c68ac27.txt",
+        "licenses/third_party/texts/vendored_leaflet_1.9.4_LICENSE_bbc959aaef74.txt",
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "js:threejs",
@@ -3067,13 +3232,15 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
-      "evidence_status": "SUPPORTED_BY_METADATA",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
       "unresolved_questions": "",
       "license_documents": [
+        "licenses/third_party/texts/vendored_threejs_r180_LICENSE_bfe119ea4fd4.txt",
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "js:sortablejs",
@@ -3087,13 +3254,15 @@
       "license_declared": "MIT",
       "license_concluded": "MIT",
       "source_obligation": "NO",
-      "evidence_status": "SUPPORTED_BY_METADATA",
+      "evidence_status": "VERIFIED_PRIMARY_SOURCE",
       "compliance_status": "REQUIRES_NOTICE_PACKAGING",
       "remediation_phase": "PR-LIC-01-IMPL",
       "unresolved_questions": "",
       "license_documents": [
+        "licenses/third_party/texts/vendored_sortablejs_1.15.7_LICENSE_199071e94a4d.txt",
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     },
     {
       "component_id": "js:xterm",
@@ -3108,12 +3277,13 @@
       "license_concluded": "MIT",
       "source_obligation": "NO",
       "evidence_status": "SUPPORTED_BY_METADATA",
-      "compliance_status": "REQUIRES_NOTICE_PACKAGING",
-      "remediation_phase": "PR-LIC-01-IMPL",
-      "unresolved_questions": "",
+      "compliance_status": "LEGAL_REVIEW_REQUIRED",
+      "remediation_phase": "PR-LIC-04",
+      "unresolved_questions": "Banner in xterm.css declares MIT but exact xterm.js version is unverified; full upstream LICENSE pending PR-LIC-04",
       "license_documents": [
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
-      ]
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
     },
     {
       "component_id": "js:tailwindcss",
@@ -3133,7 +3303,8 @@
       "unresolved_questions": "No embedded license banner in nicegui/static/tailwindcss.min.js; MIT inferred from upstream",
       "license_documents": [
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
-      ]
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
     },
     {
       "component_id": "js:sass",
@@ -3153,7 +3324,8 @@
       "unresolved_questions": "No embedded license banner or version in nicegui/static/sass.dart.js (3.1 MB)",
       "license_documents": [
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
-      ]
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
     },
     {
       "component_id": "js:unocss",
@@ -3173,7 +3345,8 @@
       "unresolved_questions": "No embedded license banner in nicegui/static/unocss/*.js; MIT inferred from upstream",
       "license_documents": [
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
-      ]
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
     },
     {
       "component_id": "js:mermaid",
@@ -3193,7 +3366,8 @@
       "unresolved_questions": "No embedded license banner in nicegui/elements/mermaid/dist/*; MIT inferred from upstream",
       "license_documents": [
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
-      ]
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
     },
     {
       "component_id": "js:codemirror",
@@ -3213,7 +3387,8 @@
       "unresolved_questions": "No embedded license banner in nicegui/elements/codemirror/dist/*; MIT inferred from upstream",
       "license_documents": [
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
-      ]
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
     },
     {
       "component_id": "js:echarts",
@@ -3234,7 +3409,8 @@
       "license_documents": [
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt",
         "licenses/third_party/texts/Apache-2.0_cb5e8e7e5f4a.txt"
-      ]
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
     },
     {
       "component_id": "js:plotly",
@@ -3254,7 +3430,8 @@
       "unresolved_questions": "No embedded license banner in nicegui/elements/plotly/dist/*; MIT inferred from upstream",
       "license_documents": [
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
-      ]
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
     },
     {
       "component_id": "js:ag-grid-community",
@@ -3274,7 +3451,8 @@
       "unresolved_questions": "No embedded license banner in nicegui/elements/aggrid/dist/*; MIT inferred from upstream",
       "license_documents": [
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt"
-      ]
+      ],
+      "document_coverage": "PENDING_DOCUMENTARY_EVIDENCE"
     },
     {
       "component_id": "font:nicegui-roboto-material",
@@ -3295,7 +3473,9 @@
       "license_documents": [
         "licenses/third_party/texts/nicegui_vendored_frontend_notices_432d0d58cee0.txt",
         "licenses/third_party/texts/Apache-2.0_cb5e8e7e5f4a.txt"
-      ]
+      ],
+      "document_coverage": "FULL_TEXT_VERIFIED"
     }
-  ]
+  ],
+  "hash_normalization": "canonical_lf_text"
 }

@@ -5,14 +5,22 @@ and frontend libraries. Original verbatim license texts, `NOTICE` files, and
 machine-verifiable SHA-256 hashes are stored in `licenses/third_party/` and
 bundled inside `SkyClawApp.exe` (exportable via `SkyClawApp.exe --export-licenses <DIR>`).
 
-> **Alcance legal de este documento:** Este archivo cumple obligaciones de atribución
-> y conservación de textos legales (`PR-LIC-01`). **No constituye cumplimiento integral**
+> **Alcance legal y técnico de este documento:** Este archivo y `licenses/third_party/`
+> documentan las atribuciones y textos verbatim verificados hasta `PR-LIC-01`.
+> **No constituye cumplimiento documental ni jurídico integral**: permanecen textos
+> pendientes de verificación upstream en 9 activos frontend vendorizados de NiceGUI (`PR-LIC-04`),
+> y **no satisface**
 > de las obligaciones de disponibilidad de código fuente o reemplazo/relinking de
 > bibliotecas `LGPL-2.1-or-later` (`py7zr`, `inflate64`, `multivolumefile`, `pybcj`, `pyppmd`)
 > ni de `MPL-2.0 §3.2` (`bidict`, `certifi`, `grpcio`, `orjson`), las cuales se tratan
 > explícitamente en **PR-LIC-02**, ni resuelve las revisiones jurídicas pendientes de
 > `PR-LIC-04` (frontera MO2/PyQt6, `auto_parallax_regla.py`, recursos gráficos IA y
 > Microsoft Windows Runtime).
+
+> **Normalización de hashes en `manifest.json`:** Los hashes SHA-256 de `licenses/third_party/manifest.json`
+> corresponden a **texto canónico normalizado a LF (`\n`)** para garantizar paridad entre checkouts Git
+> de Windows y Linux. Son distintos de los hashes binarios originales de procedencia preservados en los
+> respaldos de auditoría (`LIC-MIG-AUDIT`).
 
 ---
 
@@ -171,30 +179,31 @@ Original verbatim license/NOTICE texts for every package are indexed by SHA-256 
 
 ## 6. Vendored Frontend Libraries & Fonts (via `nicegui==3.12.0`, 18 entries)
 
-Each vendored library/font below is registered individually in `licenses/third_party/manifest.json`
-with its extracted banner or explicit uncertainty (`EVIDENCE_MISSING` / `INFERRED`) in
-`licenses/third_party/texts/` (we do **not** assume NiceGUI's MIT license covers vendored assets).
+Each vendored library/font below is registered individually in `licenses/third_party/manifest.json`.
+Full verbatim upstream license texts are bundled for components with verified exact versions (`FULL_TEXT_VERIFIED`);
+components without verifiable upstream text or version remain explicitly marked `PENDING_DOCUMENTARY_EVIDENCE` for `PR-LIC-04`
+(a short JS/CSS banner is **not** treated as a full license text).
 
-| Library | Version | Concluded License | Evidence Status | Notes |
-|---|---|---|---|---|
-| quasar | `2.18.5` | `MIT` | `SUPPORTED_BY_METADATA` | Copyright (c) 2015-present Razvan Stoenescu |
-| vue | `3.5.22` | `MIT` | `SUPPORTED_BY_METADATA` | Copyright (c) 2018-present Yuxi (Evan) You and Vue contributors |
-| socket.io-client | `4.8.1` | `MIT` | `SUPPORTED_BY_METADATA` | Copyright (c) 2014-2024 Guillermo Rauch |
-| immutable | `bundled` | `MIT` | `VERIFIED_EXACT_ARTIFACT` | Copyright (c) 2014-present, Lee Byron and other contributors |
-| DOMPurify (`dompurify`) | `3.4.0` | `Apache-2.0 OR MPL-2.0` | `SUPPORTED_BY_METADATA` | Sky-Claw elects Apache-2.0; full Apache-2.0 text bundled |
-| leaflet + leaflet.draw | `1.9.4 / 1.0.4` | `BSD-2-Clause AND MIT` | `SUPPORTED_BY_METADATA` | Full BSD-2-Clause/MIT texts not bundled inside nicegui wheel; banner preserved |
-| three.js | `r180` | `MIT` | `SUPPORTED_BY_METADATA` | Copyright 2010-2025 Three.js Authors |
-| sortablejs | `1.15.7` | `MIT` | `SUPPORTED_BY_METADATA` | Copyright RubaXa / owenm |
-| xterm.js | `bundled` | `MIT` | `SUPPORTED_BY_METADATA` | Copyright (c) 2014 The xterm.js authors; (c) 2012-2013 Christopher Jeffrey |
-| tailwindcss | `4.1.13` | `NOASSERTION` | `INFERRED` | No embedded license banner in nicegui/static/tailwindcss.min.js; MIT inferred from upstream |
-| sass (dart-sass) | `unverified` | `NOASSERTION` | `EVIDENCE_MISSING` | No embedded license banner or version in nicegui/static/sass.dart.js (3.1 MB) |
-| unocss | `unverified` | `NOASSERTION` | `INFERRED` | No embedded license banner in nicegui/static/unocss/*.js; MIT inferred from upstream |
-| mermaid | `unverified` | `NOASSERTION` | `INFERRED` | No embedded license banner in nicegui/elements/mermaid/dist/*; MIT inferred from upstream |
-| codemirror | `unverified` | `NOASSERTION` | `INFERRED` | No embedded license banner in nicegui/elements/codemirror/dist/*; MIT inferred from upstream |
-| apache-echarts | `unverified` | `NOASSERTION` | `INFERRED` | No embedded license banner in nicegui/elements/echart/dist/*; Apache-2.0 inferred from upstream |
-| plotly.js | `unverified` | `NOASSERTION` | `INFERRED` | No embedded license banner in nicegui/elements/plotly/dist/*; MIT inferred from upstream |
-| ag-grid-community | `unverified` | `NOASSERTION` | `INFERRED` | No embedded license banner in nicegui/elements/aggrid/dist/*; MIT inferred from upstream |
-| Roboto & Material Icons/Symbols (via NiceGUI) | `Material Icons 1.017 / Symbols 2.911 / Roboto 3.009` | `Apache-2.0` | `SUPPORTED_BY_METADATA` | 16 WOFF2 name tables declare Apache-2.0 (Google LLC / Roboto Project Authors); wheel omits Apache-2.0 text so full Apache-2.0 text is bundled here |
+| Library | Version | Concluded License | Evidence Status | Document Coverage | Phase |
+|---|---|---|---|---|---|
+| quasar | `2.18.5` | `MIT` | `VERIFIED_PRIMARY_SOURCE` | `FULL_TEXT_VERIFIED` | `PR-LIC-01-IMPL` |
+| vue | `3.5.22` | `MIT` | `VERIFIED_PRIMARY_SOURCE` | `FULL_TEXT_VERIFIED` | `PR-LIC-01-IMPL` |
+| socket.io-client | `4.8.1` | `MIT` | `VERIFIED_PRIMARY_SOURCE` | `FULL_TEXT_VERIFIED` | `PR-LIC-01-IMPL` |
+| immutable | `bundled` | `MIT` | `VERIFIED_EXACT_ARTIFACT` | `FULL_TEXT_VERIFIED` | `PR-LIC-01-IMPL` |
+| DOMPurify (`dompurify`) | `3.4.0` | `Apache-2.0 OR MPL-2.0` | `SUPPORTED_BY_METADATA` | `FULL_TEXT_VERIFIED` | `PR-LIC-01-IMPL` |
+| leaflet + leaflet.draw | `1.9.4 / 1.0.4` | `BSD-2-Clause AND MIT` | `VERIFIED_PRIMARY_SOURCE` | `FULL_TEXT_VERIFIED` | `PR-LIC-01-IMPL` |
+| three.js | `r180` | `MIT` | `VERIFIED_PRIMARY_SOURCE` | `FULL_TEXT_VERIFIED` | `PR-LIC-01-IMPL` |
+| sortablejs | `1.15.7` | `MIT` | `VERIFIED_PRIMARY_SOURCE` | `FULL_TEXT_VERIFIED` | `PR-LIC-01-IMPL` |
+| xterm.js | `bundled` | `MIT` | `SUPPORTED_BY_METADATA` | `PENDING_DOCUMENTARY_EVIDENCE` | `PR-LIC-04` |
+| tailwindcss | `4.1.13` | `NOASSERTION` | `INFERRED` | `PENDING_DOCUMENTARY_EVIDENCE` | `PR-LIC-04` |
+| sass (dart-sass) | `unverified` | `NOASSERTION` | `EVIDENCE_MISSING` | `PENDING_DOCUMENTARY_EVIDENCE` | `PR-LIC-04` |
+| unocss | `unverified` | `NOASSERTION` | `INFERRED` | `PENDING_DOCUMENTARY_EVIDENCE` | `PR-LIC-04` |
+| mermaid | `unverified` | `NOASSERTION` | `INFERRED` | `PENDING_DOCUMENTARY_EVIDENCE` | `PR-LIC-04` |
+| codemirror | `unverified` | `NOASSERTION` | `INFERRED` | `PENDING_DOCUMENTARY_EVIDENCE` | `PR-LIC-04` |
+| apache-echarts | `unverified` | `NOASSERTION` | `INFERRED` | `PENDING_DOCUMENTARY_EVIDENCE` | `PR-LIC-04` |
+| plotly.js | `unverified` | `NOASSERTION` | `INFERRED` | `PENDING_DOCUMENTARY_EVIDENCE` | `PR-LIC-04` |
+| ag-grid-community | `unverified` | `NOASSERTION` | `INFERRED` | `PENDING_DOCUMENTARY_EVIDENCE` | `PR-LIC-04` |
+| Roboto & Material Icons/Symbols (via NiceGUI) | `Material Icons 1.017 / Symbols 2.911 / Roboto 3.009` | `Apache-2.0` | `SUPPORTED_BY_METADATA` | `FULL_TEXT_VERIFIED` | `PR-LIC-01-IMPL` |
 
 ---
 

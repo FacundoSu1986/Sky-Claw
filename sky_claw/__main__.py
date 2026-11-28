@@ -231,7 +231,14 @@ def exportar_licencias_terceros(
         datos_manifiesto = ruta_manifiesto.read_bytes()
         manifiesto = json.loads(datos_manifiesto.decode("utf-8"))
         documentos = manifiesto["documents"]
-        if manifiesto.get("schema_version") != 1 or not isinstance(documentos, list) or not documentos:
+        componentes = manifiesto["components"]
+        if (
+            manifiesto.get("schema_version") != 1
+            or not isinstance(documentos, list)
+            or not documentos
+            or not isinstance(componentes, list)
+            or not componentes
+        ):
             raise ValueError("Esquema de manifest.json inválido")
     except (OSError, ValueError, KeyError, TypeError) as exc:
         _escribir_flujo_seguro(sys.stderr, f"Error: manifest.json corrupto o ilegible: {exc}")
@@ -331,6 +338,37 @@ def exportar_licencias_terceros(
     if not _DOCUMENTOS_LEGALES_OBLIGATORIOS.issubset(vistas_exactas) or not tiene_texto_legal:
         _escribir_flujo_seguro(sys.stderr, "Error: el manifiesto omite documentos legales obligatorios.")
         return 1
+
+    # L01-12: validar integridad referencial completa de components -> documents antes de cualquier escritura
+    ids_componentes_vistos: set[str] = set()
+    for comp in componentes:
+        if not isinstance(comp, dict):
+            _escribir_flujo_seguro(sys.stderr, "Error: entrada de componente inválida en manifest.json.")
+            return 1
+        cid = str(comp.get("component_id", "")).strip()
+        if not cid or cid in ids_componentes_vistos:
+            _escribir_flujo_seguro(sys.stderr, f"Error: component_id ausente o duplicado en manifest.json: {cid!r}")
+            return 1
+        ids_componentes_vistos.add(cid)
+
+        cobertura = str(comp.get("document_coverage", "FULL_TEXT_VERIFIED"))
+        if cobertura not in ("FULL_TEXT_VERIFIED", "PENDING_DOCUMENTARY_EVIDENCE"):
+            _escribir_flujo_seguro(sys.stderr, f"Error: document_coverage inválido para {cid!r}: {cobertura!r}")
+            return 1
+        refs_docs = comp.get("license_documents")
+        if not isinstance(refs_docs, list):
+            _escribir_flujo_seguro(sys.stderr, f"Error: license_documents inválido para {cid!r}.")
+            return 1
+        if cobertura == "FULL_TEXT_VERIFIED" and not refs_docs:
+            _escribir_flujo_seguro(sys.stderr, f"Error: componente {cid!r} sin documentos legales referenciados.")
+            return 1
+        for ref in refs_docs:
+            if not isinstance(ref, str) or ref not in vistas_exactas:
+                _escribir_flujo_seguro(
+                    sys.stderr,
+                    f"Error: componente {cid!r} referencia documento ausente en manifest.json: {ref!r}",
+                )
+                return 1
 
     # Creación exclusiva y rollback acotado estrictamente a lo creado por esta ejecución
     dirs_creados: list[pathlib.Path] = []

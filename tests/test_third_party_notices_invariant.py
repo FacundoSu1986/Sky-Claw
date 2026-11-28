@@ -182,13 +182,42 @@ def test_cobertura_efectiva_locks_expresiones_exactas_y_vendorizados() -> None:
     nativos = {c["component_id"]: c for c in manifiesto["components"] if c["type"] == "native_component"}
     assert len(nativos["native:cpython-runtime"]["license_documents"]) >= 2
 
-    # L01-09: 18 bibliotecas y fuentes frontend vendorizadas de NiceGUI registradas individualmente con documentos
+    # L01-09 / L01-13: 18 bibliotecas y fuentes frontend vendorizadas de NiceGUI registradas individualmente
     vendorizados = {c["component_id"]: c for c in manifiesto["components"] if c["type"] == "vendored_frontend_asset"}
     assert set(vendorizados) == _FRONTEND_VENDORIZADO_ESPERADO
     for vid, vcomp in vendorizados.items():
+        assert vcomp["document_coverage"] in ("FULL_TEXT_VERIFIED", "PENDING_DOCUMENTARY_EVIDENCE")
         assert vcomp["license_documents"], f"Biblioteca frontend sin documento legal: {vid}"
         for doc_rel in vcomp["license_documents"]:
             assert doc_rel in rutas_docs, f"{vid} apunta a documento inexistente: {doc_rel}"
+
+
+def test_frontend_full_text_verified_incluye_texto_integro_no_solo_banner() -> None:
+    """L01-13 (M9): cada componente frontend FULL_TEXT_VERIFIED debe referenciar texto legal íntegro, no solo un banner."""
+    manifiesto = _cargar_manifiesto()
+    marcas_texto_integro = (
+        "Permission is hereby granted",
+        "Redistribution and use in source and binary forms",
+        "Apache License",
+    )
+    verificados = [
+        c
+        for c in manifiesto["components"]
+        if c["type"] == "vendored_frontend_asset" and c.get("document_coverage") == "FULL_TEXT_VERIFIED"
+    ]
+    assert len(verificados) >= 9
+    for comp in verificados:
+        tiene_texto_integro = False
+        for doc_rel in comp["license_documents"]:
+            if "nicegui_vendored_frontend_notices" in doc_rel:
+                continue  # El índice de banners no cuenta como texto legal íntegro
+            texto = (REPO_ROOT / doc_rel).read_text(encoding="utf-8", errors="replace")
+            if len(texto) >= 500 and any(m in texto for m in marcas_texto_integro):
+                tiene_texto_integro = True
+                break
+        assert tiene_texto_integro, (
+            f"Componente frontend FULL_TEXT_VERIFIED sin texto legal íntegro (solo banner): {comp['component_id']}"
+        )
 
 
 def test_reconciliador_falla_si_paquete_efectivo_se_reclasifica_como_excluido() -> None:
@@ -266,10 +295,63 @@ def _crear_origen_minimo(base: Path, docs_extra: list[dict[str, Any]] | None = N
         docs.append({"path": rel, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
     if docs_extra:
         docs.extend(docs_extra)
+    componentes = [
+        {
+            "component_id": "pypi:demo@1.0.0",
+            "name": "demo",
+            "version": "1.0.0",
+            "type": "pypi_package",
+            "document_coverage": "FULL_TEXT_VERIFIED",
+            "license_documents": ["licenses/third_party/texts/demo.txt"],
+        }
+    ]
     (base / "licenses" / "third_party" / "manifest.json").write_text(
-        json.dumps({"schema_version": 1, "documents": docs}), encoding="utf-8"
+        json.dumps({"schema_version": 1, "documents": docs, "components": componentes}), encoding="utf-8"
     )
     return base
+
+
+def test_export_licenses_falla_si_falta_documento_referenciado_por_componente_lgpl(tmp_path: Path) -> None:
+    """L01-12 (M8): eliminar un texto legal referenciado por un componente LGPL falla sin crear destino."""
+    from sky_claw.__main__ import exportar_licencias_terceros
+
+    origen = _crear_origen_minimo(tmp_path / "origen_lgpl")
+    mp = origen / "licenses" / "third_party" / "manifest.json"
+    m = json.loads(mp.read_text(encoding="utf-8"))
+    m["components"].append(
+        {
+            "component_id": "pypi:py7zr@1.1.3",
+            "name": "py7zr",
+            "version": "1.1.3",
+            "type": "pypi_package",
+            "document_coverage": "FULL_TEXT_VERIFIED",
+            "license_documents": ["licenses/third_party/texts/lgpl_faltante.txt"],
+        }
+    )
+    mp.write_text(json.dumps(m), encoding="utf-8")
+    destino = tmp_path / "salida_lgpl_faltante"
+
+    codigo = exportar_licencias_terceros(destino, origen_base=origen)
+
+    assert codigo != 0
+    assert not destino.exists()
+
+
+def test_export_licenses_falla_si_hay_component_id_duplicado(tmp_path: Path) -> None:
+    """L01-12: component_id duplicado en manifest.json falla cerrado sin crear destino."""
+    from sky_claw.__main__ import exportar_licencias_terceros
+
+    origen = _crear_origen_minimo(tmp_path / "origen_dup")
+    mp = origen / "licenses" / "third_party" / "manifest.json"
+    m = json.loads(mp.read_text(encoding="utf-8"))
+    m["components"].append(dict(m["components"][0]))
+    mp.write_text(json.dumps(m), encoding="utf-8")
+    destino = tmp_path / "salida_dup"
+
+    codigo = exportar_licencias_terceros(destino, origen_base=origen)
+
+    assert codigo != 0
+    assert not destino.exists()
 
 
 def test_export_licenses_exporta_paquete_integro_incluso_sin_stdout_ni_stderr(
