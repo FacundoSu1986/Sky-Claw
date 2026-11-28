@@ -120,12 +120,33 @@ def _relativo(ruta: pathlib.Path) -> str:
     return ruta.relative_to(RAIZ).as_posix()
 
 
+def _padres(arbol: ast.Module) -> dict[ast.AST, ast.AST]:
+    padres: dict[ast.AST, ast.AST] = {}
+    for nodo in ast.walk(arbol):
+        for hijo in ast.iter_child_nodes(nodo):
+            padres[hijo] = nodo
+    return padres
+
+
+def _nombre_cualificado(nodo: ast.AST, padres: dict[ast.AST, ast.AST]) -> str:
+    """Clase.metodo.funcion interna — el nombre simple NO distingue hermanos."""
+    partes: list[str] = []
+    actual: ast.AST | None = nodo
+    while actual is not None:
+        if isinstance(actual, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            partes.append(actual.name)
+        actual = padres.get(actual)
+    return ".".join(reversed(partes)) or "<módulo>"
+
+
 def _funcion_que_contiene(arbol: ast.Module) -> dict[ast.AST, str]:
     duenio: dict[ast.AST, str] = {}
+    padres = _padres(arbol)
     for funcion in ast.walk(arbol):
         if isinstance(funcion, ast.FunctionDef | ast.AsyncFunctionDef):
+            nombre = _nombre_cualificado(funcion, padres)
             for nodo in ast.walk(funcion):
-                duenio[nodo] = funcion.name  # la más interna gana: ast.walk es BFS
+                duenio[nodo] = nombre  # la más interna gana: ast.walk es BFS
     return duenio
 
 
@@ -252,16 +273,41 @@ def _ejecuciones_del_pragma_wal() -> Counter[tuple[str, str]]:
     return inventario
 
 
-def _llamadores_de_convertir_a_wal() -> set[str]:
-    llamadores: set[str] = set()
+def _inventario_llamadores_de_codigo(codigo: str, relativo: str) -> Counter[tuple[str, str]]:
+    """Cuenta (módulo, función cualificada) por cada call site del helper."""
+    arbol = ast.parse(codigo)
+    duenio = _funcion_que_contiene(arbol)
+    inventario: Counter[tuple[str, str]] = Counter()
+    for nodo in ast.walk(arbol):
+        if not isinstance(nodo, ast.Call):
+            continue
+        nombre = nodo.func.attr if isinstance(nodo.func, ast.Attribute) else getattr(nodo.func, "id", None)
+        if nombre == "convertir_a_wal":
+            inventario[(relativo, duenio.get(nodo, "<módulo>"))] += 1
+    return inventario
+
+
+def _llamadores_de_convertir_a_wal() -> Counter[tuple[str, str]]:
+    inventario: Counter[tuple[str, str]] = Counter()
     for ruta in _modulos_de_produccion():
-        for nodo in ast.walk(ast.parse(ruta.read_text(encoding="utf-8"))):
-            if not isinstance(nodo, ast.Call):
-                continue
-            nombre = nodo.func.attr if isinstance(nodo.func, ast.Attribute) else getattr(nodo.func, "id", None)
-            if nombre == "convertir_a_wal":
-                llamadores.add(_relativo(ruta))
-    return llamadores
+        inventario.update(_inventario_llamadores_de_codigo(ruta.read_text(encoding="utf-8"), _relativo(ruta)))
+    return inventario
+
+
+#: Congelado por igualdad literal: un call site nuevo, duplicado o en función
+#: homónima/anidada rompe el ancla hasta tener receta propia.
+INVENTARIO_ESPERADO = Counter(
+    {
+        ("sky_claw/app/agent/router.py", "LLMRouter.open"): 1,
+        ("sky_claw/app/core/db_lifecycle.py", "DatabaseLifecycleManager._enter_wal_mode"): 1,
+        ("sky_claw/app/core/dlq_manager.py", "DLQManager._connect"): 1,
+        ("sky_claw/app/db/async_registry.py", "AsyncModRegistry._abrir"): 2,
+        ("sky_claw/app/db/journal.py", "OperationJournal.open"): 1,
+        ("sky_claw/app/db/locks.py", "DistributedLockManager.initialize"): 1,
+        ("sky_claw/app/db/registry.py", "ModRegistry.open"): 1,
+        ("sky_claw/app/security/credential_vault.py", "_SQLitePool._create_connection"): 1,
+    }
+)
 
 
 def test_el_detector_ve_el_pragma_en_sus_formas_reales() -> None:
@@ -342,6 +388,35 @@ def test_el_ancla_no_confunde_lectura_comentario_ni_documentacion() -> None:
     assert _inventario_de_codigo(codigo, "sintetico.py") == Counter()
 
 
+def test_el_inventario_cuenta_llamadas_y_funciones_cualificadas() -> None:
+    """REV-05: set de módulos NO basta — cuenta call sites y distingue hermanos."""
+    codigo = (
+        "class A:\n"
+        "    async def open(self, conn):\n"
+        "        await convertir_a_wal(conn, busy_timeout_ms=1)\n"
+        "        await convertir_a_wal(conn, busy_timeout_ms=1)\n"
+        "    async def close(self, conn):\n"
+        "        await convertir_a_wal(conn, busy_timeout_ms=1)\n"
+        "async def open(conn):\n"
+        "    async def inner():\n"
+        "        await convertir_a_wal(conn, busy_timeout_ms=1)\n"
+        "    await inner()\n"
+    )
+    assert _inventario_llamadores_de_codigo(codigo, "sintetico.py") == Counter(
+        {
+            ("sintetico.py", "A.open"): 2,
+            ("sintetico.py", "A.close"): 1,
+            ("sintetico.py", "open.inner"): 1,
+        }
+    )
+
+
+def test_el_inventario_cubre_ambos_caminos_de_async_registry() -> None:
+    """La apertura directa y la recuperada son hermanas: las dos pasan por el helper."""
+    inventario = _llamadores_de_convertir_a_wal()
+    assert inventario[("sky_claw/app/db/async_registry.py", "AsyncModRegistry._abrir")] == 2
+
+
 def test_el_ancla_cubre_scripts_y_local_scripts() -> None:
     """El alcance declarado no puede encogerse en silencio."""
     rutas = {_relativo(ruta) for ruta in _modulos_analizados()}
@@ -352,8 +427,15 @@ def test_el_ancla_cubre_scripts_y_local_scripts() -> None:
 
 def test_todo_llamador_del_reintento_tiene_receta() -> None:
     """Un módulo nuevo que abre SQLite por su cuenta entra a la tabla de comportamiento."""
-    llamadores = _llamadores_de_convertir_a_wal() - {"sky_claw/app/core/db_lifecycle.py"}
-    assert llamadores == set(RECETAS)
+    llamadores = _llamadores_de_convertir_a_wal() - Counter(
+        {("sky_claw/app/core/db_lifecycle.py", "DatabaseLifecycleManager._enter_wal_mode"): 1}
+    )
+    assert llamadores == INVENTARIO_ESPERADO - Counter(
+        {("sky_claw/app/core/db_lifecycle.py", "DatabaseLifecycleManager._enter_wal_mode"): 1}
+    )
+    assert {modulo for modulo, _ in llamadores} == set(RECETAS)
+    # El hermano recuperado de AsyncModRegistry NO puede desaparecer del censo.
+    assert llamadores[("sky_claw/app/db/async_registry.py", "AsyncModRegistry._abrir")] == 2
 
 
 @pytest.mark.parametrize("modulo", sorted(RECETAS))

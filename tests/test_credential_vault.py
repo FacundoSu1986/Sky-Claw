@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -542,16 +543,114 @@ def test_el_presupuesto_wal_reserva_margen_para_finalizacion() -> None:
 async def test_la_conversion_recibe_el_presupuesto_derivado(tmp_path: Path) -> None:
     import sky_claw.app.security.credential_vault as cv
 
-    vistos: list[int] = []
+    vistos: list[tuple[int, int]] = []
     original = cv.convertir_a_wal
 
-    async def espia(conn, *, busy_timeout_ms: int) -> None:  # type: ignore[no-untyped-def]
-        vistos.append(busy_timeout_ms)
-        await original(conn, busy_timeout_ms=busy_timeout_ms)
+    async def espia(conn, *, busy_timeout_ms: int, busy_timeout_operativo_ms: int) -> None:  # type: ignore[no-untyped-def]
+        vistos.append((busy_timeout_ms, busy_timeout_operativo_ms))
+        await original(conn, busy_timeout_ms=busy_timeout_ms, busy_timeout_operativo_ms=busy_timeout_operativo_ms)
 
     pool = _SQLitePool(str(tmp_path / "wal.db"), timeout=5.0)
     with patch.object(cv, "convertir_a_wal", espia):
         async with pool.acquire():
             pass
         await pool.close()
-    assert vistos == [pool._wal_timeout_ms]
+    assert vistos == [(pool._wal_timeout_ms, 5000)]
+
+
+# ---------------------------------------------------------------------------
+# REV-01: presupuesto de conversión != busy_timeout operativo de la conexión
+# publicada. La latencia de las operaciones CRUD NO se negocia con el pool.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("timeout,esperado_presupuesto", [(0.5, 250), (5.0, 4750), (10.0, 9750)])
+async def test_busy_timeout_operativo_no_es_el_presupuesto_wal(
+    tmp_path: Path, timeout: float, esperado_presupuesto: int
+) -> None:
+    import sky_claw.app.security.credential_vault as cv
+
+    vistos: list[tuple[int, int]] = []
+    original = cv.convertir_a_wal
+
+    async def espia(conn, *, busy_timeout_ms: int, busy_timeout_operativo_ms: int) -> None:  # type: ignore[no-untyped-def]
+        vistos.append((busy_timeout_ms, busy_timeout_operativo_ms))
+        await original(conn, busy_timeout_ms=busy_timeout_ms, busy_timeout_operativo_ms=busy_timeout_operativo_ms)
+
+    pool = _SQLitePool(str(tmp_path / f"v_{timeout}.db"), timeout=timeout)
+    # ``finally``: un fallo de aserción NO puede dejar el worker de aiosqlite
+    # colgado (el proceso CI muere por hilos non-daemon y el fallo real queda
+    # enmascarado). El cierre se garantiza en toda salida.
+    try:
+        with patch.object(cv, "convertir_a_wal", espia):
+            async with pool.acquire() as conn:
+                async with conn.execute("PRAGMA busy_timeout") as cur:
+                    fila = await cur.fetchone()
+                assert fila[0] == 5000, "la conexión publicada conserva el busy_timeout operativo"
+    finally:
+        await pool.close()
+    assert vistos == [(esperado_presupuesto, 5000)]
+
+
+async def test_escritura_posterior_espera_contencion_real(tmp_path: Path) -> None:
+    """Con RESERVED ajeno, la escritura del vault espera con el timeout operativo."""
+    import contextlib
+
+    from tests.test_db_lifecycle import _sembrar_db_en_modo_delete, _SostieneLockSQLite
+
+    db = tmp_path / "contencion.db"
+    _sembrar_db_en_modo_delete(db)
+    holder = _SostieneLockSQLite(db)
+    holder.start()
+    assert holder.adquirido.wait(5), "el holder real no tomó el lock"
+
+    async def liberar_tarde() -> None:
+        await asyncio.sleep(0.2)
+        holder.liberar.set()
+
+    liberador = asyncio.create_task(liberar_tarde())
+    pool = _SQLitePool(str(db), timeout=5.0)
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("CREATE TABLE IF NOT EXISTS posterior (x INTEGER)")
+            await conn.commit()
+        await pool.close()
+    finally:
+        liberador.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await liberador
+        holder.liberar.set()
+        holder.join(5)
+
+
+async def test_agotamiento_wal_conserva_diagnostico_sqlite(tmp_path: Path) -> None:
+    """Fuera de presupuesto WAL gana el error SQLite real, no el timeout del pool."""
+    import contextlib
+
+    from tests.test_db_lifecycle import _sembrar_db_en_modo_delete, _SostieneLockSQLite
+
+    db = tmp_path / "agotamiento.db"
+    _sembrar_db_en_modo_delete(db)
+    holder = _SostieneLockSQLite(db)
+    holder.start()
+    assert holder.adquirido.wait(5), "el holder real no tomó el lock"
+
+    async def liberar_tarde() -> None:
+        await asyncio.sleep(0.3)
+        holder.liberar.set()
+
+    liberador = asyncio.create_task(liberar_tarde())
+    pool = _SQLitePool(str(db), timeout=0.3)  # presupuesto WAL derivado: 50 ms
+    try:
+        with pytest.raises(sqlite3.OperationalError) as capturado:
+            async with pool.acquire():
+                pass
+        assert "database is locked" in str(capturado.value)
+        assert getattr(capturado.value, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY
+        await pool.close()
+    finally:
+        liberador.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await liberador
+        holder.liberar.set()
+        holder.join(5)

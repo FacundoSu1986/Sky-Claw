@@ -2158,12 +2158,20 @@ async def test_recovery_cierra_conexion_temporal_al_cancelar(
 
 
 class _CursorDeContrato:
-    def __init__(self, fila: tuple[str, ...] | None, error: BaseException | None = None) -> None:
+    def __init__(
+        self,
+        fila: tuple[str, ...] | None,
+        error: BaseException | None = None,
+        esperar: asyncio.Event | None = None,
+    ) -> None:
         self._fila = fila
         self._error = error
+        self._esperar = esperar
 
     def __await__(self):
         async def _esperar() -> _CursorDeContrato:
+            if self._esperar is not None:
+                await self._esperar.wait()
             if self._error is not None:
                 raise self._error
             return self
@@ -2171,6 +2179,8 @@ class _CursorDeContrato:
         return _esperar().__await__()
 
     async def __aenter__(self) -> _CursorDeContrato:
+        if self._esperar is not None:
+            await self._esperar.wait()
         if self._error is not None:
             raise self._error
         return self
@@ -2192,6 +2202,8 @@ class _ConexionDeContrato:
         error_pragma: BaseException | None = None,
         error_restauracion: BaseException | None = None,
         falla_timeout_en: int | None = None,
+        inicio_restauracion: asyncio.Event | None = None,
+        liberar_restauracion: asyncio.Event | None = None,
     ) -> None:
         self.sql: list[str] = []
         self.intentos_wal = 0
@@ -2200,6 +2212,8 @@ class _ConexionDeContrato:
         self._error_pragma = error_pragma
         self._error_restauracion = error_restauracion
         self._falla_timeout_en = falla_timeout_en
+        self._inicio_restauracion = inicio_restauracion
+        self._liberar_restauracion = liberar_restauracion
 
     def execute(self, sql: object, *_args: object, **_kwargs: object) -> _CursorDeContrato:
         sentencia = str(sql)
@@ -2208,6 +2222,9 @@ class _ConexionDeContrato:
             self.timeout_llamadas += 1
             if self.timeout_llamadas == self._falla_timeout_en:
                 return _CursorDeContrato(None, self._error_restauracion)
+            if self.timeout_llamadas == 2 and self._inicio_restauracion is not None:
+                self._inicio_restauracion.set()
+                return _CursorDeContrato(None, esperar=self._liberar_restauracion)
         if sentencia == "PRAGMA journal_mode=WAL":
             self.intentos_wal += 1
             if self._error_pragma is not None:
@@ -2357,3 +2374,142 @@ def test_codigos_de_contencion_congelados() -> None:
         )
         == db_lifecycle_mod._CODIGOS_DE_CONTENCION_REINTENTABLES
     )
+
+
+# ---------------------------------------------------------------------------
+# Ronda 2 — REV-03 (deadline tras configurar timeout) y REV-04 (cancelación real)
+# ---------------------------------------------------------------------------
+
+
+async def test_convertir_a_wal_revalida_deadline_tras_configurar_busy_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El presupuesto puede agotarse DURANTE el PRAGMA busy_timeout del reintento."""
+    # deadline=0.020; 1er error en 0.010; sleep; 2do loop en 0.015 con 5 ms
+    # de restante; la lectura siguiente (0.025) representa el reloj DESPUÉS
+    # de configurar el busy_timeout. No debe iniciarse el 2do pragma WAL.
+    _instalar_reloj(monkeypatch, [0.0, 0.0, 0.010, 0.015, 0.025, 0.025])
+    conn = _ConexionDeContrato(error_pragma=_error_busy())
+    with pytest.raises(sqlite3.OperationalError):
+        await convertir_a_wal(conn, busy_timeout_ms=20)
+    assert conn.intentos_wal == 1
+
+
+async def test_timeout_cero_instala_cero_sin_ventana_de_un_ms(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``0`` es fail-fast real: ni siquiera un milisegundo de busy handler."""
+    _instalar_reloj(monkeypatch, [0.0, 0.0])
+    conn = _ConexionDeContrato()
+    await convertir_a_wal(conn, busy_timeout_ms=0)
+    assert conn.sql == ["PRAGMA busy_timeout=0", "PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=0"]
+
+
+async def test_cancelacion_externa_durante_restauracion_queda_en_la_cadena(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """El error primario manda; la cancelación externa NO se descarta en silencio."""
+    inicio = asyncio.Event()
+    liberar = asyncio.Event()
+    original = sqlite3.OperationalError("disk I/O error")
+    _instalar_reloj(monkeypatch, [0.0, 0.02, 0.02])
+    conn = _ConexionDeContrato(
+        error_pragma=original,
+        inicio_restauracion=inicio,
+        liberar_restauracion=liberar,
+    )
+
+    async def correr() -> None:
+        await convertir_a_wal(conn, busy_timeout_ms=100)
+
+    tarea = asyncio.create_task(correr())
+    await asyncio.wait_for(inicio.wait(), timeout=2.0)
+    tarea.cancel("cancelacion externa durante cleanup")
+    liberar.set()
+    with pytest.raises(sqlite3.OperationalError) as capturado:
+        await tarea
+    assert capturado.value is original
+    assert isinstance(capturado.value.__context__, asyncio.CancelledError)
+
+
+async def test_cancelacion_repetida_conserva_la_primera_y_no_publica(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dos Task.cancel() reales: gana la primera, la segunda queda en la cadena."""
+    inicio = asyncio.Event()
+    liberar = asyncio.Event()
+    _instalar_reloj(monkeypatch, [0.0, 0.02, 0.02])
+    conn = _ConexionDeContrato(
+        error_pragma=asyncio.CancelledError("primera"),
+        inicio_restauracion=inicio,
+        liberar_restauracion=liberar,
+    )
+
+    async def correr() -> None:
+        await convertir_a_wal(conn, busy_timeout_ms=100)
+
+    tarea = asyncio.create_task(correr())
+    await asyncio.wait_for(inicio.wait(), timeout=2.0)
+    tarea.cancel("segunda")
+    liberar.set()
+    with pytest.raises(asyncio.CancelledError) as capturado:
+        await tarea
+    assert "primera" in str(capturado.value)
+    assert conn.sql[-1] == "PRAGMA busy_timeout=100"
+
+
+async def test_cancelacion_real_no_deja_worker_ni_conexion_huerfana(tmp_path: Path) -> None:
+    """Task.cancel() sobre una conexión aiosqlite REAL: el llamador la cierra."""
+    import aiosqlite
+
+    db = tmp_path / "cancelacion_real.db"
+    conn = await aiosqlite.connect(db)
+    iniciado = asyncio.Event()
+    liberar = asyncio.Event()
+    execute_real = conn.execute
+
+    class _CursorObservado:
+        """Imita el cursor awaitable de aiosqlite y bloquea en el pragma WAL."""
+
+        def __init__(self, sql: object, args: tuple[object, ...], kwargs: dict[str, object]) -> None:
+            self._sql = sql
+            self._args = args
+            self._kwargs = kwargs
+            self._cursor = None
+
+        async def _preparar(self) -> _CursorObservado:
+            iniciado.set()
+            await liberar.wait()
+            self._cursor = execute_real(self._sql, *self._args, **self._kwargs)
+            return self
+
+        def __await__(self):
+            return self._preparar().__await__()
+
+        async def __aenter__(self) -> _CursorObservado:
+            return await self._preparar()
+
+        async def __aexit__(self, *_args: object) -> bool:
+            if self._cursor is not None:
+                await self._cursor.close()
+            return False
+
+        async def fetchone(self):
+            return await self._cursor.fetchone()
+
+    def execute_observado(sql: object, *args: object, **kwargs: object):
+        if isinstance(sql, str) and "PRAGMA journal_mode=WAL" in sql:
+            return _CursorObservado(sql, args, kwargs)
+        return execute_real(sql, *args, **kwargs)
+
+    conn.execute = execute_observado  # type: ignore[method-assign]
+    tarea = asyncio.create_task(convertir_a_wal(conn, busy_timeout_ms=5000))
+    try:
+        await asyncio.wait_for(iniciado.wait(), timeout=2.0)
+        tarea.cancel("cancelacion real")
+        liberar.set()
+        with pytest.raises(asyncio.CancelledError):
+            await tarea
+    finally:
+        liberar.set()
+        await conn.close()
+    assert conn._connection is None  # type: ignore[attr-defined]
+    assert not [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()]

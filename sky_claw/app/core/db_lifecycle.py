@@ -146,7 +146,12 @@ def _validar_busy_timeout_ms(busy_timeout_ms: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def convertir_a_wal(conn: aiosqlite.Connection, *, busy_timeout_ms: int) -> None:
+async def convertir_a_wal(
+    conn: aiosqlite.Connection,
+    *,
+    busy_timeout_ms: int,
+    busy_timeout_operativo_ms: int | None = None,
+) -> None:
     """Convierte la DB a WAL con reintento acotado por ``busy_timeout_ms``.
 
     Es la ÚNICA ejecución del pragma de conversión en ``sky_claw/``: el lifecycle y toda
@@ -198,6 +203,19 @@ async def convertir_a_wal(conn: aiosqlite.Connection, *, busy_timeout_ms: int) -
     ``busy_timeout_ms`` se valida en la puerta (int estricto, no bool,
     0..INT32_MAX) y ``DatabaseLifecycleConfig`` usa el MISMO dominio.
 
+    REV-01: ``busy_timeout_ms`` es SOLO el presupuesto de CONVERSIÓN. El valor
+    que se restaura para la conexión publicada es ``busy_timeout_operativo_ms``
+    (por defecto, el mismo). El vault los separa: su presupuesto derivado no
+    puede convertirse en la latencia permanente de las operaciones CRUD.
+
+    REV-03: el deadline se revalida DESPUÉS de configurar cada busy_timeout;
+    el primer intento es obligatorio, los siguientes no. ``busy_timeout_ms=0``
+    instala 0 (fail-fast real), nunca 1 ms.
+
+    REV-04: si una cancelación/error externa llega DURANTE la restauración, se
+    encadena como ``__context__`` del error primario y se propaga éste. Así no
+    se pierde la cancelación ni se sustituye el diagnóstico original.
+
     Alcance de la propiedad, enunciado sin overclaim: la carrera
     REPRODUCIDA (dos conversiones DELETE→WAL superpuestas, o un writer en
     RESERVED durante la promoción) corresponde a la conversión misma. En
@@ -209,19 +227,25 @@ async def convertir_a_wal(conn: aiosqlite.Connection, *, busy_timeout_ms: int) -
     BUSY/LOCKED explícitamente listada) y no el origen del conflicto.
     """
     _validar_busy_timeout_ms(busy_timeout_ms)
+    operativo = busy_timeout_ms if busy_timeout_operativo_ms is None else busy_timeout_operativo_ms
+    _validar_busy_timeout_ms(operativo)
     deadline = _monotono() + busy_timeout_ms / 1000.0
     ultimo_error: sqlite3.OperationalError | None = None
     original: BaseException | None = None
     try:
         while True:
-            # Deadline ABSOLUTO y monotónico. El primer intento corre siempre
-            # (incluso con budget 0: ``restante_ms=1`` = fail-fast); los
-            # posteriores NO arrancan si el presupuesto ya se agotó.
+            # Deadline ABSOLUTO y monotónico. El primer intento corre siempre;
+            # los posteriores NO arrancan si el presupuesto ya se agotó.
             restante = deadline - _monotono()
             if restante <= 0 and ultimo_error is not None:
                 raise ultimo_error
-            restante_ms = max(1, int(restante * 1000))
+            # budget 0 = fail-fast REAL: busy_timeout=0, sin ventana de 1 ms.
+            restante_ms = 0 if busy_timeout_ms == 0 else max(1, int(restante * 1000))
             await conn.execute(f"PRAGMA busy_timeout={restante_ms}")
+            # REV-03: el reloj puede agotarse DURANTE esa configuración.
+            # Sólo se revalida en reintentos: el primero es obligatorio.
+            if ultimo_error is not None and deadline - _monotono() <= 0:
+                raise ultimo_error
             try:
                 # Se CONSUME el resultado y se cierra el cursor: que
                 # ``execute`` no lance NO prueba que SQLite pusiera WAL.
@@ -247,14 +271,22 @@ async def convertir_a_wal(conn: aiosqlite.Connection, *, busy_timeout_ms: int) -
         # condicionada a que la salida sea "normal".
         original = error
 
-    # Restauración en TODAS las salidas. Se observa el resultado: si falla,
-    # se registra pero NUNCA sustituye a la excepción primaria.
+    # Restauración en TODAS las salidas al valor OPERATIVO, nunca al presupuesto
+    # de conversión. Se observa el resultado: si falla, se encadena pero NUNCA
+    # sustituye a la excepción primaria.
     if original is None:
-        await conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+        await conn.execute(f"PRAGMA busy_timeout={operativo}")
         return
     try:
-        await conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
-    except BaseException:
+        await conn.execute(f"PRAGMA busy_timeout={operativo}")
+    except BaseException as cleanup_error:
+        # REV-04: encadenamos la cancelación/error de cleanup COMO CONTEXTO
+        # del error primario sin sustituirlo. Se asigna explícitamente y el
+        # ``raise`` queda fuera del except (B904) para no inventar una causa
+        # nueva: el cleanup es posterior, no causal del fallo original.
+        if cleanup_error is not original:
+            cleanup_error.__context__ = original.__context__
+            original.__context__ = cleanup_error
         logger.warning("No se pudo restaurar busy_timeout tras un fallo al convertir a WAL", exc_info=True)
     raise original
 

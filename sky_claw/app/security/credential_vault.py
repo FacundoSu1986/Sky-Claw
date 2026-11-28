@@ -83,7 +83,13 @@ class _SQLitePool:
         # conexiones sensibles con las generales (ver db_lifecycle.py).
         conn = await aiosqlite.connect(self._db_path)
         try:
-            await convertir_a_wal(conn, busy_timeout_ms=self._wal_timeout_ms)
+            # REV-01: el presupuesto WAL derivado es SOLO para la conversión;
+            # la conexión publicada conserva el busy_timeout operativo de 5 s.
+            await convertir_a_wal(
+                conn,
+                busy_timeout_ms=self._wal_timeout_ms,
+                busy_timeout_operativo_ms=BUSY_TIMEOUT_POR_DEFECTO_MS,
+            )
             await conn.execute("PRAGMA synchronous=NORMAL;")
         except BaseException:
             # Ensure the raw connection is closed on any error (including
