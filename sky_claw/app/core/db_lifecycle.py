@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import aiosqlite
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger("SkyClaw.DatabaseLifecycle")
 
@@ -48,6 +48,44 @@ SHUTDOWN_CHECKPOINT_TIMEOUT_SECONDS = 10
 # ``busy_timeout_ms`` y el arbitraje es de SQLite—; sólo evita un spin cerrado
 # entre intento e intento.
 _CONVERSION_WAL_RETRY_SLEEP_S = 0.005
+
+#: Ventana de espera de las aperturas standalone: el default de ``sqlite3.connect`` y del config.
+BUSY_TIMEOUT_POR_DEFECTO_MS = 5000
+
+#: Techo representable por la API C de SQLite (``int`` con signo de 32 bits).
+#: Medido en este entorno (SQLite 3.45.1): ``PRAGMA busy_timeout=2147483648``
+#: devuelve 0, es decir SILENCIA el busy handler. Un valor mayor no significa
+#: "esperar más", sino "no esperar": se rechaza en la puerta.
+BUSY_TIMEOUT_MAX_MS = 2_147_483_647
+
+#: Seams privados para reloj/sleep controlados en tests. La firma pública de
+#: ``convertir_a_wal`` no cambia: esto NO es un parámetro inyectable más.
+_monotono = time.monotonic
+_dormir = asyncio.sleep
+
+
+class _Desenlace(NamedTuple):
+    """Cómo terminó la fase de conversión, ANTES de restaurar el timeout.
+
+    El discriminante es EXPLÍCITO y no inferido de la cadena de excepciones:
+    el camino que llega a la restauración es "salida anómala", no "salida por
+    cancelación", y confundirlos es justo el defecto R2-01.
+
+    - ``es_cancelacion``: el primario es un ``CancelledError`` (cancelación
+      INTRÍNSECA de la conversión).
+
+    Sólo hay UN campo, y a propósito. Hubo un ``hubo_error_real`` derivado de
+    ``ultimo_error is not None`` —la fase de reintento— para distinguir "fallo
+    real" de "cancelación". Se midió que derivaba mal (un fallo del PRIMER
+    intento, no reintentable, dejaba el flag en ``False``) y, al reordenar la
+    precedencia a "cancelación externa > cancelación del primario > fallo
+    real", quedó sin lectores: un campo sólo-escrito es decoración, así que se
+    eliminó en vez de dejarlo documentando una decisión que ya no gobierna.
+    """
+
+    error: BaseException
+    es_cancelacion: bool
+
 
 # Familia de contención de locks REINTENTABLE, decisión código por código.
 # Corrupción, malformed DB, I/O y permisos NUNCA se reintentan. La lista es
@@ -113,9 +151,392 @@ def _es_contencion_de_bloqueo(error: sqlite3.OperationalError) -> bool:
     return mensaje == "database is locked" or mensaje == "database table is locked"
 
 
+def _validar_busy_timeout_ms(busy_timeout_ms: int) -> None:
+    """Dominio único del presupuesto: int estricto, 0 <= ms <= INT32_MAX.
+
+    ``bool`` se rechaza explícitamente: ``True`` es ``1`` en Python y un
+    ``busy_timeout_ms=True`` convertiría la ventana de 5 s en 1 ms sin que
+    ningún llamador lo notara. El techo no es arbitrario: por encima de
+    ``INT_MAX`` SQLite devuelve 0 (ver ``BUSY_TIMEOUT_MAX_MS``).
+    """
+    if isinstance(busy_timeout_ms, bool) or not isinstance(busy_timeout_ms, int):
+        raise TypeError("busy_timeout_ms debe ser un int (bool/float/str no admitidos)")
+    if not 0 <= busy_timeout_ms <= BUSY_TIMEOUT_MAX_MS:
+        raise ValueError(f"busy_timeout_ms fuera de rango: {busy_timeout_ms}")
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
+
+
+async def convertir_a_wal(
+    conn: aiosqlite.Connection,
+    *,
+    busy_timeout_ms: int,
+    busy_timeout_operativo_ms: int | None = None,
+) -> None:
+    """Convierte la DB a WAL con reintento acotado por ``busy_timeout_ms``.
+
+    Es la ÚNICA ejecución del pragma de conversión en ``sky_claw/``: el lifecycle y toda
+    apertura standalone (locks, journal, registros, DLQ, vault, historial del router) pasan
+    por acá. Lo ancla ``tests/test_conversion_wal_standalone.py`` por AST y con SQLite real.
+
+    Por qué el reintento existe (demostrado con SQLite real, no asumido):
+    ``PRAGMA journal_mode=WAL`` sobre un archivo que NO está en WAL promueve
+    el lock de SHARED a EXCLUSIVE. Cuando DOS conexiones corren la conversión
+    a la vez —dos ``DatabaseLifecycleManager`` independientes sobre el mismo
+    archivo, cuyos locks Python por path son por-instancia y no se arbitran
+    entre sí— SQLite devuelve SQLITE_BUSY al perdedor INMEDIATAMENTE, sin
+    invocar el busy handler: es la evitación de deadlock documentada para la
+    promoción de locks ("if SQLite determines that invoking the busy handler
+    could result in a deadlock... it will go ahead and return SQLITE_BUSY").
+    Ningún ``busy_timeout`` salva ese caso porque el handler no llega a
+    correr. Ese era el fallo de CI (run 33223088993, windows-latest/py3.11):
+    ``_init_single`` → ``_apply_pragmas`` → ``journal_mode=WAL`` →
+    "database is locked" en el primer intento, envuelto en
+    ``JournalConnectionError`` por el ``open()`` del journal.
+
+    Contrato: mientras el lock incompatible se libere DENTRO de la ventana
+    configurada, la conversión progresa; si el holder lo retiene más allá,
+    falla de forma limitada y diagnosticable con el MISMO error, sin esperar
+    infinitamente. Reintentar la MISMA sentencia sobre la misma conexión es
+    seguro: el pragma fallido no abre transacción ni deja estado. Sólo se
+    reintenta la familia BUSY/LOCKED (``_es_contencion_de_bloqueo``, con la
+    decisión código por código documentada ahí); BUSY_SNAPSHOT, BUSY_TIMEOUT
+    y códigos no listados propagan al primer intento.
+
+    Contrato temporal: deadline ABSOLUTO con reloj monotónico; cada intento
+    ajusta su ``PRAGMA busy_timeout`` al RESTANTE vigente (recalculado tras
+    cada error), y el sleep se capita con ese mismo restante. No se inicia
+    un intento nuevo vencido el deadline. ``busy_timeout_ms=0`` significa un
+    intento fail-fast, no cero intentos. El budget gobierna la CONTENCIÓN;
+    un pequeño sobrepaso por scheduling no se promete evitar.
+
+    Contrato de errores (explícito): éxito → se consumió la fila y SQLite
+    devolvió ``'wal'`` (cualquier otro modo, o ausencia de fila, falla
+    cerrado); contención agotada → se propaga el ÚLTIMO error real de
+    SQLite; error no reintentable o cancelación → se propaga el original.
+    La restauración al ``busy_timeout`` operativo corre en TODAS las salidas:
+    una conexión publicada con ``busy_timeout=0`` dejaría sin protección al
+    siguiente caller. Que la restauración HAYA TERMINADO es lo único que se
+    promete — que no ocurra nada más durante ella es R2-01:
+
+    - Fallo ordinario de la restauración: se registra en el log y se encadena
+      como ``__context__`` del error primario, que se propaga. El error de
+      cierre nunca sustituye al primario.
+    - Cancelación EXTERNA EFECTIVA durante la restauración (``Task.cancel()``
+      sobre esta tarea): se propaga ``CancelledError`` —la tarea queda
+      ``cancelled()``— y el diagnóstico anterior queda como ``__context__``
+      de ese ``CancelledError``, sin ciclos y sin perder la cadena previa.
+      La petición del llamador NO se consume: ``Task.cancelling()`` es estado
+      compartido del caller y esta capa no lo modifica (R2-FINAL-01).
+    - Si el primario ya era ``CancelledError``, gana ésa: se propaga y la
+      cancelación/fallo de la restauración queda en la cadena.
+    - Si la tarea NO fue cancelada desde afuera y la restauración levanta
+      ``CancelledError`` (cancelación nacida dentro del cierre de aiosqlite),
+      se trata como error de cierre del primer punto: se registra y se
+      propaga el primario.
+
+    Si el primario es una cancelación, el llamador debe cerrar la conexión en
+    su camino de error; esta función no la cierra (todas las aperturas lo
+    hacen así: rollback o ``close()`` no confirmado ⇒ fail-closed).
+
+    ``busy_timeout_ms`` se valida en la puerta (int estricto, no bool,
+    0..INT32_MAX) y ``DatabaseLifecycleConfig`` usa el MISMO dominio.
+
+    REV-01: ``busy_timeout_ms`` es SOLO el presupuesto de CONVERSIÓN. El valor
+    que se restaura para la conexión publicada es ``busy_timeout_operativo_ms``
+    (por defecto, el mismo). El vault los separa: su presupuesto derivado no
+    puede convertirse en la latencia permanente de las operaciones CRUD.
+
+    REV-03: el deadline se revalida DESPUÉS de configurar cada busy_timeout;
+    el primer intento es obligatorio, los siguientes no. ``busy_timeout_ms=0``
+    instala 0 (fail-fast real), nunca 1 ms.
+
+    R2-01: ver el contrato de errores — la cancelación externa se propaga como
+    ``CancelledError`` (antes se adjuntaba como ``__context__`` del
+    ``OperationalError`` y la tarea seguía sin estar cancelada, así que el
+    llamador no podía distinguir "cancelado" de "falló").
+
+    R2-FINAL-01: no se consume la petición de cancelación del llamador. Una
+    versión anterior llamaba ``Task.uncancel()`` y exigía ``cancelling() == 0``
+    al salir; ese requisito era artificial (lo introdujo el implementador, no
+    el contrato) y en 3.13+ interfiere con la política de ``asyncio.timeout()``
+    del caller. Ver ``_cancelacion_externa_efectiva``.
+
+    Alcance de la propiedad, enunciado sin overclaim: la carrera
+    REPRODUCIDA (dos conversiones DELETE→WAL superpuestas, o un writer en
+    RESERVED durante la promoción) corresponde a la conversión misma. En
+    los estados observados con el archivo ya en WAL —writer o reader en
+    vuelo— el pragma devolvió 'wal' sin esperar. NO se afirma que el
+    pragma jamás pueda devolver BUSY por otra vía interna (p. ej. durante
+    WAL recovery de otra conexión): si lo hiciera, este reintento acotado
+    lo cubre igual, porque el criterio es el CÓDIGO del error (familia
+    BUSY/LOCKED explícitamente listada) y no el origen del conflicto.
+    """
+    _validar_busy_timeout_ms(busy_timeout_ms)
+    operativo = busy_timeout_ms if busy_timeout_operativo_ms is None else busy_timeout_operativo_ms
+    _validar_busy_timeout_ms(operativo)
+    # R2-FINAL-01: huella del contador AL ENTRAR. Es lo que permite distinguir
+    # "el llamador me canceló ahora" de "quedó una petición vieja de una
+    # operación anterior del mismo Task". Un valor absoluto no sirve: medido,
+    # tras propagar un ``CancelledError`` sin consumirlo el contador PERSISTE
+    # en 1, y entonces la operación siguiente se auto-clasificaría como
+    # cancelada. No se consume nada: se compara contra la línea de base.
+    cancelaciones_al_entrar = _cancelaciones_de_la_tarea()
+    deadline = _monotono() + busy_timeout_ms / 1000.0
+    ultimo_error: sqlite3.OperationalError | None = None
+    desenlace: _Desenlace | None = None
+    try:
+        while True:
+            # Deadline ABSOLUTO y monotónico. El primer intento corre siempre;
+            # los posteriores NO arrancan si el presupuesto ya se agotó.
+            restante = deadline - _monotono()
+            if restante <= 0 and ultimo_error is not None:
+                raise ultimo_error
+            # budget 0 = fail-fast REAL: busy_timeout=0, sin ventana de 1 ms.
+            restante_ms = 0 if busy_timeout_ms == 0 else max(1, int(restante * 1000))
+            await conn.execute(f"PRAGMA busy_timeout={restante_ms}")
+            # REV-03: el reloj puede agotarse DURANTE esa configuración.
+            # Sólo se revalida en reintentos: el primero es obligatorio.
+            if ultimo_error is not None and deadline - _monotono() <= 0:
+                raise ultimo_error
+            try:
+                # Se CONSUME el resultado y se cierra el cursor: que
+                # ``execute`` no lance NO prueba que SQLite pusiera WAL.
+                async with conn.execute("PRAGMA journal_mode=WAL") as cursor:
+                    fila = await cursor.fetchone()
+            except sqlite3.OperationalError as error:
+                if not _es_contencion_de_bloqueo(error):
+                    raise
+                ultimo_error = error
+                # Recalcular DESPUÉS del error: el ``restante`` de antes del
+                # pragma ya es viejo y dormir con él sobrepasa el presupuesto.
+                restante = deadline - _monotono()
+                if restante <= 0:
+                    raise
+                await _dormir(min(_CONVERSION_WAL_RETRY_SLEEP_S, restante))
+            else:
+                modo = fila[0] if fila else ""
+                if str(modo).lower() != "wal":
+                    raise sqlite3.OperationalError(f"PRAGMA journal_mode=WAL devolvió {modo!r} en lugar de 'wal'")
+                break
+    except BaseException as error:
+        # Atrapa TAMBIÉN CancelledError: la restauración no puede quedar
+        # condicionada a que la salida sea "normal".
+        desenlace = _Desenlace(
+            error=error,
+            es_cancelacion=isinstance(error, asyncio.CancelledError),
+        )
+
+    # Restauración en TODAS las salidas al valor OPERATIVO, nunca al presupuesto
+    # de conversión. UN SOLO sitio, a propósito: antes había dos (uno en el
+    # camino feliz con ``return`` propio y otro en el de error) y el del camino
+    # feliz no consultaba la política de cancelación, así que una cancelación
+    # entregada justo ahí propagaba ``CancelledError`` dejando ``cancelling()==1``
+    # y contaminaba el ``await`` siguiente del mismo ``Task`` con una
+    # cancelación que el llamador no podía atribuir a su propia llamada
+    # (defecto medido: ``['primera: cancelada', 'segunda: CANCELADA SIN
+    # PETICIÓN']``). Un solo sitio hace imposible que los dos caminos diverjan.
+    cleanup_error: BaseException | None = None
+    try:
+        await conn.execute(f"PRAGMA busy_timeout={operativo}")
+    except BaseException as error_de_limpieza:
+        cleanup_error = error_de_limpieza
+
+    if desenlace is None:
+        # Salida normal: no hay primario que propagar. Lo único que puede
+        # exigir una salida excepcional es un fallo (o cancelación) de la
+        # propia restauración, o una cancelación externa que se haya entregado
+        # durante ella.
+        if cleanup_error is not None:
+            # Se consulta la política: el switch puede haberse entregado en el
+            # ``await`` de arriba y, en ese caso, la petición es del llamador.
+            if _cancelacion_externa_efectiva(cancelaciones_al_entrar):
+                logger.warning(
+                    "Restauración de busy_timeout interrumpida por cancelación externa",
+                    exc_info=(type(cleanup_error), cleanup_error, cleanup_error.__traceback__),
+                )
+                raise asyncio.CancelledError(cleanup_error)
+            raise cleanup_error
+        # La restauración resolvió bien y no hay primario: se retorna.
+        #
+        # MEDIDO (se deja anotado porque una llamada que nunca hace nada es
+        # sospechosa por defecto): en este punto una cancelación NUEVA NO es
+        # alcanzable. Con restauración exitosa y sin ``await`` interrumpible,
+        # un ``Task.cancel()`` pedido durante ella no se entrega en ningún
+        # punto de suspensión de esta función; con un ``await`` interrumpible,
+        # la cancelación interrumpe ESE ``await``, así que ``cleanup_error``
+        # deja de ser ``None`` y manda la rama de arriba.
+        #
+        # R2-FINAL-01: la consulta es de SÓLO LECTURA y compara contra la
+        # huella de entrada. Antes consumía el switch con ``uncancel()``; se
+        # eliminó porque no hay necesidad contractual demostrada y sí un riesgo
+        # cross-version (3.13+) de interferir con la política de
+        # ``asyncio.timeout()`` del caller. Se conserva la consulta como guarda
+        # honesta: si la restauración gana un punto de suspensión nuevo, esta
+        # línea documenta que el caso es alcanzable y hay que revisarlo (no se
+        # "arregla" consumiendo nada).
+        _cancelacion_externa_efectiva(cancelaciones_al_entrar)
+        return
+
+    original = desenlace.error
+
+    # La consulta de cancelación se hace UNA sola vez, DESPUÉS del cleanup (ahí
+    # es donde el switch puede haberse entregado) y su resultado se usa en
+    # TODAS las ramas. R2-FINAL-01: la consulta ya NO consume el switch
+    # (``_cancelacion_externa_efectiva`` sólo lee), así que consultarla de nuevo
+    # daría el mismo resultado. Se mantiene la única consulta por claridad, no
+    # porque consuma nada.
+    #
+    # NO se condiciona a ``cleanup_error is not None``: medido, con el cleanup
+    # fallando por el MISMO ``CancelledError`` que interrumpió el ``await`` la
+    # guarda era redundante, pero hay un caso en que el cleanup resuelve
+    # **antes** de que la cancelación se entregue y la petición queda registrada
+    # en el ``Task`` sin error de limpieza. Ahí la consulta contra la huella de
+    # entrada es la que detecta que la cancelación es de ESTA llamada, y no se
+    # hereda del contador persistente de una operación anterior (R2-FINAL-01).
+    externa = _cancelacion_externa_efectiva(cancelaciones_al_entrar)
+
+    # PRECEDENCIA, en un solo lugar y en este orden:
+    #   1. cancelación externa efectiva  -> manda (el llamador pidió cancelar)
+    #   2. el primario ya era cancelación -> se propaga tal cual
+    #   3. fallo real                     -> manda el primario, con el error de
+    #                                       la restauración encadenado
+    if externa:
+        # ``cleanup_error`` puede ser ``None`` (la restauración resolvió antes de
+        # que la cancelación se entregara): en ese caso no hay traza de limpieza
+        # que loguear.
+        if cleanup_error is not None:
+            logger.warning(
+                "Restauración de busy_timeout interrumpida por cancelación externa",
+                exc_info=(type(cleanup_error), cleanup_error, cleanup_error.__traceback__),
+            )
+        else:
+            logger.warning(
+                "Cancelación externa del llamador detectada tras la restauración de busy_timeout "
+                "(no se consume: el contador queda para el caller)"
+            )
+        # Se propaga una cancelación NUEVA (no la del cleanup: esa murió con el
+        # ``await``) y el primario se adjunta como contexto, sin ciclos y sin
+        # ``from`` — que agregaría una causa nueva y desplazaría el diagnóstico
+        # previo.
+        cancelacion = asyncio.CancelledError(original)
+        _adjuntar_contexto_si_falta(cancelacion, original)
+        raise cancelacion
+    if desenlace.es_cancelacion:
+        if cleanup_error is not None:
+            logger.warning(
+                "No se pudo restaurar busy_timeout tras una cancelación de la conversión a WAL",
+                exc_info=(type(cleanup_error), cleanup_error, cleanup_error.__traceback__),
+            )
+        raise original
+    if cleanup_error is not None:
+        _encadenar_contexto(original, cleanup_error)
+        logger.warning(
+            "No se pudo restaurar busy_timeout tras un fallo al convertir a WAL",
+            exc_info=(type(cleanup_error), cleanup_error, cleanup_error.__traceback__),
+        )
+    raise original
+
+
+def _cancelaciones_de_la_tarea() -> int:
+    """Peticiones de cancelación acumuladas por la tarea actual (sólo lectura).
+
+    Devuelve 0 si no hay tarea. NUNCA modifica el contador.
+    """
+    tarea = asyncio.current_task()
+    if tarea is None:
+        return 0
+    return tarea.cancelling()
+
+
+def _cancelacion_externa_efectiva(al_entrar: int) -> bool:
+    """True si una cancelación NUEVA interrumpió la operación actual.
+
+    Evidencia, no inferencia: se compara el contador ``Task.cancelling()``
+    contra la huella tomada al entrar (``al_entrar``). La función SÓLO LEE:
+    nunca consume la petición del llamador.
+
+    Por qué una huella y no un valor absoluto. Medido en la versión objetivo
+    (3.11.9) con sincronización determinista: tras propagar un
+    ``CancelledError`` que nadie consumió, ``Task.cancelling()`` **persiste**
+    en 1 durante el resto de la vida de la corrutina. Con la comparación
+    absoluta ``cancelling() >= 1``, la operación SIGUIENTE del mismo ``Task``
+    se clasificaría como cancelada sin que nadie la haya cancelado — un falso
+    positivo, y exactamente el defecto que el contrato quiere evitar. Con la
+    huella, la petición vieja se descuenta y sólo cuenta lo que se pidió
+    DURANTE esta llamada.
+
+    R2-FINAL-01 — por qué NO se llama ``uncancel()``. Una versión anterior
+    consumía el switch cuando ``cancelling() == 1`` y exigía
+    ``cancelling() == 0`` al salir. Ese requisito **no lo pidió nadie**: no es
+    contrato del llamador ni de ``asyncio``, lo introdujo el implementador.
+    Medido en 3.11.9: consumir no cambiaba ninguna propiedad observable
+    (ni el veredicto de ``asyncio.timeout()``, ni ``Task.cancelled()``, ni la
+    reaparición de la cancelación en el ``await`` siguiente); la sonda
+    ``probe_leak`` mostró además que la operación siguiente NO se auto-cancela
+    aunque el contador quede en 1, porque el runtime sólo vuelve a lanzar por
+    peticiones NUEVAS. Es decir: no hay necesidad demostrada.
+
+    En cambio sí hay riesgo demostrado por el Tech Lead en 3.13.5: consumir
+    una cancelación **ajena** puede hacer que ``asyncio.timeout()`` deje de
+    atribuirse su propio vencimiento y entregue ``TimeoutError`` donde
+    correspondía ``CancelledError``. Entre 3.12 y 3.13 cambió la semántica de
+    ``uncancel()`` y ``timeout()`` re-consulta el contador; el contador es
+    estado COMPARTIDO con el caller, así que tocarlo es disponer de estado que
+    no es nuestro.
+
+    Regla: el ``CancelledError`` se PROPAGA y la tarea queda ``cancelled()``
+    sola — lo hace el runtime al salir la excepción de la corrutina. El
+    diagnóstico previo se conserva por encadenamiento normal (``__context__``).
+    Que ``cancelling()`` vuelva a cero NO se promete: es del caller.
+    """
+    return _cancelaciones_de_la_tarea() > al_entrar
+
+
+def _encadenar_contexto(primario: BaseException, secundario: BaseException) -> None:
+    """Adjunta ``secundario`` a la cadena de ``primario`` sin ciclos.
+
+    Si la restauración levanta la MISMA instancia que el primario (un doble
+    que reintenta el error ya capturado), encadenarla produciría
+    ``original.__context__ = original``: la cadena pasaría a ser circular y el
+    traceback quedaría inservible. En ese caso no hay información nueva que
+    agregar y no se toca nada.
+
+    No hay un ``if secundario is primario`` aparte: el recorrido arranca en
+    ``primario``, así que ese caso lo corta la primera iteración. Un guard
+    redundante delante habría sido código muerto — se midió con el mutante
+    que lo eliminaba y el resultado era idéntico (equivalente), no un
+    superviviente silencioso.
+    """
+    actual: BaseException | None = primario
+    while actual is not None:
+        if actual is secundario:
+            return
+        actual = actual.__context__
+    secundario.__context__ = primario.__context__
+    primario.__context__ = secundario
+
+
+def _adjuntar_contexto_si_falta(cancelacion: BaseException, diagnostico: BaseException) -> None:
+    """Restaura el diagnóstico que la propagación del ``CancelledError`` descartó.
+
+    Medido en CPython 3.11 en vez de asumido: un ``raise`` pelado dentro de un
+    ``except`` limpia ``__context__``, y el contexto se vuelve a sobrescribir al
+    salir del ``except`` con la excepción en curso. Por eso acá sólo se
+    re-adjunta la instancia —después de esta asignación nunca hay un ``raise``
+    dentro del mismo frame de ``except``— y sin crear ciclos.
+    """
+    if cancelacion is diagnostico:
+        return
+    actual = cancelacion.__context__
+    while actual is not None:
+        if actual is diagnostico:
+            return
+        actual = actual.__context__
+    cancelacion.__context__ = diagnostico
 
 
 class DatabaseLifecycleConfig(BaseModel):
@@ -128,7 +549,7 @@ class DatabaseLifecycleConfig(BaseModel):
     wal_critical_threshold_bytes: int = WAL_CRITICAL_THRESHOLD_BYTES
     enable_auto_checkpoint: bool = True
     enable_signal_handlers: bool = True
-    busy_timeout_ms: int = 5000
+    busy_timeout_ms: int = Field(default=BUSY_TIMEOUT_POR_DEFECTO_MS, ge=0, le=BUSY_TIMEOUT_MAX_MS)
     synchronous_mode: str = "NORMAL"
 
 
@@ -654,84 +1075,8 @@ class DatabaseLifecycleManager:
         return False
 
     async def _enter_wal_mode(self, conn: aiosqlite.Connection, path_str: str) -> None:
-        """Convierte la DB a WAL con reintento acotado por ``busy_timeout_ms``.
-
-        Por qué el reintento existe (demostrado con SQLite real, no asumido):
-        ``PRAGMA journal_mode=WAL`` sobre un archivo que NO está en WAL promueve
-        el lock de SHARED a EXCLUSIVE. Cuando DOS conexiones corren la conversión
-        a la vez —dos ``DatabaseLifecycleManager`` independientes sobre el mismo
-        archivo, cuyos locks Python por path son por-instancia y no se arbitran
-        entre sí— SQLite devuelve SQLITE_BUSY al perdedor INMEDIATAMENTE, sin
-        invocar el busy handler: es la evitación de deadlock documentada para la
-        promoción de locks ("if SQLite determines that invoking the busy handler
-        could result in a deadlock... it will go ahead and return SQLITE_BUSY").
-        Ningún ``busy_timeout`` salva ese caso porque el handler no llega a
-        correr. Ese era el fallo de CI (run 33223088993, windows-latest/py3.11):
-        ``_init_single`` → ``_apply_pragmas`` → ``journal_mode=WAL`` →
-        "database is locked" en el primer intento, envuelto en
-        ``JournalConnectionError`` por el ``open()`` del journal.
-
-        Contrato: mientras el lock incompatible se libere DENTRO de la ventana
-        configurada, la conversión progresa; si el holder lo retiene más allá,
-        falla de forma limitada y diagnosticable con el MISMO error, sin esperar
-        infinitamente. Reintentar la MISMA sentencia sobre la misma conexión es
-        seguro: el pragma fallido no abre transacción ni deja estado. Sólo se
-        reintenta la familia BUSY/LOCKED (``_es_contencion_de_bloqueo``, con la
-        decisión código por código documentada ahí); BUSY_SNAPSHOT, BUSY_TIMEOUT
-        y códigos no listados propagan al primer intento.
-
-        Deadline único: el total NO puede exceder ``busy_timeout_ms``. Cada
-        intento ajusta su propio ``PRAGMA busy_timeout`` al RESTANTE de la
-        ventana, no reusa el valor configurado completo — sin esto, dos
-        intentos podrían sumar hasta 2× el budget. La restauración del
-        ``busy_timeout`` configurado se hace siempre al final (éxito o
-        falla): una conexión que se publique con ``busy_timeout=0``
-        dejaría sin protección al siguiente caller.
-
-        Alcance de la propiedad, enunciado sin overclaim: la carrera
-        REPRODUCIDA (dos conversiones DELETE→WAL superpuestas, o un writer en
-        RESERVED durante la promoción) corresponde a la conversión misma. En
-        los estados observados con el archivo ya en WAL —writer o reader en
-        vuelo— el pragma devolvió 'wal' sin esperar. NO se afirma que el
-        pragma jamás pueda devolver BUSY por otra vía interna (p. ej. durante
-        WAL recovery de otra conexión): si lo hiciera, este reintento acotado
-        lo cubre igual, porque el criterio es el CÓDIGO del error (familia
-        BUSY/LOCKED explícitamente listada) y no el origen del conflicto.
-        """
-        ventana_s = self._config.busy_timeout_ms / 1000.0
-        inicio = time.monotonic()
-        ultimo_error: sqlite3.OperationalError | None = None
-        while True:
-            # Cada intento lleva su propio ``busy_timeout`` capado al
-            # RESTANTE de la ventana. El execute corre SIEMPRE (incluso con
-            # ``busy_timeout_ms=0``, donde restante es ~0 y ``restante_ms=1``
-            # = fail-fast): la ventana cero significa "un intento, sin
-            # esperar", NO "no intentar".
-            restante = ventana_s - (time.monotonic() - inicio)
-            restante_ms = max(1, int(restante * 1000))
-            await conn.execute(f"PRAGMA busy_timeout={restante_ms}")
-            try:
-                await conn.execute("PRAGMA journal_mode=WAL")
-            except sqlite3.OperationalError as error:
-                if not _es_contencion_de_bloqueo(error):
-                    raise
-                ultimo_error = error
-                # Deadline agotado: re-lanzar el ÚLTIMO error real que
-                # SQLite devolvió, nunca un ``OperationalError`` sintético.
-                if ventana_s - (time.monotonic() - inicio) <= 0:
-                    raise ultimo_error from None
-                # Ceder el scheduler para que la cancelación pueda
-                # entrar. El sleep es chico para no contaminar el
-                # budget; el ``busy_timeout`` por intento ya hace el
-                # trabajo de esperar al lock.
-                await asyncio.sleep(min(_CONVERSION_WAL_RETRY_SLEEP_S, restante))
-            else:
-                break
-        # Restauración obligatoria: la conexión que sobrevive al
-        # ``_enter_wal_mode`` debe volver a tener el ``busy_timeout``
-        # configurado, no el cap por intento. Sin esto, una conexión
-        # que se publique arrastraría un busy_timeout arbitrario.
-        await conn.execute(f"PRAGMA busy_timeout={self._config.busy_timeout_ms}")
+        """Convierte a WAL con el reintento compartido, en la ventana del config (ver ``convertir_a_wal``)."""
+        await convertir_a_wal(conn, busy_timeout_ms=self._config.busy_timeout_ms)
 
     async def _apply_pragmas(self, conn: aiosqlite.Connection, path_str: str) -> None:
         """Apply hardened SQLite pragmas to a connection.
@@ -833,7 +1178,7 @@ class DatabaseLifecycleManager:
         results: dict[str, dict[str, Any]] = {}
         for path_str, conn in list(self._connections.items()):
             lock = self.get_write_lock(path_str) if con_boundary else contextlib.nullcontext()
-            async with lock:  # type: ignore[attr-defined]
+            async with lock:
                 if self._connections.get(path_str) is not conn:
                     continue
                 # Dentro del lock, junto al guard de identidad: la cuarentena

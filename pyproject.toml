@@ -303,6 +303,7 @@ module = [
     "sky_claw.app.core.metrics_server",
     "sky_claw.app.core.tracing",
     "sky_claw.app.core.dlq_manager",
+    "sky_claw.app.core.db_lifecycle",  # PR #1028: helper convertir_a_wal con type-check efectivo
 ]
 ignore_errors = false
 

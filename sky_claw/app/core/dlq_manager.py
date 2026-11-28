@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, TypeVar
 
 import aiosqlite
 
+from sky_claw.app.core.db_lifecycle import BUSY_TIMEOUT_POR_DEFECTO_MS, convertir_a_wal
 from sky_claw.app.core.event_bus import Event, Subscriber
 
 if TYPE_CHECKING:
@@ -297,8 +298,7 @@ class DLQManager:
         cancelacion: asyncio.CancelledError | None = None
         error_close = None
         try:
-            await db.execute("PRAGMA busy_timeout=5000")  # must be first: protects WAL mode switch
-            await db.execute("PRAGMA journal_mode=WAL")
+            await convertir_a_wal(db, busy_timeout_ms=BUSY_TIMEOUT_POR_DEFECTO_MS)
             await db.execute("PRAGMA foreign_keys=ON")
             await db.execute("PRAGMA synchronous=NORMAL")
             db.row_factory = aiosqlite.Row

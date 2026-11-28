@@ -24,8 +24,10 @@ from tenacity import (
 )
 
 from sky_claw.app.core.db_lifecycle import (
+    BUSY_TIMEOUT_POR_DEFECTO_MS,
     DatabaseConnectionQuarantinedError,
     DatabaseConnectionReplacedError,
+    convertir_a_wal,
 )
 from sky_claw.config import DB_PATH
 
@@ -303,9 +305,8 @@ class AsyncModRegistry:
                     direct_conn = await aiosqlite.connect(self._db_path)
                     conn = direct_conn
                     direct_conn.row_factory = aiosqlite.Row
-                    await direct_conn.execute("PRAGMA journal_mode=WAL")
+                    await convertir_a_wal(direct_conn, busy_timeout_ms=BUSY_TIMEOUT_POR_DEFECTO_MS)
                     await direct_conn.execute("PRAGMA foreign_keys=ON")
-                    await direct_conn.execute("PRAGMA busy_timeout=5000")
                     await direct_conn.execute("PRAGMA synchronous=NORMAL")
 
                     async with direct_conn.execute("PRAGMA quick_check") as cur:
@@ -342,9 +343,8 @@ class AsyncModRegistry:
                     recovered_conn = await aiosqlite.connect(self._db_path)
                     conn = recovered_conn
                     recovered_conn.row_factory = aiosqlite.Row
-                    await recovered_conn.execute("PRAGMA journal_mode=WAL")
+                    await convertir_a_wal(recovered_conn, busy_timeout_ms=BUSY_TIMEOUT_POR_DEFECTO_MS)
                     await recovered_conn.execute("PRAGMA foreign_keys=ON")
-                    await recovered_conn.execute("PRAGMA busy_timeout=5000")
                     await recovered_conn.execute("PRAGMA synchronous=NORMAL")
 
                 except Exception as exc:

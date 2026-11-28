@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -22,7 +23,7 @@ import aiosqlite
 import pytest
 
 from sky_claw.app.core.errors import VaultStorageError
-from sky_claw.app.security.credential_vault import CredentialVault
+from sky_claw.app.security.credential_vault import CredentialVault, _SQLitePool
 
 
 async def _wait_for_semaphore_waiter(sem: asyncio.Semaphore) -> None:
@@ -517,3 +518,240 @@ class TestCierreEstrictoDelPool:
         with pytest.raises(ValueError, match="no active connection|[Cc]onnection closed"):
             await creadas[0].execute("SELECT 1")
         assert pool._pool.empty(), "una conexión post-close quedó re-encolada en el pool"
+
+
+# ---------------------------------------------------------------------------
+# WAL-03: el presupuesto de conversión WAL no puede colisionar con el timeout
+# exterior de ``acquire()``. Se deriva del presupuesto del pool, con margen
+# explícito para restaurar/cerrar/propagar (M12).
+# ---------------------------------------------------------------------------
+
+
+def test_el_presupuesto_wal_reserva_margen_para_finalizacion() -> None:
+    import sky_claw.app.security.credential_vault as cv
+
+    pool = _SQLitePool("unused.db", timeout=5.0)
+    assert 0 < pool._wal_timeout_ms < int(pool._timeout * 1000)
+    assert pool._wal_timeout_ms == int(pool._timeout * 1000) - cv._MARGEN_FINALIZACION_WAL_MS
+    assert 0 < cv._MARGEN_FINALIZACION_WAL_MS < 1000
+
+
+@pytest.mark.parametrize("timeout", [0.05, 0.1, 0.25])
+def test_timeout_inferior_al_margen_degrada_a_fail_fast(timeout: float) -> None:
+    """R2-02: en o por debajo del margen el presupuesto es 0, nunca negativo NI
+    uno con piso forzado (un piso > timeout exterior rompería la jerarquía).
+
+    ``0.25`` es el borde exacto: ``250 - 250 == 0``. El caso que un piso
+    ``max(250, ...)`` habría roto es ``0.05`` (250 ms > 50 ms).
+    """
+    import sky_claw.app.security.credential_vault as cv
+
+    pool = _SQLitePool("unused.db", timeout=timeout)
+    assert pool._wal_timeout_ms == 0
+    assert pool._wal_timeout_ms <= int(timeout * 1000)
+    assert int(timeout * 1000) <= cv._MARGEN_FINALIZACION_WAL_MS
+
+
+@pytest.mark.parametrize("timeout", [0.05, 0.1, 0.25, 0.5, 5.0, 10.0])
+def test_el_presupuesto_interno_nunca_excede_al_exterior(timeout: float) -> None:
+    """R2-02: invariante de jerarquía; el caso 0.05..0.25 es el que un piso
+    ``max(250, ...)`` habría violado (250 ms > 50 ms de timeout exterior)."""
+    pool = _SQLitePool("unused.db", timeout=timeout)
+    assert 0 <= pool._wal_timeout_ms <= int(timeout * 1000)
+
+
+async def test_la_conversion_recibe_el_presupuesto_derivado(tmp_path: Path) -> None:
+    import sky_claw.app.security.credential_vault as cv
+
+    vistos: list[tuple[int, int]] = []
+    original = cv.convertir_a_wal
+
+    async def espia(conn, *, busy_timeout_ms: int, busy_timeout_operativo_ms: int) -> None:  # type: ignore[no-untyped-def]
+        vistos.append((busy_timeout_ms, busy_timeout_operativo_ms))
+        await original(conn, busy_timeout_ms=busy_timeout_ms, busy_timeout_operativo_ms=busy_timeout_operativo_ms)
+
+    pool = _SQLitePool(str(tmp_path / "wal.db"), timeout=5.0)
+    with patch.object(cv, "convertir_a_wal", espia):
+        async with pool.acquire():
+            pass
+        await pool.close()
+    assert vistos == [(pool._wal_timeout_ms, 5000)]
+
+
+# ---------------------------------------------------------------------------
+# REV-01: presupuesto de conversión != busy_timeout operativo de la conexión
+# publicada. La latencia de las operaciones CRUD NO se negocia con el pool.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("timeout,esperado_presupuesto", [(0.5, 250), (5.0, 4750), (10.0, 9750)])
+async def test_busy_timeout_operativo_no_es_el_presupuesto_wal(
+    tmp_path: Path, timeout: float, esperado_presupuesto: int
+) -> None:
+    import sky_claw.app.security.credential_vault as cv
+
+    vistos: list[tuple[int, int]] = []
+    original = cv.convertir_a_wal
+
+    async def espia(conn, *, busy_timeout_ms: int, busy_timeout_operativo_ms: int) -> None:  # type: ignore[no-untyped-def]
+        vistos.append((busy_timeout_ms, busy_timeout_operativo_ms))
+        await original(conn, busy_timeout_ms=busy_timeout_ms, busy_timeout_operativo_ms=busy_timeout_operativo_ms)
+
+    pool = _SQLitePool(str(tmp_path / f"v_{timeout}.db"), timeout=timeout)
+    # ``finally``: un fallo de aserción NO puede dejar el worker de aiosqlite
+    # colgado (el proceso CI muere por hilos non-daemon y el fallo real queda
+    # enmascarado). El cierre se garantiza en toda salida.
+    try:
+        with patch.object(cv, "convertir_a_wal", espia):
+            async with pool.acquire() as conn:
+                async with conn.execute("PRAGMA busy_timeout") as cur:
+                    fila = await cur.fetchone()
+                assert fila[0] == 5000, "la conexión publicada conserva el busy_timeout operativo"
+    finally:
+        await pool.close()
+    assert vistos == [(esperado_presupuesto, 5000)]
+
+
+async def test_el_pool_cierra_la_conexion_cuando_la_conversion_falla(tmp_path: Path) -> None:
+    """R2-01/R2-05: si la conversión falla, la conexión cruda NO se publica ni fuga.
+
+    La política de cancelación de ``convertir_a_wal`` descarga el cierre en el
+    llamador ("cerrá la conexión en tu camino de error"). Esto verifica que el
+    vault efectivamente lo hace con el mecanismo observable de aiosqlite: cada
+    intento de conversión fallida deja el worker de su conexión detenido
+    (``_connection is None`` al terminar), en vez de un hilo daemon vivo por
+    intento. Y el error real de SQLite llega sin envoltorio.
+    """
+    import sky_claw.app.security.credential_vault as cv
+
+    pool = _SQLitePool(str(tmp_path / "falla.db"), timeout=5.0)
+    original = sqlite3.OperationalError("fallo inyectado en la conversión")
+    creadas: list[object] = []
+
+    async def conversor_que_falla(conn, **_kwargs):
+        creadas.append(conn)
+        raise original
+
+    try:
+        with (
+            patch.object(cv, "convertir_a_wal", conversor_que_falla),
+            pytest.raises(sqlite3.OperationalError) as capturado,
+        ):
+            async with pool.acquire():
+                raise AssertionError("no debía entregarse una conexión cuya conversión falló")
+        assert capturado.value is original, "el error real de SQLite debe llegar sin envoltorio"
+    finally:
+        await pool.close()
+
+    assert len(creadas) == 1, f"se intentó crear más de una conexión: {len(creadas)}"
+    assert getattr(creadas[0], "_connection", "ausente") is None, (
+        "la conexión fallida dejó su worker vivo: no se cerró en el camino de error"
+    )
+
+
+async def test_escritura_posterior_espera_contencion_real(tmp_path: Path) -> None:
+    """R2-03: la contención se ejerce en la ESCRITURA posterior, no en la conversión.
+
+    Antes el holder se tomaba antes de abrir el pool, así que el test demostraba
+    (en el mejor caso) que la CONVERSIÓN esperaba. Acá la secuencia está
+    ordenada explícitamente: pool abierto y ya en WAL con su busy_timeout
+    operativo ANTES de que exista el lock ajeno; luego BEGIN IMMEDIATE desde una
+    segunda conexión; luego la escritura de la conexión publicada; y sólo cuando
+    el observador confirma que el worker quedó bloqueado se libera el holder.
+
+    Discriminante: con el busy_timeout operativo en 0 (mutante) la escritura
+    falla al instante con ``database is locked`` porque no hay handler que
+    espere — el fallo es inmediato, no un timeout largo.
+    """
+    import contextlib
+    import time
+
+    from tests.test_db_lifecycle import _sembrar_db_en_modo_delete, _SostieneLockSQLite
+
+    db = tmp_path / "contencion.db"
+    _sembrar_db_en_modo_delete(db)
+    holder: _SostieneLockSQLite | None = None
+    pool: _SQLitePool | None = None
+    try:
+        # 1-3. Pool abierto, WAL confirmado y timeout operativo confirmado, todo
+        # ANTES de que exista el lock incompatible.
+        pool = _SQLitePool(str(db), timeout=5.0)
+        async with pool.acquire() as conn:
+            async with conn.execute("PRAGMA journal_mode") as cur:
+                assert (await cur.fetchone())[0] == "wal", "el pool debe entregar la DB ya en WAL"
+
+            # 4. Lock RESERVED ajeno, con la conexión publicada ya en mano.
+            holder = _SostieneLockSQLite(db)
+            holder.start()
+            assert holder.adquirido.wait(5), "el holder real no tomó el lock"
+
+            # 5-6. Escritura desde la conexión publicada: el worker queda
+            # bloqueado en el handler de busy_timeout (no en la conversión,
+            # que ya terminó en el paso 1).
+            tarea = asyncio.ensure_future(conn.execute("CREATE TABLE posterior (x INTEGER)"))
+            inicio = time.monotonic()
+            while not tarea.done() and time.monotonic() - inicio < 2.0:
+                await asyncio.sleep(0.01)
+            # Discriminante (primero): con busy_timeout operativo = 0 no hay
+            # handler que espere y la escritura falla al instante.
+            assert not tarea.done(), "la escritura no esperó: no hay handler de busy_timeout"
+            assert time.monotonic() - inicio >= 0.05, "la escritura no esperó: no hay handler de busy_timeout"
+
+            # 7. Liberación por sincronización explícita.
+            holder.liberar.set()
+            holder.join(10)
+
+            # 8. La escritura progresa y el commit sucede.
+            await asyncio.wait_for(tarea, timeout=5.0)
+            await conn.commit()
+            # 3'. El pragma operativo de la conexión publicada (después de la
+            # contención, para que el mutante de timeout muera por conducta).
+            async with conn.execute("PRAGMA busy_timeout") as cur:
+                assert (await cur.fetchone())[0] == 5000, "la conexión publicada no tiene el timeout operativo"
+        async with (
+            aiosqlite.connect(db) as verificacion,
+            verificacion.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='posterior'") as cur,
+        ):
+            assert (await cur.fetchone()) is not None, "la escritura posterior no quedó confirmada"
+    finally:
+        # Cierre garantizado en TODA salida, incluso con una assertion fallida:
+        # holder → pool → conexiones/tareas del worker.
+        if holder is not None:
+            holder.liberar.set()
+            holder.join(10)
+        if pool is not None:
+            with contextlib.suppress(Exception):
+                await pool.close()
+
+
+async def test_agotamiento_wal_conserva_diagnostico_sqlite(tmp_path: Path) -> None:
+    """Fuera de presupuesto WAL gana el error SQLite real, no el timeout del pool."""
+    import contextlib
+
+    from tests.test_db_lifecycle import _sembrar_db_en_modo_delete, _SostieneLockSQLite
+
+    db = tmp_path / "agotamiento.db"
+    _sembrar_db_en_modo_delete(db)
+    holder = _SostieneLockSQLite(db)
+    holder.start()
+    assert holder.adquirido.wait(5), "el holder real no tomó el lock"
+
+    async def liberar_tarde() -> None:
+        await asyncio.sleep(0.3)
+        holder.liberar.set()
+
+    liberador = asyncio.create_task(liberar_tarde())
+    pool = _SQLitePool(str(db), timeout=0.3)  # presupuesto WAL derivado: 50 ms
+    try:
+        with pytest.raises(sqlite3.OperationalError) as capturado:
+            async with pool.acquire():
+                pass
+        assert "database is locked" in str(capturado.value)
+        assert getattr(capturado.value, "sqlite_errorcode", None) == sqlite3.SQLITE_BUSY
+        await pool.close()
+    finally:
+        liberador.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await liberador
+        holder.liberar.set()
+        holder.join(5)

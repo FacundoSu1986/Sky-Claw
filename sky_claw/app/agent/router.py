@@ -25,6 +25,7 @@ from sky_claw.app.agent.semantic_router import SemanticRouter
 from sky_claw.app.agent.token_budget import TokenBudgetManager
 from sky_claw.app.agent.token_circuit_breaker import TokenCircuitBreaker
 from sky_claw.app.agent.xml_tool_call_parser import extract_tool_calls, has_tool_calls
+from sky_claw.app.core.db_lifecycle import BUSY_TIMEOUT_POR_DEFECTO_MS, convertir_a_wal
 from sky_claw.app.core.errors import (
     AgentOrchestrationError,
     SecurityViolationError,
@@ -369,7 +370,7 @@ class LLMRouter:
                 # (incluida la cancelación) se cierra y NO se publica.
                 conn = await aiosqlite.connect(self._db_path)
                 try:
-                    await conn.execute("PRAGMA journal_mode=WAL")
+                    await convertir_a_wal(conn, busy_timeout_ms=BUSY_TIMEOUT_POR_DEFECTO_MS)
                     await conn.executescript(_HISTORY_SCHEMA)
                 except BaseException:
                     with contextlib.suppress(Exception):
