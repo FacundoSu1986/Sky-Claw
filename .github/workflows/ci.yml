@@ -406,7 +406,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           $venvDir = Join-Path $env:RUNNER_TEMP 'skyclaw-build-venv'
-          python scripts/build_controlado.py --prepare-venv $venvDir --profile base --env-out dist/build-evidence/build_env.json
+          python scripts/build_controlado.py --prepare-venv $venvDir --profile base --env-out dist/build-evidence/build_env.json --source-pre-out dist/build-evidence/source_identity_pre.json --run-id "${{ github.run_id }}-${{ github.run_attempt }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build executable
         id: build_executable
@@ -447,7 +447,7 @@ jobs:
           $recExit = $LASTEXITCODE
           $PSNativeCommandUseErrorActionPreference = $true
           if ($recExit -ne 0 -and $recExit -ne 1) { exit $recExit }
-          python scripts/build_controlado.py --verify-report dist/build-evidence/reconciliation_report.json --profile base --exe dist/SkyClawApp.exe --exe-sha256-json dist/build-evidence/exe_sha256.json --validate-venv $venvDir --analysis-toc dist/build-evidence/analysis_toc.json --sbom dist/build-evidence/sbom.spdx.json --smoke-outcome "${{ steps.smoke_frozen_executable.outcome }}"
+          python scripts/build_controlado.py --verify-report dist/build-evidence/reconciliation_report.json --profile base --exe dist/SkyClawApp.exe --exe-sha256-json dist/build-evidence/exe_sha256.json --validate-venv $venvDir --analysis-toc dist/build-evidence/analysis_toc.json --sbom dist/build-evidence/sbom.spdx.json --source-pre dist/build-evidence/source_identity_pre.json --run-id "${{ github.run_id }}-${{ github.run_attempt }}" --smoke-outcome "${{ steps.smoke_frozen_executable.outcome }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # PR-LIC-03B (B15 — Opción B ampliada): publicación de SkyClawApp.exe vía Actions suspendida
       # temporalmente en TODOS los eventos (pull_request, push, schedule, workflow_dispatch) mientras

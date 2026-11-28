@@ -433,6 +433,11 @@ def test_b16_verify_report_rechaza_reporte_de_otro_exe_sin_smoke_o_sin_venv(
         "dirty_entries_count": 0,
         "inputs_sha256": {"sky_claw.spec": "1" * 64},
     }
+    pre_ok_path = tmp_path / "source_pre_ok.json"
+    pre_ok_path.write_text(
+        json.dumps({"schema_version": 1, "profile": "base", "run_id": None, "source_identity": id_limpia}),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(bc, "_obtener_mapa_instalados", lambda *_a, **_k: ("3.11.9", {}))
     monkeypatch.setattr(bc, "validar_entorno_build", lambda *_a, **_k: [])
     monkeypatch.setattr(bc, "capturar_identidad_fuente", lambda *_a, **_k: id_limpia)
@@ -446,6 +451,8 @@ def test_b16_verify_report_rechaza_reporte_de_otro_exe_sin_smoke_o_sin_venv(
         str(exe_real),
         "--validate-venv",
         str(fake_venv),
+        "--source-pre",
+        str(pre_ok_path),
     ]
     assert bc.main([*base_args, "--smoke-outcome", "success"]) == bc.EXIT_OK
     assert bc.main([*base_args, "--smoke-outcome", "failure"]) == bc.EXIT_FAIL_CLOSED
@@ -464,12 +471,16 @@ def test_b16_ci_comparte_preparacion_venv_y_propaga_lastexitcode_en_pwsh() -> No
     # Assert — CI delega la preparación del venv al mismo orquestador fuera del checkout y verifica $LASTEXITCODE
     install_run = str(install_step.get("run", ""))
     assert "--prepare-venv" in install_run
+    assert "--source-pre-out" in install_run
+    assert "--run-id" in install_run
     assert "RUNNER_TEMP" in install_run
     assert ".build-venv" not in install_run
     rec_run = str(reconcile_step.get("run", ""))
     assert "$ErrorActionPreference = 'Stop'" in rec_run or '$ErrorActionPreference = "Stop"' in rec_run
     assert "$LASTEXITCODE" in rec_run
     assert "--exe dist/SkyClawApp.exe" in rec_run
+    assert "--source-pre" in rec_run
+    assert "--run-id" in rec_run
     assert "--smoke-outcome" in rec_run
     assert "--validate-venv" in rec_run
 
@@ -823,3 +834,96 @@ def test_b19_validar_spdx_contra_schema_oficial_distingue_passed_failed_y_not_ex
     assert r_bad["status"] == "failed"
     assert r_bad["executed"] is True
     assert len(r_bad["errors"]) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 10. R2: B18 cierre definitivo en CI — captura pre/post independiente y run_id
+# ---------------------------------------------------------------------------
+
+
+def test_b18_ci_verify_report_exige_source_pre_independiente_y_detecta_mutacion_o_run_id_obsoleto(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange
+    import json
+
+    exe_real = tmp_path / "SkyClawApp.exe"
+    exe_real.write_bytes(b"MZ-ejecutable-r2")
+    sha_real = hashlib.sha256(exe_real.read_bytes()).hexdigest()
+
+    rep_ok = _reporte_base_tecnico_valido()
+    rep_ok["exe"] = {"name": "SkyClawApp.exe", "sha256": sha_real, "bytes": exe_real.stat().st_size}
+    rep_path = tmp_path / "reconciliation_report.json"
+    rep_path.write_text(json.dumps(rep_ok), encoding="utf-8")
+
+    fake_venv = tmp_path / "fake_venv"
+    fake_py = (
+        fake_venv / ("Scripts" if bc.os.name == "nt" else "bin") / ("python.exe" if bc.os.name == "nt" else "python")
+    )
+    fake_py.parent.mkdir(parents=True)
+    fake_py.write_bytes(b"")
+
+    id_pre = {
+        "commit": "a" * 40,
+        "tree": "b" * 40,
+        "source_tree_clean": True,
+        "dirty_entries_count": 0,
+        "inputs_sha256": {"sky_claw.spec": "1" * 64, "requirements.lock": "2" * 64, "sky_claw_tree": "3" * 64},
+    }
+    id_post_mutada = dict(
+        id_pre,
+        inputs_sha256={"sky_claw.spec": "1" * 64, "requirements.lock": "9" * 64, "sky_claw_tree": "3" * 64},
+    )
+
+    pre_ok_path = tmp_path / "source_pre_ok.json"
+    pre_ok_path.write_text(
+        json.dumps({"schema_version": 1, "profile": "base", "run_id": "run-100-1", "source_identity": id_pre}),
+        encoding="utf-8",
+    )
+    pre_obsoleto_path = tmp_path / "source_pre_obsoleto.json"
+    pre_obsoleto_path.write_text(
+        json.dumps({"schema_version": 1, "profile": "base", "run_id": "run-099-1", "source_identity": id_pre}),
+        encoding="utf-8",
+    )
+    pre_perfil_mal_path = tmp_path / "source_pre_perfil_mal.json"
+    pre_perfil_mal_path.write_text(
+        json.dumps(
+            {"schema_version": 1, "profile": "native-parallax", "run_id": "run-100-1", "source_identity": id_pre}
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(bc, "_obtener_mapa_instalados", lambda *_a, **_k: ("3.11.9", {}))
+    monkeypatch.setattr(bc, "validar_entorno_build", lambda *_a, **_k: [])
+    monkeypatch.setattr(bc, "capturar_identidad_fuente", lambda *_a, **_k: id_pre)
+
+    base_args = [
+        "--verify-report",
+        str(rep_path),
+        "--profile",
+        "base",
+        "--exe",
+        str(exe_real),
+        "--validate-venv",
+        str(fake_venv),
+        "--smoke-outcome",
+        "success",
+        "--run-id",
+        "run-100-1",
+    ]
+
+    # Act & Assert 1 — sin --source-pre debe fallar cerrado
+    assert bc.main(base_args) == bc.EXIT_FAIL_CLOSED
+
+    # Act & Assert 2 — con --source-pre de otro run_id (obsoleto) debe fallar cerrado
+    assert bc.main([*base_args, "--source-pre", str(pre_obsoleto_path)]) == bc.EXIT_FAIL_CLOSED
+
+    # Act & Assert 3 — con --source-pre de otro perfil debe fallar cerrado
+    assert bc.main([*base_args, "--source-pre", str(pre_perfil_mal_path)]) == bc.EXIT_FAIL_CLOSED
+
+    # Act & Assert 4 — con --source-pre válido e idéntico a post => EXIT_OK
+    assert bc.main([*base_args, "--source-pre", str(pre_ok_path)]) == bc.EXIT_OK
+
+    # Act & Assert 5 (discriminante MB16) — si el árbol/lock mutó entre pre y post => EXIT_FAIL_CLOSED
+    monkeypatch.setattr(bc, "capturar_identidad_fuente", lambda *_a, **_k: id_post_mutada)
+    assert bc.main([*base_args, "--source-pre", str(pre_ok_path)]) == bc.EXIT_FAIL_CLOSED

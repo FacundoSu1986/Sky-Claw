@@ -600,17 +600,23 @@ def evaluar_veredicto_tecnico(
     }
 
 
-def _entorno_pip_controlado(build_venv: Path) -> dict[str, str]:
-    """Construye un entorno aislado para ``pip`` y PyInstaller eliminando cualquier ``PIP_*`` heredada (B09)."""
+def _entorno_limpio_base() -> dict[str, str]:
+    """Construye un entorno saneado sin ``PIP_*`` ni ``VIRTUAL_ENV`` para crear el venv (B09)."""
     vars_prohibidas = frozenset({"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "VIRTUAL_ENV"})
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PIP_") and k.upper() not in vars_prohibidas}
+    env["PYTHONNOUSERSITE"] = "1"
+    return env
+
+
+def _entorno_pip_controlado(build_venv: Path) -> dict[str, str]:
+    """Construye un entorno aislado para ``pip`` y PyInstaller eliminando cualquier ``PIP_*`` heredada (B09)."""
+    env = _entorno_limpio_base()
     scripts_dir = build_venv / ("Scripts" if os.name == "nt" else "bin")
     env["PATH"] = str(scripts_dir) + os.pathsep + env.get("PATH", "")
     env["VIRTUAL_ENV"] = str(build_venv)
     env["PIP_CONFIG_FILE"] = os.devnull
     env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
     env["PIP_NO_INPUT"] = "1"
-    env["PYTHONNOUSERSITE"] = "1"
     return env
 
 
@@ -751,7 +757,7 @@ def _preparar_venv_controlado(
     _ejecutar_cmd(
         [str(py_host), "-m", "venv", str(build_venv)],
         cwd=repo_root,
-        env=_entorno_pip_controlado(build_venv),
+        env=_entorno_limpio_base(),
         etiqueta="venv",
     )
     env_ctrl = _entorno_pip_controlado(build_venv)
@@ -1089,6 +1095,43 @@ def ejecutar_build_controlado(
             shutil.rmtree(build_root, ignore_errors=True)
 
 
+def _cargar_identidad_fuente_previa(
+    source_pre_path: Path | None,
+    *,
+    perfil: str,
+    run_id: str | None,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Valida la captura previa de identidad fuente y su vinculación a la misma ejecución (B18)."""
+    if source_pre_path is None or not source_pre_path.is_file():
+        return None, ["source_pre_identity_missing=1"]
+    try:
+        payload = json.loads(source_pre_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, ["source_pre_identity_invalid_json=1"]
+
+    if not isinstance(payload, Mapping) or payload.get("schema_version") != 1:
+        return None, ["source_pre_identity_invalid_schema=1"]
+
+    blockers: list[str] = []
+    if payload.get("profile") != perfil:
+        blockers.append("source_pre_profile_mismatch=1")
+
+    expected_run_id = (run_id or "").strip()
+    actual_run_id = str(payload.get("run_id") or "").strip()
+    if expected_run_id:
+        if actual_run_id != expected_run_id:
+            blockers.append("source_pre_run_id_mismatch=1")
+    elif actual_run_id:
+        blockers.append("source_pre_run_id_unexpected=1")
+
+    source_pre = payload.get("source_identity")
+    if not isinstance(source_pre, Mapping) or "inputs_sha256" not in source_pre:
+        blockers.append("source_pre_identity_malformed=1")
+        return None, blockers
+
+    return dict(source_pre), blockers
+
+
 def _verificar_reporte_ci(
     *,
     repo_root: Path,
@@ -1101,9 +1144,11 @@ def _verificar_reporte_ci(
     sbom_path: Path | None,
     spdx_schema_path: Path | None,
     smoke_outcome: str | None,
+    source_pre_path: Path | None,
+    run_id: str | None,
     allow_dirty: bool,
 ) -> tuple[dict[str, Any], int]:
-    """Evalúa el veredicto técnico en modo CI verificando EXE real, venv, smoke y estado fuente (B16/B18/B19)."""
+    """Evalúa el veredicto técnico en modo CI verificando EXE real, venv, smoke e identidad pre/post (B16/B18/B19)."""
     lock_runtime_path = repo_root / _PERFIL_A_LOCK[perfil]
     lock_build_path = repo_root / "requirements-build.lock"
     lock_rt = parsear_lockfile_con_hashes(lock_runtime_path)
@@ -1159,8 +1204,10 @@ def _verificar_reporte_ci(
             if re.search(r"[A-Za-z]:\\\\Users\\\\|/Users/|/home/", toc_txt):
                 extra_blockers.append("analysis_toc_unsanitized_personal_path=1")
 
-    # B18: capturar identidad real del árbol fuente
-    source_id = capturar_identidad_fuente(
+    # B18: cargar captura previa independiente y contrastar contra captura posterior independiente
+    source_pre, pre_blockers = _cargar_identidad_fuente_previa(source_pre_path, perfil=perfil, run_id=run_id)
+    extra_blockers.extend(pre_blockers)
+    source_post = capturar_identidad_fuente(
         repo_root, lock_runtime_path=lock_runtime_path, lock_build_path=lock_build_path
     )
 
@@ -1179,8 +1226,8 @@ def _verificar_reporte_ci(
         entorno_errores=entorno_errores,
         spdx_internal_errors=reporte.get("spdx_validation_errors", []),
         spdx_official_validation=spdx_official,
-        source_pre=source_id,
-        source_post=source_id,
+        source_pre=source_pre,
+        source_post=source_post,
         allow_dirty=allow_dirty,
         extra_technical_blockers=extra_blockers,
     )
@@ -1265,6 +1312,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Resultado explícito del smoke test ('success' para aprobado) en modo --verify-report (B16).",
     )
     parser.add_argument(
+        "--source-pre-out",
+        type=Path,
+        default=None,
+        help="Modo CI (--prepare-venv): guarda captura previa de identidad fuente vinculada a --run-id (B18).",
+    )
+    parser.add_argument(
+        "--source-pre",
+        type=Path,
+        default=None,
+        help="Modo CI (--verify-report): ruta al JSON de identidad fuente capturado antes de compilar (B18).",
+    )
+    parser.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="Identificador de ejecución para vincular --source-pre-out con --source-pre (B18).",
+    )
+    parser.add_argument(
         "--sanitize-toc",
         type=Path,
         default=None,
@@ -1288,6 +1353,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             lock_rt = parsear_lockfile_con_hashes(lock_rt_path)
             lock_b = parsear_lockfile_con_hashes(lock_b_path)
             verificar_compatibilidad_locks(lock_rt, lock_b)
+            # B18: capturar identidad fuente ANTES de preparar el entorno y compilar
+            source_pre = capturar_identidad_fuente(
+                repo_root, lock_runtime_path=lock_rt_path, lock_build_path=lock_b_path
+            )
             _, py_ver, mapa, pkgs, _ = _preparar_venv_controlado(
                 build_venv=args.prepare_venv,
                 repo_root=repo_root,
@@ -1302,6 +1371,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _verificar_sin_reparse_en_ancestros(args.env_out, etiqueta="env_out")
                 args.env_out.parent.mkdir(parents=True, exist_ok=True)
                 args.env_out.write_text(json.dumps(pkgs, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            if args.source_pre_out is not None:
+                _verificar_sin_reparse_en_ancestros(args.source_pre_out, etiqueta="source_pre_out")
+                _escribir_json_atomico(
+                    {
+                        "schema_version": 1,
+                        "profile": args.profile,
+                        "run_id": (args.run_id or "").strip() or None,
+                        "captured_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "source_identity": source_pre,
+                    },
+                    args.source_pre_out,
+                )
             print(
                 f"build_controlado: venv preparado y validado profile={args.profile} python={py_ver} pkgs={len(mapa)}"
             )
@@ -1319,6 +1400,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 sbom_path=args.sbom,
                 spdx_schema_path=args.spdx_schema,
                 smoke_outcome=args.smoke_outcome,
+                source_pre_path=args.source_pre,
+                run_id=args.run_id,
                 allow_dirty=args.allow_dirty,
             )
             print(
