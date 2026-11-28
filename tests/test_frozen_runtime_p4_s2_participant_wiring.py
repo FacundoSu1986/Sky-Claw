@@ -402,6 +402,7 @@ _PRIMITIVAS_BAJO_LOCK: frozenset[tuple[str, str]] = frozenset(
         ("journal.py", "_start_next_locked"),
         ("journal.py", "_actualizar_locked"),
         ("journal.py", "_finalizar_locked"),
+        ("journal.py", "_completar_rotacion_f2_locked"),
         ("journal.py", "_abortar_pendiente_locked"),
         # P7-F Incremento 2 PR 1: creación del subdirectorio de abortos, primitivas
         # locked del store de abortos y revalidación con preservación forense bajo participant_lock.
@@ -409,6 +410,7 @@ _PRIMITIVAS_BAJO_LOCK: frozenset[tuple[str, str]] = frozenset(
         ("pending_abort_store.py", "crear_intencion_aborto_locked"),
         ("pending_abort_store.py", "avanzar_estado_aborto_locked"),
         ("pending_reconciliation.py", "_verificar_superficies_contra_snapshot"),
+        ("pending_reconciliation.py", "_retirar_recovery_best_effort"),
         # P4-S4 (`approval.py`): la autoridad de aprobación escribe por DOS
         # caminos, y ninguno adquiere el lock por su cuenta — reciben el
         # `FrozenRuntimeRootLockHandle` ya adquirido y lo verifican con
