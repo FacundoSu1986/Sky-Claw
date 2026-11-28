@@ -23,6 +23,7 @@ Cubre la matriz completa de verificación:
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 import os
 import pathlib
@@ -1029,3 +1030,222 @@ def test_c6_con_historial_previo_preserva_cadena_seq_2(tmp_path: pathlib.Path, m
     assert res2.finalization_seq == 2
     assert res2.finalized_record.finalized_from_transition_id == t1_id
     assert cargar_journal_transicion(rig.storage).disposition is JournalDisposition.NONE
+
+
+# ---------------------------------------------------------------------------
+# 7. H1 (Binding completo con witness) y H2 (Revalidación causal + Codex P1s)
+# ---------------------------------------------------------------------------
+
+
+def test_h1_rechaza_journal_c4_c7_y_mo2_divergentes_de_proyeccion_witness(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H1: journal/FINALIZED con mismo approval_id/seq/scope_digest pero campos divergentes del witness → rechazo."""
+    rig, env = _limpiar_rig_hitl(tmp_path)
+    with monkeypatch.context() as mp:
+        tid, env = _dejar_en_frontera(mp, rig, env, frontera="C4")
+
+    # 1) C4: alterar evidence_digests.clone_evidence manteniendo approval_id/seq/scope_digest idénticos
+    j_path = storage.transition_journal_path(rig.storage)
+    j_orig = j_path.read_bytes()
+    j_data = json.loads(j_orig.decode("utf-8"))
+    j_data["evidence_digests"]["clone_evidence"] = "f" * 64
+    j_path.write_text(json.dumps(j_data, indent=2), encoding="utf-8")
+
+    with pytest.raises(RecuperacionAdelanteAutoridadError):
+        completar_transicion_pendiente(
+            rig.storage,
+            transition_id=tid,
+            mo2_instance_dir=rig.mo2_dir,
+            managed_source_root=rig.managed_src,
+            config_path=rig.config,
+            environ=env,
+            probes=_probes_rig(rig),
+        )
+    assert derivar_historial_finalizados(rig.storage).registros == ()
+    j_path.write_bytes(j_orig)
+
+    # 2) Instancia MO2 distinta de la autorizada en approval_provenance (inst=...)
+    otra_mo2 = tmp_path / "MO2_otra_instancia"
+    shutil.copytree(rig.mo2_dir, otra_mo2)
+    with pytest.raises(RecuperacionAdelanteAutoridadError):
+        completar_transicion_pendiente(
+            rig.storage,
+            transition_id=tid,
+            mo2_instance_dir=otra_mo2,
+            managed_source_root=rig.managed_src,
+            config_path=rig.config,
+            environ=env,
+            probes=_probes_rig(rig),
+        )
+    assert derivar_historial_finalizados(rig.storage).registros == ()
+
+    # 3) C7: PENDING y FINALIZED coinciden entre sí en candidate_id alterado, pero divergen del witness
+    rig_c7, env_c7 = _limpiar_rig_hitl(tmp_path / "c7")
+    with monkeypatch.context() as mp:
+        tid_c7, env_c7 = _dejar_en_frontera(mp, rig_c7, env_c7, frontera="C7")
+
+    j_c7_path = storage.transition_journal_path(rig_c7.storage)
+    r_c7_path = storage.transitions_state_dir(rig_c7.storage) / f"{tid_c7}.json"
+    j_c7 = json.loads(j_c7_path.read_text(encoding="utf-8"))
+    r_c7 = json.loads(r_c7_path.read_text(encoding="utf-8"))
+    j_c7["candidate_id"] = "cand_alterado_divergente_del_witness"
+    r_c7["candidate_id"] = "cand_alterado_divergente_del_witness"
+    j_c7_path.write_text(json.dumps(j_c7, indent=2), encoding="utf-8")
+    r_c7_path.write_text(json.dumps(r_c7, indent=2), encoding="utf-8")
+
+    with pytest.raises(RecuperacionAdelanteAutoridadError):
+        completar_transicion_pendiente(
+            rig_c7.storage,
+            transition_id=tid_c7,
+            mo2_instance_dir=rig_c7.mo2_dir,
+            managed_source_root=rig_c7.managed_src,
+            config_path=rig_c7.config,
+            environ=env_c7,
+            probes=_probes_rig(rig_c7),
+        )
+    assert cargar_journal_transicion(rig_c7.storage).disposition is JournalDisposition.PENDING_PROMOTION
+
+
+def test_h2_revalidacion_causal_detecta_deriva_desired_clone_ini_y_mo2_inactiva(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H2 + Codex P1s: deriva fuera de lock en desired_clone_id, clone record, [customExecutables] o MO2 inactiva."""
+    from sky_claw.local.frozen_runtime.effective_runtime.models import (
+        Mo2InstanceIdentityObservation,
+        Mo2InstanceIdentityState,
+        Mo2RegistryState,
+    )
+
+    rig, env = _limpiar_rig_hitl(tmp_path)
+    with monkeypatch.context() as mp:
+        tid, env = _dejar_en_frontera(mp, rig, env, frontera="C4")
+
+    # A) _huella_estado_durable debe distinguir desired_clone_id distinto dentro de la misma Generation
+    with participant_lock(rig.storage, timeout=5.0):
+        huella_1 = journal_module._observar_estado_durable(rig.storage).huella
+    act_path = storage.active_state_path(rig.storage)
+    act_orig = act_path.read_bytes()
+    act_data = json.loads(act_orig.decode("utf-8"))
+    act_data["desired_clone_id"] = "clone-p7-otro-en-misma-gen"
+    act_path.write_text(json.dumps(act_data, indent=2), encoding="utf-8")
+    with participant_lock(rig.storage, timeout=5.0):
+        huella_2 = journal_module._observar_estado_durable(rig.storage).huella
+    act_path.write_bytes(act_orig)
+    assert huella_2 != huella_1
+
+    # B) Instancia MO2 inactiva en registro global (Codex #4724466619) → rechazo sin finalizar
+    probes_inactivos = dataclasses.replace(
+        _probes_rig(rig),
+        mo2_instance=lambda _d: Mo2InstanceIdentityObservation(
+            state=Mo2InstanceIdentityState.INACTIVE,
+            instance_dir=str(rig.mo2_dir),
+            registry_state=Mo2RegistryState.OBSERVED,
+            registry_current_instance="OtraInstanciaGlobal",
+            detail="instancia global cambiada por el operador",
+        ),
+    )
+    with pytest.raises(RecuperacionAdelantePostError):
+        completar_transicion_pendiente(
+            rig.storage,
+            transition_id=tid,
+            mo2_instance_dir=rig.mo2_dir,
+            managed_source_root=rig.managed_src,
+            config_path=rig.config,
+            environ=env,
+            probes=probes_inactivos,
+        )
+    assert derivar_historial_finalizados(rig.storage).registros == ()
+
+    # C) Mutación concurrente de [customExecutables] en ModOrganizer.ini tras POST (Codex #4724466614)
+    orig_assess = __import__(
+        "sky_claw.local.frozen_runtime.pending_reconciliation", fromlist=["assess_effective_runtime"]
+    ).assess_effective_runtime
+    ini_orig = rig.ini.read_bytes()
+
+    def _assess_muta_custom_execs(*args: object, **kwargs: object) -> object:
+        res = orig_assess(*args, **kwargs)
+        rig.ini.write_bytes(ini_orig + b"\n[customExecutables]\nsize=1\n1\\binary=C:/otro/skse64_loader.exe\n")
+        return res
+
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            "sky_claw.local.frozen_runtime.pending_reconciliation.assess_effective_runtime",
+            _assess_muta_custom_execs,
+        )
+        with pytest.raises(RecuperacionAdelantePostError):
+            completar_transicion_pendiente(
+                rig.storage,
+                transition_id=tid,
+                mo2_instance_dir=rig.mo2_dir,
+                managed_source_root=rig.managed_src,
+                config_path=rig.config,
+                environ=env,
+                probes=_probes_rig(rig),
+            )
+    rig.ini.write_bytes(ini_orig)
+    assert derivar_historial_finalizados(rig.storage).registros == ()
+
+    # D) Deriva del registro del Clone durante observación fuera del lock (H2)
+    clone_rec_path = storage.clone_record_path(rig.storage, rig.clone_id)
+    clone_rec_orig = clone_rec_path.read_bytes()
+
+    def _assess_muta_clone_record(*args: object, **kwargs: object) -> object:
+        res = orig_assess(*args, **kwargs)
+        d = json.loads(clone_rec_orig.decode("utf-8"))
+        orig_setup = str(d["verified_runtime_setup_id"])
+        ultimo = "0" if orig_setup[-1] != "0" else "1"
+        nuevo_setup = orig_setup[:-1] + ultimo
+        d["intended_runtime_setup_id"] = nuevo_setup
+        d["verified_runtime_setup_id"] = nuevo_setup
+        clone_rec_path.write_text(json.dumps(d, indent=2), encoding="utf-8")
+        return res
+
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            "sky_claw.local.frozen_runtime.pending_reconciliation.assess_effective_runtime",
+            _assess_muta_clone_record,
+        )
+        with pytest.raises(RecuperacionAdelanteCasError):
+            completar_transicion_pendiente(
+                rig.storage,
+                transition_id=tid,
+                mo2_instance_dir=rig.mo2_dir,
+                managed_source_root=rig.managed_src,
+                config_path=rig.config,
+                environ=env,
+                probes=_probes_rig(rig),
+            )
+    clone_rec_path.write_bytes(clone_rec_orig)
+    assert derivar_historial_finalizados(rig.storage).registros == ()
+
+    # E) Deriva de la autoridad de aprobación (tombstone) durante observación fuera del lock (H2)
+    tomb_files = list(storage.approvals_state_dir(rig.storage).glob("*.json"))
+    assert len(tomb_files) == 1
+    tomb_path = tomb_files[0]
+    tomb_orig = tomb_path.read_bytes()
+
+    def _assess_muta_tombstone(*args: object, **kwargs: object) -> object:
+        res = orig_assess(*args, **kwargs)
+        td = json.loads(tomb_orig.decode("utf-8"))
+        td["terminal_at_ns"] = int(td["terminal_at_ns"]) + 1
+        tomb_path.write_text(json.dumps(td, indent=2), encoding="utf-8")
+        return res
+
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            "sky_claw.local.frozen_runtime.pending_reconciliation.assess_effective_runtime",
+            _assess_muta_tombstone,
+        )
+        with pytest.raises(RecuperacionAdelanteCasError):
+            completar_transicion_pendiente(
+                rig.storage,
+                transition_id=tid,
+                mo2_instance_dir=rig.mo2_dir,
+                managed_source_root=rig.managed_src,
+                config_path=rig.config,
+                environ=env,
+                probes=_probes_rig(rig),
+            )
+    tomb_path.write_bytes(tomb_orig)
+    assert derivar_historial_finalizados(rig.storage).registros == ()

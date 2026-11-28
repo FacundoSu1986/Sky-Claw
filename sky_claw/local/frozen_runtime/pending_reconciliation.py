@@ -25,7 +25,9 @@ import dataclasses
 import logging
 import os
 import pathlib
+import re
 import time
+import urllib.parse
 from collections.abc import Callable, Mapping
 from enum import StrEnum
 
@@ -35,6 +37,7 @@ from sky_claw.local.frozen_runtime.approval import (
     IssuanceWitness,
     TerminalState,
     derivar_autoridad_aprobacion,
+    proyeccion_desde_witness,
 )
 from sky_claw.local.frozen_runtime.binder_preflight import BinderTransitionPolicy
 from sky_claw.local.frozen_runtime.clones import leer_runtime_clone_record, verificar_runtime_clone
@@ -62,6 +65,7 @@ from sky_claw.local.frozen_runtime.errors import (
     RecuperacionAdelanteBloqueadaError,
     RecuperacionAdelanteCasError,
     RecuperacionAdelantePostError,
+    ScopeBindingError,
     StateCasError,
     StateCorruptError,
     StateSchemaError,
@@ -72,7 +76,9 @@ from sky_claw.local.frozen_runtime.journal import (
     JournalLoadResult,
     PostVerifyEvidence,
     PostVerifyResultado,
+    ProyeccionScope,
     SourceActivation,
+    TransitionJournal,
     _abortar_pendiente_locked,
     _completar_rotacion_f2_locked,
     _finalizar_locked,
@@ -81,8 +87,9 @@ from sky_claw.local.frozen_runtime.journal import (
     cargar_journal_transicion,
     derivar_historial_finalizados,
     digest_canonico,
+    exigir_proyeccion_ligada,
 )
-from sky_claw.local.frozen_runtime.mo2_authorization import token_comprometido
+from sky_claw.local.frozen_runtime.mo2_authorization import clave_de_ruta, token_comprometido
 from sky_claw.local.frozen_runtime.owner_consent import IdentidadPropietario
 from sky_claw.local.frozen_runtime.pending_abort_store import (
     PLACEHOLDER_VACIO,
@@ -1091,6 +1098,167 @@ def _exigir_quiescencia_para_adelante(probes: RuntimeProbes, *, momento: str) ->
         raise RecuperacionAdelanteBloqueadaError(str(exc)) from exc
 
 
+_SEGMENTO_INST_RE = re.compile(r"(?:^|:)inst=([^:]+)(?=:|$)")
+
+
+def _huella_autoridad_aprobacion(
+    tombstone: ApprovalTombstone,
+    witness: IssuanceWitness,
+) -> tuple[object, ...]:
+    """Huella causal inmutable de la aprobación CONSUMED + witness para revalidación (H2)."""
+    return (
+        tombstone.approval_id,
+        int(tombstone.approval_seq),
+        tombstone.approval_scope_digest,
+        tombstone.consumed_by_transition_id,
+        tombstone.terminal_at_ns,
+        digest_canonico(witness.scope_payload),
+    )
+
+
+def _exigir_source_activation_ligado_a_witness(
+    source_activation: SourceActivation | None,
+    witness: IssuanceWitness,
+    *,
+    etiqueta: str,
+) -> None:
+    src_w = witness.scope_payload.get("source_activation")
+    if not isinstance(src_w, Mapping):
+        return
+    if source_activation is None:
+        raise RecuperacionAdelanteAutoridadError(f"{etiqueta}: falta source_activation para cruzar contra witness")
+    esperado = (
+        src_w.get("generation_id"),
+        src_w.get("clone_id"),
+        src_w.get("runtime_setup_id"),
+        src_w.get("effective_runtime_evidence"),
+    )
+    actual = (
+        source_activation.generation_id,
+        source_activation.clone_id,
+        source_activation.runtime_setup_id,
+        source_activation.effective_runtime_evidence,
+    )
+    if actual != esperado:
+        raise RecuperacionAdelanteAutoridadError(
+            f"{etiqueta}: source_activation ({actual!r}) diverge del witness ({esperado!r})"
+        )
+
+
+def _exigir_journal_ligado_a_witness(journal: TransitionJournal, witness: IssuanceWitness) -> None:
+    """H1: liga TODOS los campos de transición y evidencias del journal contra ``proyeccion_desde_witness``."""
+    assert journal.operation is not None
+    assert journal.source_activation_digest is not None
+    assert journal.target_generation_id is not None
+    assert journal.target_clone_id is not None
+    assert journal.target_runtime_setup_id is not None
+    assert journal.evidence_digests is not None
+    assert journal.consumed_approval_id is not None
+    assert journal.consumed_approval_seq is not None
+
+    proyeccion_aprobada = proyeccion_desde_witness(witness)
+    proyeccion_journal = ProyeccionScope(
+        operation=journal.operation.value,
+        source_activation_digest=journal.source_activation_digest,
+        target_generation_id=journal.target_generation_id,
+        target_clone_id=journal.target_clone_id,
+        target_runtime_setup_id=journal.target_runtime_setup_id,
+        candidate_id=journal.candidate_id,
+        clone_evidence=journal.evidence_digests.clone_evidence,
+        runtime_setup_evidence=journal.evidence_digests.runtime_setup_evidence,
+        compatibility_evidence_id=journal.evidence_digests.compatibility_evidence,
+        approval_id=journal.consumed_approval_id,
+        approval_seq=journal.consumed_approval_seq,
+    )
+    try:
+        exigir_proyeccion_ligada(
+            proyeccion_aprobada,
+            proyeccion_journal,
+            etiqueta="recuperación hacia adelante (journal vs witness)",
+        )
+    except ScopeBindingError as exc:
+        raise RecuperacionAdelanteAutoridadError(str(exc)) from exc
+    _exigir_source_activation_ligado_a_witness(
+        journal.source_activation, witness, etiqueta="recuperación hacia adelante (journal)"
+    )
+
+
+def _exigir_registro_finalizado_ligado_a_witness(
+    registro: FinalizedTransitionRecord,
+    witness: IssuanceWitness,
+) -> None:
+    """H1 (C7): liga el registro FINALIZED existente contra ``proyeccion_desde_witness``."""
+    aprobado = proyeccion_desde_witness(witness)
+    discrepancias: list[str] = []
+    for nombre, val_aprob, val_reg in (
+        ("operation", aprobado.operation, registro.operation.value),
+        ("source_activation_digest", aprobado.source_activation_digest, registro.source_activation_digest),
+        ("target_generation_id", aprobado.target_generation_id, registro.target_generation_id),
+        ("target_clone_id", aprobado.target_clone_id, registro.target_clone_id),
+        ("target_runtime_setup_id", aprobado.target_runtime_setup_id, registro.target_runtime_setup_id),
+        ("candidate_id", aprobado.candidate_id, registro.candidate_id),
+        ("approval_id", aprobado.approval_id, registro.consumed_approval_id),
+        ("approval_seq", aprobado.approval_seq, registro.consumed_approval_seq),
+    ):
+        if val_aprob != val_reg:
+            discrepancias.append(f"{nombre} (aprobado {val_aprob!r} != FINALIZED {val_reg!r})")
+    if discrepancias:
+        raise RecuperacionAdelanteAutoridadError(
+            "C7: el registro FINALIZED diverge de la aprobación emitida (witness): "
+            f"{'; '.join(discrepancias)}. No se rota el journal"
+        )
+    _exigir_source_activation_ligado_a_witness(
+        registro.source_activation, witness, etiqueta="C7 (FINALIZED vs witness)"
+    )
+
+
+def _exigir_instancia_mo2_autorizada_por_witness(
+    mo2_dir: pathlib.Path,
+    witness: IssuanceWitness,
+) -> None:
+    """H1: verifica que ``mo2_dir`` coincida con la instancia MO2 autorizada en ``approval_provenance``.
+
+    No compara el digest previo de ``modorganizer.ini`` (que ya mutó tras el bind): liga únicamente
+    la instancia de MO2 autorizada (segmento ``inst=...``).
+    """
+    provenance = witness.scope_payload.get("approval_provenance")
+    if not isinstance(provenance, str):
+        return
+    requiere_inst = provenance.startswith("golden-master-hitl:") or token_comprometido(provenance) is not None
+    coincidencias = _SEGMENTO_INST_RE.findall(provenance)
+    if len(coincidencias) > 1:
+        raise RecuperacionAdelanteAutoridadError(
+            "approval_provenance contiene múltiples segmentos 'inst=': forma ambigua (fail-closed)"
+        )
+    if not coincidencias:
+        if requiere_inst:
+            raise RecuperacionAdelanteAutoridadError(
+                "approval_provenance de autorización HITL carece del segmento 'inst=' para validar la instancia MO2"
+            )
+        return
+    inst_autorizada = urllib.parse.unquote(coincidencias[0])
+    if clave_de_ruta(mo2_dir) != clave_de_ruta(inst_autorizada):
+        raise RecuperacionAdelanteAutoridadError(
+            f"la instancia MO2 solicitada ({mo2_dir}) no coincide con la instancia autorizada por el propietario "
+            f"en el witness ({inst_autorizada}): rechazo sin mutaciones"
+        )
+
+
+def _exigir_instancia_mo2_activa(probes: RuntimeProbes, mo2_dir: pathlib.Path, *, momento: str) -> None:
+    """Verifica que ``mo2_dir`` siga siendo la instancia global activa de MO2 (Codex #4724466619)."""
+    probe_mo2 = probes.mo2_instance if probes.mo2_instance is not None else default_runtime_probes().mo2_instance
+    if probe_mo2 is None:
+        raise RecuperacionAdelantePostError(
+            f"{momento}: no hay sonda de identidad de instancia MO2 disponible (fail-closed)"
+        )
+    obs = probe_mo2(mo2_dir)
+    if not obs.is_active:
+        raise RecuperacionAdelantePostError(
+            f"{momento}: la instancia MO2 ({mo2_dir}) no está activa como instancia global "
+            f"(state={obs.state.value}, detail={obs.detail!r}): prohibido finalizar"
+        )
+
+
 def _retirar_recovery_best_effort(handle: object, storage_path: pathlib.Path, transition_id: str) -> bool:
     """Retira ``state/recovery/<tid>.json`` tras finalizar/rotar; best-effort declarado (no revierte FINALIZED)."""
     try:
@@ -1181,7 +1349,9 @@ def completar_transicion_pendiente(
                 f"la transición {t_id!r} fue abortada (veto permanente): prohibido recuperarla hacia adelante"
             )
 
-        tombstone, _witness = _evidencia_aprobacion_consumida_para_adelante(storage_path, t_id)
+        tombstone, witness = _evidencia_aprobacion_consumida_para_adelante(storage_path, t_id)
+        huella_aprobacion_inicial = _huella_autoridad_aprobacion(tombstone, witness)
+        _exigir_instancia_mo2_autorizada_por_witness(mo2_dir, witness)
 
         registro_existente = next((r for r in estado.historial.registros if r.transition_id == t_id), None)
         if registro_existente is not None:
@@ -1194,6 +1364,7 @@ def completar_transicion_pendiente(
                 raise RecuperacionAdelanteAutoridadError(
                     f"el registro FINALIZED de {t_id!r} no coincide con la aprobación CONSUMED"
                 )
+            _exigir_registro_finalizado_ligado_a_witness(registro_existente, witness)
             ya_completada = estado.snapshot.disposition is JournalDisposition.NONE
             if not ya_completada:
                 j_c7 = estado.snapshot.journal
@@ -1205,6 +1376,7 @@ def completar_transicion_pendiente(
                     raise RecuperacionAdelanteAutoridadError(
                         "el journal PENDING en C7 no coincide con la aprobación CONSUMED"
                     )
+                _exigir_journal_ligado_a_witness(j_c7, witness)
             try:
                 rec_f2 = _completar_rotacion_f2_locked(
                     handle,
@@ -1260,6 +1432,7 @@ def completar_transicion_pendiente(
             raise RecuperacionAdelanteAutoridadError(
                 "el journal PENDING no coincide con la aprobación CONSUMED (approval_id/seq/scope_digest)"
             )
+        _exigir_journal_ligado_a_witness(journal, witness)
 
         # Auditar reservas huérfanas (C6 vs reserva ajena/corrupta/seq incorrecta)
         reserva_reutilizada = False
@@ -1325,6 +1498,7 @@ def completar_transicion_pendiente(
         except FrozenRuntimeError as exc:
             raise RecuperacionAdelantePostError(f"no se pudo leer RuntimeCloneRecord destino: {exc}") from exc
 
+        clone_record_inicial = dataclasses.asdict(clone_record)
         if clone_record.source_generation_id != target_generation_id:
             raise RecuperacionAdelanteAutoridadError(
                 f"el Clone {target_clone_id!r} declara source_generation_id={clone_record.source_generation_id!r}, "
@@ -1338,9 +1512,10 @@ def completar_transicion_pendiente(
             )
 
     # -----------------------------------------------------------------------
-    # Fase 2 (FUERA de participant_lock — FR-06): quiescencia, Clone, setup, POST
+    # Fase 2 (FUERA de participant_lock — FR-06): quiescencia, MO2 activa, Clone, setup, POST
     # -----------------------------------------------------------------------
     _exigir_quiescencia_para_adelante(observadores, momento="recuperación hacia adelante (observación previa)")
+    _exigir_instancia_mo2_activa(observadores, mo2_dir, momento="recuperación hacia adelante (observación previa)")
 
     try:
         clone_check = verificar_runtime_clone(
@@ -1365,6 +1540,12 @@ def completar_transicion_pendiente(
             "prohibido finalizar"
         )
 
+    ini_path = mo2_dir / "modorganizer.ini"
+    try:
+        ini_sha_post = recovery.huella(ini_path.read_bytes())
+    except OSError as exc:
+        raise RecuperacionAdelantePostError(f"POST VERIFY: no se pudo leer modorganizer.ini ({exc})") from exc
+
     cfg_post = _leer_skyrim_path_persistido(config_path)
     post_eval = assess_effective_runtime(
         mo2_instance_dir=mo2_dir,
@@ -1383,9 +1564,17 @@ def completar_transicion_pendiente(
             f"POST VERIFY no autoriza la activación del runtime en {frontera.value}: "
             f"verdict={post_eval.verdict.value}, reasons={[r.value for r in post_eval.reasons]}"
         )
+    try:
+        ini_sha_tras_post = recovery.huella(ini_path.read_bytes())
+    except OSError as exc:
+        raise RecuperacionAdelantePostError(f"POST VERIFY: no se pudo releer modorganizer.ini ({exc})") from exc
+    if ini_sha_tras_post != ini_sha_post:
+        raise RecuperacionAdelantePostError(
+            "POST VERIFY: modorganizer.ini cambió durante la observación del oráculo (fail-closed)"
+        )
 
     # -----------------------------------------------------------------------
-    # Fase 3 (bajo participant_lock): revalidar huella causal, CAS active.json (C3), FINALIZE
+    # Fase 3 (bajo participant_lock): revalidar huella causal, aprobación, clone, INI, MO2 activa, FINALIZE
     # -----------------------------------------------------------------------
     desired_actualizado = False
     with participant_lock(storage_path, timeout=timeout, reclaim_orphaned=True) as handle:
@@ -1411,22 +1600,44 @@ def completar_transicion_pendiente(
                 "no se continúa sobre evidencia obsoleta (FR-06)"
             )
 
-        _exigir_quiescencia_para_adelante(observadores, momento="recuperación hacia adelante (revalidación bajo lock)")
+        tombstone_reval, witness_reval = _evidencia_aprobacion_consumida_para_adelante(storage_path, t_id)
+        if _huella_autoridad_aprobacion(tombstone_reval, witness_reval) != huella_aprobacion_inicial:
+            raise RecuperacionAdelanteCasError(
+                "la autoridad de aprobación cambió durante la observación externa del oráculo (H2)"
+            )
 
-        # Revalidación rápida bajo lock de las superficies externas (MO2 INI + config.toml):
-        # cierra la ventana TOCTOU si un tercero las modificó mientras el oráculo corría fuera del lock.
-        ini_reval = leer_game_path_de_mo2(mo2_dir / "modorganizer.ini")
-        if (
-            ini_reval.state is not ObservationState.OBSERVED
-            or not ini_reval.path
-            or _norm(ini_reval.path) != _norm(target_clone_root)
-        ):
+        try:
+            clone_record_reval = leer_runtime_clone_record(storage_path, target_clone_id)
+        except FrozenRuntimeError as exc:
+            raise RecuperacionAdelanteCasError(
+                f"no se pudo releer el RuntimeCloneRecord destino bajo lock ({exc})"
+            ) from exc
+        if dataclasses.asdict(clone_record_reval) != clone_record_inicial:
+            raise RecuperacionAdelanteCasError(
+                "el RuntimeCloneRecord destino derivó durante la observación externa del oráculo (H2)"
+            )
+
+        _exigir_quiescencia_para_adelante(observadores, momento="recuperación hacia adelante (revalidación bajo lock)")
+        _exigir_instancia_mo2_activa(
+            observadores, mo2_dir, momento="recuperación hacia adelante (revalidación bajo lock)"
+        )
+
+        # Revalidación bajo lock de los bytes completos de modorganizer.ini usados en POST (cierra
+        # cambios en [customExecutables] o gamePath, Codex #4724466614) y config.skyrim_path.
+        try:
+            ini_sha_bajo_lock = recovery.huella(ini_path.read_bytes())
+        except OSError as exc:
             raise RecuperacionAdelantePostError(
-                "POST VERIFY (revalidación bajo lock): modorganizer.ini divergió o dejó de apuntar al Clone destino"
+                f"POST VERIFY (revalidación bajo lock): no se pudo releer modorganizer.ini ({exc})"
+            ) from exc
+        if ini_sha_bajo_lock != ini_sha_post:
+            raise RecuperacionAdelantePostError(
+                "POST VERIFY (revalidación bajo lock): modorganizer.ini cambió tras la observación del oráculo "
+                "(incluyendo posibles cambios en [customExecutables] o gamePath)"
             )
         if config_path is not None:
             cfg_reval = _leer_skyrim_path_persistido(config_path)
-            if _norm(cfg_reval) != _norm(target_clone_root):
+            if _norm(cfg_reval) != _norm(cfg_post) or _norm(cfg_reval) != _norm(target_clone_root):
                 raise RecuperacionAdelantePostError(
                     "POST VERIFY (revalidación bajo lock): config.skyrim_path divergió del Clone destino"
                 )
@@ -1448,12 +1659,14 @@ def completar_transicion_pendiente(
                 raise RecuperacionAdelanteCasError(f"CAS UPDATE DESIRED rechazado en recuperación C3: {exc}") from exc
             desired_actualizado = True
 
-        desired_persistido = desired_runtime_from_storage(storage_path)
+        # Lectura ligera bajo lock (sin re-hashear el árbol físico del Clone, Codex #4724466610):
+        # verifica active.json persistido contra target + clone_record ya revalidado.
+        active_persistido = load_frozen_runtime_state(active_state_path(storage_path)).state
         if (
-            desired_persistido.clone_id != target_clone_id
-            or desired_persistido.generation_id != target_generation_id
-            or desired_persistido.clone_root is None
-            or _norm(desired_persistido.clone_root) != _norm(target_clone_root)
+            active_persistido is None
+            or active_persistido.desired_clone_id != target_clone_id
+            or active_persistido.desired_active_generation != target_generation_id
+            or _norm(clone_record_reval.root_path) != _norm(target_clone_root)
         ):
             raise RecuperacionAdelantePostError(
                 "POST VERIFY: active.json persistido no coincide con el destino autorizado de la transición"
